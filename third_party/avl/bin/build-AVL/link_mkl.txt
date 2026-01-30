@@ -1,0 +1,3 @@
+gfortran -o avl avl.o aoper.o amode.o amass.o asetup.o amake.o ainput.o aoutput.o aoutmrf.o aero.o atrim.o atpforc.o aic.o cdcl.o airutil.o autil.o aoml.o aplotvl.o aplottp.o aplotmd.o limits.o pltops.o hidden.o plsubs.o userio.o plutil.o arrow3d.o getvm.o spline.o sgutil.o second.o matrix-lapackdp.o  -L/opt/intel/oneapi/mkl/2023.0.0/lib -lmkl_intel_lp64 -lmkl_core -liomp5 -lmkl_intel_thread  ../plotlib/libPlt_gDP.a  ../eispack/libeispack.a -L/usr/X11R6/lib -lX11
+ 
+MKLROOT=/opt/intel/oneapi/mkl/2023.0.0

@@ -1,0 +1,13 @@
+mv /usr/local/opt/gcc/lib/gcc/current/libquadmath.0.dylib /usr/local/opt/gcc/lib/gcc/current/libquadmath.0.xdylib
+
+gfortran -o avl avl_heap_inc.o avl_heap.o avl.o aoper.o amode.o amass.o asetup.o amake.o ainput.o aoutput.o aoutmrf.o aero.o atrim.o atpforc.o aic.o cdcl.o airutil.o autil.o aoml.o aplotvl.o aplottp.o aplotmd.o limits.o pltops.o hidden.o plsubs.o obsetup.o userio.o plutil.o arrow3d.o getvm.o spline.o sgutil.o second.o matrix-lapackdp.o matrix-lapacksubs.o   ../plotlib/libPlt_gDP.a   /usr/local/opt/gcc/lib/gcc/current/libquadmath.a -L/opt/local/lib ../eispack/libeispack.a -L/usr/X11R6/lib -lX11 -static-libgfortran -static-libgcc
+
+mv /usr/local/opt/gcc/lib/gcc/current/libquadmath.0.xdylib /usr/local/opt/gcc/lib/gcc/current/libquadmath.0.dylib
+
+
+OR like this link using ld
+
+ld -o fortsample fortsample.o \
+-no_compact_unwind -arch x86_64 -macosx_version_min 10.12.0 -lSystem \
+/usr/local/gfortran/lib/libgfortran.a /usr/local/gfortran/lib/libquadmath.a \
+/usr/local/gfortran/lib/gcc/x86_64-apple-darwin16/6.3.0/libgcc.a 

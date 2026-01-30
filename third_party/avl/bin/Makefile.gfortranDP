@@ -1,0 +1,225 @@
+#
+# Makefile for AVL3.45 using GNU gfortran
+# H.Youngren 5/12/2023, S.Allmaras 2/24/22
+#
+
+BINDIR = .
+#BINDIR = /home/codes/bin/
+INSTALLCMD = install -s
+
+SRC = ../src
+
+PROGS = avl
+
+AOBJS = avl_heap_inc.o avl_heap.o \
+avl.o aoper.o amode.o amass.o asetup.o \
+amake.o ainput.o aoutput.o aoutmrf.o aero.o atrim.o atpforc.o \
+aic.o cdcl.o airutil.o autil.o aoml.o \
+aplotvl.o aplottp.o aplotmd.o limits.o \
+pltops.o hidden.o \
+plsubs.o \
+obsetup.o \
+userio.o plutil.o arrow3d.o getvm.o \
+spline.o sgutil.o \
+second.o
+
+MLIB =
+MLIBSYS =
+# Original generic matrix solver (slow but self-contained)
+#MATRIX = matrix.o
+
+# Use the lapack solvers for faster matrix solves
+# Single precision
+#MATRIX = matrix-lapacksp.o  
+# Double precision
+MATRIX = matrix-lapackdp.o
+# This requires AVL to be linked with LAPACK and BLAS routines
+
+# Compile selected lapack and blas sources
+MLIB = matrix-lapacksubs.o
+
+# or Link with system lapack and blas libraries
+#MLIBSYS = -llapack -lblas
+# or Link with system openblas libraries
+#MLIBSYS =  -lopenblas
+# Alternatively link with the very fast Intel Math Kernel Library
+#MLIBSSYS = -lmkl
+
+# Other libraries needed
+PLTOBJ = ../plotlib/libPlt.a
+EIGOBJ = ../eispack/libeispack.a
+
+###================================================
+###  Default compilers and flags
+FC = f77
+FFLAGS = -O 
+DP =
+DBG =
+LFLG =
+
+PLTLIB =
+FTNLIB =
+#Subroutine SECOND source file
+SECOND = second_g77.f
+
+##--------------------------
+
+# Review flags for desired machine...
+
+##---------------------------------------
+##  Setup for gfortran
+FC = gfortran
+OPT = -O -fomit-frame-pointer
+DP =
+ACHK =
+DBG =
+GFIX =
+MBITS =
+LFLG =
+
+# graphics system libraries (X11 libs and path)
+PLTLIB = -L/opt/X11/lib -lX11
+
+SECOND = second_g77.f
+
+# gfortran array mismatch fix - if needed for GCC/GFORTRAN version > 8
+GFIX = -fallow-argument-mismatch
+
+# debug
+#OPT = -O0
+#DBG= -fbacktrace -Wall -g
+#DBG= -fbacktrace -ggdb
+#ACHK = -fbounds-check -finit-real=inf
+#ACHK = -fbounds-check -finit-real=inf -ffpe-trap=invalid,zero,denormal
+
+PDFLIB = 
+# use this to link with PDF library (change -L library location for your system)
+#PDFLIB = -L/opt/local/lib -lhpdf
+
+PLTOBJ = ../plotlib/libPlt_gSP.a $(PDFLIB)
+
+##--------------------------
+# double precision (compile appropriate libPlt_gDP)
+DP = -fdefault-real-8
+PLTOBJ = ../plotlib/libPlt_gDP.a $(PDFLIB)
+##--------------------------
+
+# use -m32 for 32-bit binary, -m64 for 64-bit (check your system!)
+#MBITS = -m64
+
+FFLAGS = $(OPT) $(MBITS) $(ACHK) $(DP) $(GFIX) $(DBG) 
+FFLGNODP = $(OPT) $(MBITS) $(ACHK) $(GFIX) $(DBG) 
+
+# to make static executable
+#LFLG = -static
+##---------------------------------------
+
+
+all:	 $(PROGS)
+
+install: $(PROGS)
+	$(INSTALLCMD) $(PROGS) $(BINDIR)
+
+print-%  : ; @echo $* = $($*)
+
+clean:
+	-/bin/rm $(PROGS)
+	-/bin/rm *.o
+	-/bin/rm *.mod
+
+$(SRC)/AVL.INC: $(SRC)/AINDEX.INC
+	touch $(SRC)/AVL.INC
+
+avl: $(AOBJS) $(MATRIX) $(MLIB) 
+	$(FC) -o avl $(AOBJS) $(MATRIX) $(MLIB) $(ALIBS) $(MLIBSYS) $(PLTOBJ) $(EIGOBJ) $(PLTLIB) $(FTNLIB) $(LFLG)
+#	$(INSTALLCMD) avl $(BINDIR)
+
+dtest: dtest.o
+	$(FC) -o dtest dtest.o $(LFLG)
+
+avl.o: $(SRC)/avl.f $(SRC)/AVL.INC $(SRC)/AVLPLT.INC
+	$(FC) -c $(FFLAGS) $(SRC)/avl.f
+aoper.o: $(SRC)/aoper.f $(SRC)/AVL.INC $(SRC)/AVLPLT.INC
+	$(FC) -c $(FFLAGS) $(SRC)/aoper.f
+amode.o: $(SRC)/amode.f $(SRC)/AVL.INC $(SRC)/AVLPLT.INC
+	$(FC) -c $(FFLAGS) $(SRC)/amode.f
+amass.o: $(SRC)/amass.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/amass.f
+asetup.o: $(SRC)/asetup.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/asetup.f
+cdcl.o: $(SRC)/cdcl.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS)  $(SRC)/cdcl.f
+amake.o: $(SRC)/amake.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/amake.f
+ainput.o: $(SRC)/ainput.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/ainput.f
+aoutput.o: $(SRC)/aoutput.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/aoutput.f
+aoutmrf.o: $(SRC)/aoutmrf.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/aoutmrf.f
+aero.o: $(SRC)/aero.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/aero.f
+getvm.o: $(SRC)/getvm.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/getvm.f
+atrim.o: $(SRC)/atrim.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/atrim.f
+atpforc.o: $(SRC)/atpforc.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/atpforc.f
+aoml.o: $(SRC)/aoml.f $(SRC)/AVL.INC
+	$(FC) -c $(FFLAGS) $(SRC)/aoml.f
+aplotvl.o: $(SRC)/aplotvl.f $(SRC)/AVL.INC $(SRC)/AVLPLT.INC $(SRC)/MASKS.INC
+	$(FC) -c $(FFLAGS) $(SRC)/aplotvl.f
+aplottp.o: $(SRC)/aplottp.f $(SRC)/AVL.INC $(SRC)/AVLPLT.INC $(SRC)/MASKS.INC
+	$(FC) -c $(FFLAGS) $(SRC)/aplottp.f
+aplotmd.o: $(SRC)/aplotmd.f $(SRC)/AVL.INC $(SRC)/AVLPLT.INC $(SRC)/MASKS.INC
+	$(FC) -c $(FFLAGS) $(SRC)/aplotmd.f
+limits.o: $(SRC)/limits.f $(SRC)/AVL.INC $(SRC)/AVLPLT.INC
+	$(FC) -c $(FFLAGS) $(SRC)/limits.f
+pltops.o: $(SRC)/pltops.f $(SRC)/AVLPLT.INC
+	$(FC) -c $(FFLAGS) $(SRC)/pltops.f
+plsubs.o: $(SRC)/plsubs.f $(SRC)/AINDEX.INC
+	$(FC) -c $(FFLAGS) $(SRC)/plsubs.f
+hidden.o: $(SRC)/hidden.f
+	$(FC) -c $(FFLAGS) $(SRC)/hidden.f
+	
+matrix.o: $(SRC)/matrix.f
+	$(FC) -c $(FFLAGS)  $(SRC)/matrix.f
+matrix-lapacksp.o: $(SRC)/matrix-lapacksp.f
+	$(FC) -c $(FFLGNODP)  $(SRC)/matrix-lapacksp.f
+matrix-lapackdp.o: $(SRC)/matrix-lapackdp.f
+	$(FC) -c $(FFLAGS)  $(SRC)/matrix-lapackdp.f
+matrix-lapacksubs.o: $(SRC)/matrix-lapacksubs.f
+	$(FC) -c $(FFLGNODP)  $(SRC)/matrix-lapacksubs.f
+
+avl_heap.o: $(SRC)/avl_heap.f90
+	$(FC) -c $(FFLAGS) $(SRC)/avl_heap.f90
+avl_heap_inc.o: $(SRC)/avl_heap_inc.f90
+	$(FC) -c $(FFLAGS) $(SRC)/avl_heap_inc.f90
+
+aic.o: $(SRC)/aic.f
+	$(FC) -c $(FFLAGS) $(SRC)/aic.f
+userio.o: $(SRC)/userio.f
+	$(FC) -c $(FFLAGS) $(SRC)/userio.f
+plutil.o: $(SRC)/plutil.f $(SRC)/MASKS.INC
+	$(FC) -c $(FFLAGS) $(SRC)/plutil.f
+arrow3d.o: $(SRC)/arrow3d.f $(SRC)/MASKS.INC
+	$(FC) -c $(FFLAGS) $(SRC)/arrow3d.f
+
+spline.o: $(SRC)/spline.f
+	$(FC) -c $(FFLAGS)  $(SRC)/spline.f
+sgutil.o: $(SRC)/sgutil.f
+	$(FC) -c $(FFLAGS)  $(SRC)/sgutil.f
+airutil.o: $(SRC)/airutil.f
+	$(FC) -c $(FFLAGS)  $(SRC)/airutil.f
+autil.o: $(SRC)/autil.f
+	$(FC) -c $(FFLAGS)  $(SRC)/autil.f
+
+obsetup.o: $(SRC)/obsetup.f
+	$(FC) -c $(FFLAGS) $(SRC)/obsetup.f
+
+dtest.o: $(SRC)/dtest.f
+	$(FC) -c $(FFLAGS) $(SRC)/dtest.f
+
+second.o: $(SRC)/$(SECOND)
+	cp $(SRC)/$(SECOND) $(SRC)/second.f
+	$(FC) -c $(FFLAGS) $(SRC)/second.f

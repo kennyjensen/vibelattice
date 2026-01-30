@@ -1,0 +1,8 @@
+For Ubuntu fast math libraries
+
+for LAPACK/BLAS
+sudo apt-get install liblapack-dev
+
+for OPENBLAS (very fast)
+sudo apt-get install libopenblas-dev
+
