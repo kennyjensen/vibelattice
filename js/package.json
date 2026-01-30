@@ -1,0 +1,13 @@
+{
+  "name": "vibelattice-avl-port",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "node ./wasm/build_wasm.js",
+    "build:fortran": "make -C ../third_party/avl/ref",
+    "test": "node --test ./test/*.test.mjs"
+  },
+  "devDependencies": {
+    "wabt": "^1.0.32"
+  }
+}

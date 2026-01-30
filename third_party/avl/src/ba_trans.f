@@ -1,5 +1,5 @@
 
-      subroutine ba2wa_mat(alfa,beta,p,p_a,p_b)
+      subroutine ba2wa_mat(alfa,beta,binv,p,p_a,p_b)
 c-------------------------------------------------------
 c     calculates body axis to wind axis transformation matrix.
 c     Input:    alfa, beta
@@ -13,7 +13,7 @@ c      Z_wa     [       ]  Z_ba
 c
 c-------------------------------------------------------
 
-      real alfa, beta
+      real alfa, beta, binv
       real p(3,3), p_a(3,3), p_b(3,3)
 
       sina = sin(alfa)

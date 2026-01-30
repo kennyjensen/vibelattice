@@ -1,0 +1,691 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { CROSS, DOT } from './aic.js';
+import { CDCL } from './cdcl.js';
+import { TPFORC } from './atpforc.js';
+import { SFFORC, BDFORC } from './aero.js';
+
+function writeF32(view, offset, arr) {
+  view.set(arr, offset / 4);
+}
+
+function writeI32(view, offset, arr) {
+  view.set(arr, offset / 4);
+}
+
+function readF32(view, offset, length) {
+  return Float32Array.from(view.subarray(offset / 4, offset / 4 + length));
+}
+
+function makeAllocator(start = 4096) {
+  let offset = start;
+  return function alloc(bytes, align = 4) {
+    const aligned = (offset + (align - 1)) & ~(align - 1);
+    offset = aligned + bytes;
+    return aligned;
+  };
+}
+
+const SCALAR_F32_FIELDS = [
+  'PI',
+  'ALFA',
+  'BETA',
+  'MACH',
+  'AMACH',
+  'YSYM',
+  'ZSYM',
+  'VRCOREC',
+  'VRCOREW',
+  'SREF',
+  'CREF',
+  'BREF',
+  'CDREF',
+  'CDTOT',
+  'CYTOT',
+  'CLTOT',
+  'CDVTOT',
+  'CDTOT_A',
+  'CLTOT_A',
+  'CLFF',
+  'CYFF',
+  'CDFF',
+  'SPANEF',
+];
+
+const SCALAR_I32_FIELDS = [
+  'IYSYM',
+  'IZSYM',
+  'NSTRIP',
+  'NVOR',
+  'NSURF',
+  'NBODY',
+  'NCONTROL',
+  'NDESIGN',
+  'NUMAX',
+  'NL',
+  'NLNODE',
+  'OUTPUT_PTR',
+];
+
+const SCALAR_BOOL_FIELDS = [
+  'LTRFORCE',
+  'LNFLD_WV',
+  'LVISC',
+];
+
+const ARRAY_I32_FIELDS = [
+  'IJFRST',
+  'NVSTRP',
+  'JFRST',
+  'NJ',
+  'LSSURF',
+  'IMAGS',
+  'LNCOMP',
+  'LFRST',
+  'NLNODE',
+];
+
+const ARRAY_BOOL_FIELDS = [
+  'LFLOAD',
+  'LVISCSTRP',
+];
+
+const ARRAY_F32_FIELDS = [
+  'XYZREF',
+  'VINF',
+  'VINF_A',
+  'VINF_B',
+  'WROT',
+  'CFTOT',
+  'CMTOT',
+  'CHORD',
+  'WSTRIP',
+  'CHORD1',
+  'CHORD2',
+  'RLE1',
+  'RLE2',
+  'RLE',
+  'ENSY',
+  'ENSZ',
+  'ESS',
+  'AINC',
+  'XSREF',
+  'YSREF',
+  'ZSREF',
+  'SSURF',
+  'CAVESURF',
+  'RV1',
+  'RV2',
+  'RV',
+  'RC',
+  'DXV',
+  'ENV',
+  'ENV_D',
+  'ENV_G',
+  'VV',
+  'VV_U',
+  'VV_D',
+  'VV_G',
+  'WV',
+  'WV_U',
+  'WV_D',
+  'WV_G',
+  'GAM',
+  'GAM_U',
+  'GAM_D',
+  'GAM_G',
+  'DCP',
+  'DCP_U',
+  'DCP_D',
+  'DCP_G',
+  'DCPB',
+  'CNC',
+  'CNC_U',
+  'CNC_D',
+  'CNC_G',
+  'PHINGE',
+  'VHINGE',
+  'DCONTROL',
+  'CF_LSTRP',
+  'CM_LSTRP',
+  'CFSTRP',
+  'CMSTRP',
+  'CDSTRP',
+  'CYSTRP',
+  'CLSTRP',
+  'CDST_A',
+  'CYST_A',
+  'CLST_A',
+  'CDST_U',
+  'CYST_U',
+  'CLST_U',
+  'CFST_U',
+  'CMST_U',
+  'CDST_D',
+  'CYST_D',
+  'CLST_D',
+  'CFST_D',
+  'CMST_D',
+  'CDST_G',
+  'CYST_G',
+  'CLST_G',
+  'CFST_G',
+  'CMST_G',
+  'CL_LSTRP',
+  'CD_LSTRP',
+  'CMC4_LSTRP',
+  'CA_LSTRP',
+  'CN_LSTRP',
+  'CLT_LSTRP',
+  'CLA_LSTRP',
+  'CMLE_LSTRP',
+  'CDV_LSTRP',
+  'CF_LSRF',
+  'CM_LSRF',
+  'CDSURF',
+  'CYSURF',
+  'CLSURF',
+  'CFSURF',
+  'CMSURF',
+  'CDVSURF',
+  'CDS_A',
+  'CYS_A',
+  'CLS_A',
+  'CDS_U',
+  'CYS_U',
+  'CLS_U',
+  'CFS_U',
+  'CMS_U',
+  'CDS_D',
+  'CYS_D',
+  'CLS_D',
+  'CFS_D',
+  'CMS_D',
+  'CDS_G',
+  'CYS_G',
+  'CLS_G',
+  'CFS_G',
+  'CMS_G',
+  'CL_LSRF',
+  'CD_LSRF',
+  'CLCD',
+  'CHINGE',
+  'CHINGE_U',
+  'CHINGE_D',
+  'CHINGE_G',
+  'CDTOT_U',
+  'CYTOT_U',
+  'CLTOT_U',
+  'CDTOT_D',
+  'CYTOT_D',
+  'CLTOT_D',
+  'CDTOT_G',
+  'CYTOT_G',
+  'CLTOT_G',
+  'CFTOT_U',
+  'CMTOT_U',
+  'CFTOT_D',
+  'CMTOT_D',
+  'CFTOT_G',
+  'CMTOT_G',
+  'CDBDY',
+  'CYBDY',
+  'CLBDY',
+  'CFBDY',
+  'CMBDY',
+  'RADL',
+  'RL',
+  'SRC',
+  'SRC_U',
+];
+
+const LAYOUT_FIELDS = [
+  ...SCALAR_F32_FIELDS,
+  ...SCALAR_I32_FIELDS,
+  ...SCALAR_BOOL_FIELDS,
+  ...ARRAY_I32_FIELDS,
+  ...ARRAY_BOOL_FIELDS,
+  ...ARRAY_F32_FIELDS,
+];
+
+export async function loadAeroWasm(options = {}) {
+  const debugSync = options.debugSync ?? process.env.AERO_WASM_DEBUG === '1';
+  const wasmPath = options.wasmPath
+    ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'dist', 'aero.wasm');
+  const wasmBytes = await fs.readFile(wasmPath);
+
+  const imports = {
+    env: {
+      sin_f32: (x) => Math.fround(Math.sin(x)),
+      cos_f32: (x) => Math.fround(Math.cos(x)),
+      sqrt_f32: (x) => Math.fround(Math.sqrt(x)),
+      cross: (uPtr, vPtr, wPtr) => {
+        const mem = imports.env.__mem;
+        const f32 = mem.f32;
+        const u = Float32Array.from(f32.subarray(uPtr / 4, uPtr / 4 + 3));
+        const v = Float32Array.from(f32.subarray(vPtr / 4, vPtr / 4 + 3));
+        const out = CROSS(u, v);
+        f32[wPtr / 4] = out[0];
+        f32[wPtr / 4 + 1] = out[1];
+        f32[wPtr / 4 + 2] = out[2];
+      },
+      dot: (uPtr, vPtr) => {
+        const mem = imports.env.__mem;
+        const f32 = mem.f32;
+        const u = Float32Array.from(f32.subarray(uPtr / 4, uPtr / 4 + 3));
+        const v = Float32Array.from(f32.subarray(vPtr / 4, vPtr / 4 + 3));
+        return DOT(u, v);
+      },
+      cdcl: (clcdPtr, clv, outPtr) => {
+        const mem = imports.env.__mem;
+        const f32 = mem.f32;
+        const clcd = Float32Array.from(f32.subarray(clcdPtr / 4, clcdPtr / 4 + 6));
+        const res = CDCL(clcd, clv);
+        f32[outPtr / 4] = res.cd;
+        f32[outPtr / 4 + 1] = res.cd_cl;
+      },
+      tpforc_js: () => {
+        const mem = imports.env.__mem;
+        if (typeof mem.syncStateFromMemory === 'function') {
+          mem.syncStateFromMemory();
+        }
+        const state = mem.state;
+        const res = TPFORC(state);
+        state.CLFF = res.CLFF;
+        state.CYFF = res.CYFF;
+        state.CDFF = res.CDFF;
+        state.SPANEF = res.SPANEF;
+        state.DWWAKE.set(res.DWWAKE);
+        state.CLFF_U.set(res.CLFF_U);
+        state.CYFF_U.set(res.CYFF_U);
+        state.CDFF_U.set(res.CDFF_U);
+        state.SPANEF_U.set(res.SPANEF_U);
+        mem.syncState();
+      },
+      sfforc_js: () => {
+        const mem = imports.env.__mem;
+        const state = mem.state;
+        if (debugSync) {
+          const cftotPtr = mem.i32[(mem.statePtr + mem.offsets.CFTOT) / 4];
+          const pre = Float32Array.from(mem.f32.subarray((cftotPtr / 4) - 1, (cftotPtr / 4) + 3));
+          const memCftot = Float32Array.from(mem.f32.subarray(cftotPtr / 4, cftotPtr / 4 + 3));
+          console.log('[sfforc_js] pre state.CFTOT', Array.from(state.CFTOT));
+          console.log('[sfforc_js] pre mem CFTOT', Array.from(memCftot));
+          console.log('[sfforc_js] pre mem around CFTOT', Array.from(pre));
+        }
+        SFFORC(state);
+        if (debugSync) {
+          console.log('[sfforc_js] post state.CFTOT', Array.from(state.CFTOT));
+        }
+        mem.syncState();
+        if (debugSync) {
+          const cftotPtr = mem.i32[(mem.statePtr + mem.offsets.CFTOT) / 4];
+          const memCftot = Float32Array.from(mem.f32.subarray(cftotPtr / 4, cftotPtr / 4 + 3));
+          console.log('[sfforc_js] post mem CFTOT', Array.from(memCftot));
+        }
+      },
+      bdforc_js: () => {
+        const mem = imports.env.__mem;
+        const state = mem.state;
+        BDFORC(state);
+        mem.syncState();
+      },
+    },
+  };
+
+  const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
+  const { memory, AERO, VINFAB, BDFORC, set_sfforc_js } = instance.exports;
+  const f32 = new Float32Array(memory.buffer);
+  const i32 = new Int32Array(memory.buffer);
+  imports.env.__mem = { f32, i32 };
+  syncStateToMemory.__mem = imports.env.__mem;
+
+  function allocState(state) {
+    const alloc = makeAllocator();
+    const offsets = {};
+
+    offsets.LAYOUT = 0;
+    let structOffset = 4;
+
+    function addOffset(name) {
+      offsets[name] = structOffset;
+      structOffset += 4;
+    }
+
+    SCALAR_F32_FIELDS.filter((name) => !Object.hasOwn(offsets, name)).forEach(addOffset);
+    SCALAR_I32_FIELDS.filter((name) => !Object.hasOwn(offsets, name)).forEach(addOffset);
+    SCALAR_BOOL_FIELDS.forEach(addOffset);
+    ARRAY_I32_FIELDS.filter((name) => !Object.hasOwn(offsets, name)).forEach(addOffset);
+    ARRAY_BOOL_FIELDS.forEach(addOffset);
+    ARRAY_F32_FIELDS.forEach(addOffset);
+
+    const base = alloc(structOffset);
+
+    function writeScalarF32(name) {
+      if (name in state) {
+        writeF32(f32, base + offsets[name], [state[name]]);
+      }
+    }
+
+    function writeScalarI32(name) {
+      if (name in state) {
+        if (name === 'NL' && state[name] && typeof state[name].length === 'number') {
+          const arr = Int32Array.from(state[name]);
+          const ptr = alloc(arr.length * 4);
+          writeI32(i32, base + offsets[name], [ptr]);
+          writeI32(i32, ptr, arr);
+          return;
+        }
+        writeI32(i32, base + offsets[name], [state[name] | 0]);
+      }
+    }
+
+    function writeScalarBool(name) {
+      if (name in state) {
+        writeI32(i32, base + offsets[name], [state[name] ? 1 : 0]);
+      }
+    }
+
+    SCALAR_F32_FIELDS.forEach(writeScalarF32);
+    SCALAR_I32_FIELDS.forEach(writeScalarI32);
+    SCALAR_BOOL_FIELDS.forEach(writeScalarBool);
+
+    function allocArrayField(name, kind) {
+      const arr = state[name];
+      if (name === 'NLNODE' && typeof arr === 'number') {
+        return;
+      }
+      if (!arr || typeof arr.length !== 'number' || arr.length === 0) {
+        writeI32(i32, base + offsets[name], [0]);
+        return;
+      }
+      const ptr = alloc(arr.length * 4);
+      writeI32(i32, base + offsets[name], [ptr]);
+      if (kind === 'f32') {
+        writeF32(f32, ptr, arr);
+      } else if (kind === 'i32') {
+        writeI32(i32, ptr, arr);
+      } else if (kind === 'bool') {
+        const tmp = Int32Array.from(arr, (v) => (v ? 1 : 0));
+        writeI32(i32, ptr, tmp);
+      }
+    }
+
+    ARRAY_I32_FIELDS.forEach((name) => allocArrayField(name, 'i32'));
+    ARRAY_BOOL_FIELDS.forEach((name) => allocArrayField(name, 'bool'));
+    ARRAY_F32_FIELDS.forEach((name) => allocArrayField(name, 'f32'));
+
+    const layoutPtr = alloc(LAYOUT_FIELDS.length * 4);
+    for (let i = 0; i < LAYOUT_FIELDS.length; i += 1) {
+      const name = LAYOUT_FIELDS[i];
+      writeI32(i32, layoutPtr + i * 4, [offsets[name] ?? 0]);
+    }
+    writeI32(i32, base + offsets.LAYOUT, [layoutPtr]);
+
+    const outputBase = alloc(256);
+    writeI32(i32, base + offsets.OUTPUT_PTR, [outputBase]);
+    const outputOffsets = {
+      CDTOT: outputBase + 0,
+      CYTOT: outputBase + 4,
+      CLTOT: outputBase + 8,
+      CFTOT: outputBase + 12,
+      CMTOT: outputBase + 24,
+      CDVTOT: outputBase + 36,
+      CLFF: outputBase + 40,
+      CYFF: outputBase + 44,
+      CDFF: outputBase + 48,
+      SPANEF: outputBase + 52,
+      DCP: outputBase + 56,
+      CNC: outputBase + 68,
+      CFSTRP: outputBase + 80,
+      CMSTRP: outputBase + 92,
+      CDSTRP: outputBase + 104,
+      CYSTRP: outputBase + 108,
+      CLSTRP: outputBase + 112,
+      CDVSURF: outputBase + 116,
+      CDSURF: outputBase + 120,
+      CYSURF: outputBase + 124,
+      CLSURF: outputBase + 128,
+    };
+
+    return { base, offsets, outputOffsets };
+  }
+
+  function VINFAB_wasm(state) {
+    const mem = allocState(state);
+    imports.env.__mem.state = state;
+    imports.env.__mem.outputOffsets = mem.outputOffsets;
+    imports.env.__mem.statePtr = mem.base;
+    imports.env.__mem.offsets = mem.offsets;
+    imports.env.__mem.syncState = () => syncStateToMemory(state, mem.base, mem.offsets);
+    imports.env.__mem.syncStateFromMemory = () => syncStateFromMemory(state, mem.base, mem.offsets);
+    VINFAB(mem.base);
+    const vinfPtr = i32[(mem.base + mem.offsets.VINF) / 4];
+    const vinfAPtr = i32[(mem.base + mem.offsets.VINF_A) / 4];
+    const vinfBPtr = i32[(mem.base + mem.offsets.VINF_B) / 4];
+    return {
+      VINF: readF32(f32, vinfPtr, 3),
+      VINF_A: readF32(f32, vinfAPtr, 3),
+      VINF_B: readF32(f32, vinfBPtr, 3),
+    };
+  }
+
+  if (typeof set_sfforc_js === 'function') {
+    set_sfforc_js(0);
+  }
+
+  function AERO_wasm(state) {
+    const mem = allocState(state);
+    imports.env.__mem.state = state;
+    imports.env.__mem.outputOffsets = mem.outputOffsets;
+    imports.env.__mem.statePtr = mem.base;
+    imports.env.__mem.offsets = mem.offsets;
+    imports.env.__mem.syncState = () => syncStateToMemory(state, mem.base, mem.offsets);
+    imports.env.__mem.syncStateFromMemory = () => syncStateFromMemory(state, mem.base, mem.offsets);
+    AERO(mem.base);
+    if (options.debugSync ?? process.env.AERO_WASM_DEBUG === '1') {
+      const cftotPtr = imports.env.__mem.i32[(mem.base + mem.offsets.CFTOT) / 4];
+      const memCftot = Float32Array.from(imports.env.__mem.f32.subarray(cftotPtr / 4, cftotPtr / 4 + 3));
+      console.log('[AERO_wasm] mem CFTOT', Array.from(memCftot));
+    }
+    imports.env.__mem.syncStateFromMemory();
+    if (options.debugSync ?? process.env.AERO_WASM_DEBUG === '1') {
+      console.log('[AERO_wasm] state CFTOT', Array.from(state.CFTOT));
+    }
+    return {
+      CDTOT: state.CDTOT,
+      CYTOT: state.CYTOT,
+      CLTOT: state.CLTOT,
+      CFTOT: Float32Array.from(state.CFTOT),
+      CMTOT: Float32Array.from(state.CMTOT),
+      CDVTOT: state.CDVTOT,
+      CLFF: state.CLFF,
+      CYFF: state.CYFF,
+      CDFF: state.CDFF,
+      SPANEF: state.SPANEF,
+      DCP: Float32Array.from(state.DCP),
+      CNC: Float32Array.from(state.CNC),
+      CFSTRP: Float32Array.from(state.CFSTRP),
+      CMSTRP: Float32Array.from(state.CMSTRP),
+      CDSTRP: Float32Array.from(state.CDSTRP),
+      CYSTRP: Float32Array.from(state.CYSTRP),
+      CLSTRP: Float32Array.from(state.CLSTRP),
+      CDVSURF: Float32Array.from(state.CDVSURF),
+      CDSURF: Float32Array.from(state.CDSURF),
+      CYSURF: Float32Array.from(state.CYSURF),
+      CLSURF: Float32Array.from(state.CLSURF),
+    };
+  }
+
+  function BDFORC_wasm(state) {
+    const mem = allocState(state);
+    imports.env.__mem.state = state;
+    imports.env.__mem.outputOffsets = mem.outputOffsets;
+    imports.env.__mem.statePtr = mem.base;
+    imports.env.__mem.offsets = mem.offsets;
+    imports.env.__mem.syncState = () => syncStateToMemory(state, mem.base, mem.offsets);
+    imports.env.__mem.syncStateFromMemory = () => syncStateFromMemory(state, mem.base, mem.offsets);
+    BDFORC(mem.base);
+    imports.env.__mem.syncStateFromMemory();
+    return {
+      CDBDY: Float32Array.from(state.CDBDY),
+      CYBDY: Float32Array.from(state.CYBDY),
+      CLBDY: Float32Array.from(state.CLBDY),
+      CFBDY: Float32Array.from(state.CFBDY),
+      CMBDY: Float32Array.from(state.CMBDY),
+      DCPB: Float32Array.from(state.DCPB),
+      CDTOT: state.CDTOT,
+      CYTOT: state.CYTOT,
+      CLTOT: state.CLTOT,
+      CFTOT: Float32Array.from(state.CFTOT),
+      CMTOT: Float32Array.from(state.CMTOT),
+      CDTOT_U: Float32Array.from(state.CDTOT_U),
+      CYTOT_U: Float32Array.from(state.CYTOT_U),
+      CLTOT_U: Float32Array.from(state.CLTOT_U),
+      CFTOT_U: Float32Array.from(state.CFTOT_U),
+      CMTOT_U: Float32Array.from(state.CMTOT_U),
+    };
+  }
+
+  return { VINFAB: VINFAB_wasm, AERO: AERO_wasm, BDFORC: BDFORC_wasm, memory };
+}
+
+function syncStateToMemory(state, statePtr, offsets) {
+  const mem = syncStateToMemory.__mem;
+  const { f32, i32 } = mem;
+  const syncScalars = [
+    'CDTOT',
+    'CYTOT',
+    'CLTOT',
+    'CDVTOT',
+    'CDTOT_A',
+    'CLTOT_A',
+    'CLFF',
+    'CYFF',
+    'CDFF',
+    'SPANEF',
+  ];
+  const syncArrays = [
+    'CFTOT',
+    'CMTOT',
+    'CDBDY',
+    'CYBDY',
+    'CLBDY',
+    'CFBDY',
+    'CMBDY',
+    'DCPB',
+    'CHINGE',
+    'CHINGE_U',
+    'CHINGE_D',
+    'CHINGE_G',
+    'CDTOT_U',
+    'CYTOT_U',
+    'CLTOT_U',
+    'CFTOT_U',
+    'CMTOT_U',
+    'CDTOT_D',
+    'CYTOT_D',
+    'CLTOT_D',
+    'CFTOT_D',
+    'CMTOT_D',
+    'CDTOT_G',
+    'CYTOT_G',
+    'CLTOT_G',
+    'CFTOT_G',
+    'CMTOT_G',
+    'DCP',
+    'CNC',
+    'CFSTRP',
+    'CMSTRP',
+    'CDSTRP',
+    'CYSTRP',
+    'CLSTRP',
+    'CDVSURF',
+    'CDSURF',
+    'CYSURF',
+    'CLSURF',
+  ];
+
+  for (const name of syncScalars) {
+    if (!(name in offsets) || !(name in state)) continue;
+    f32[(statePtr + offsets[name]) / 4] = state[name];
+  }
+
+  for (const name of syncArrays) {
+    if (!(name in offsets) || !(name in state)) continue;
+    const arr = state[name];
+    const ptr = i32[(statePtr + offsets[name]) / 4];
+    if (!ptr || !arr) continue;
+    f32.set(arr, ptr / 4);
+  }
+}
+
+function syncStateFromMemory(state, statePtr, offsets) {
+  const mem = syncStateToMemory.__mem;
+  const { f32, i32 } = mem;
+  const syncScalars = [
+    'CDTOT',
+    'CYTOT',
+    'CLTOT',
+    'CDVTOT',
+    'CDTOT_A',
+    'CLTOT_A',
+    'CLFF',
+    'CYFF',
+    'CDFF',
+    'SPANEF',
+  ];
+  const syncArrays = [
+    'CFTOT',
+    'CMTOT',
+    'CDBDY',
+    'CYBDY',
+    'CLBDY',
+    'CFBDY',
+    'CMBDY',
+    'DCPB',
+    'CHINGE',
+    'CHINGE_U',
+    'CHINGE_D',
+    'CHINGE_G',
+    'CDTOT_U',
+    'CYTOT_U',
+    'CLTOT_U',
+    'CFTOT_U',
+    'CMTOT_U',
+    'CDTOT_D',
+    'CYTOT_D',
+    'CLTOT_D',
+    'CFTOT_D',
+    'CMTOT_D',
+    'CDTOT_G',
+    'CYTOT_G',
+    'CLTOT_G',
+    'CFTOT_G',
+    'CMTOT_G',
+    'DCP',
+    'CNC',
+    'CFSTRP',
+    'CMSTRP',
+    'CDSTRP',
+    'CYSTRP',
+    'CLSTRP',
+    'CDVSURF',
+    'CDSURF',
+    'CYSURF',
+    'CLSURF',
+  ];
+
+  for (const name of syncScalars) {
+    if (!(name in offsets) || !(name in state)) continue;
+    state[name] = f32[(statePtr + offsets[name]) / 4];
+  }
+
+  for (const name of syncArrays) {
+    if (!(name in offsets) || !(name in state)) continue;
+    const arr = state[name];
+    const ptr = i32[(statePtr + offsets[name]) / 4];
+    if (!ptr || !arr) continue;
+    arr.set(f32.subarray(ptr / 4, ptr / 4 + arr.length));
+  }
+}

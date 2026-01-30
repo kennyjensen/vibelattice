@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AVL Static JS - Trim & Geometry</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="app">
+    <aside class="panel-col">
+      <div class="panel">
+        <div class="panel-title">File</div>
+        <div class="panel-body">
+          <div class="row">
+            <label class="btn">
+              Load AVL
+              <input id="fileInput" type="file" accept=".avl,.txt,.dat,text/plain,application/octet-stream,*/*" hidden />
+            </label>
+            <button id="saveBtn" class="btn ghost" type="button">Save AVL</button>
+          </div>
+          <div class="file-meta" id="fileMeta">No file loaded.</div>
+          <textarea id="fileText" class="code" rows="8" placeholder="AVL file text appears here..."></textarea>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Flight Conditions</div>
+        <div class="panel-body grid-2">
+          <label>Bank angle (deg)
+            <input id="bank" type="number" step="0.1" value="5" />
+          </label>
+          <label>CL
+            <input id="cl" type="number" step="0.01" value="0.6" />
+          </label>
+          <label>Velocity (m/s)
+            <input id="vel" type="number" step="0.1" value="30" />
+          </label>
+          <label>Mass (kg)
+            <input id="mass" type="number" step="0.1" value="120" />
+          </label>
+          <label>Air density (kg/m^3)
+            <input id="rho" type="number" step="0.001" value="1.225" />
+          </label>
+          <label>Gravity (m/s^2)
+            <input id="gee" type="number" step="0.01" value="9.81" />
+          </label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Constraints & Trim</div>
+        <div class="panel-body">
+          <div class="subhead">Trim variables</div>
+          <div class="grid-2">
+            <label>Alpha (deg)
+              <input id="alpha" type="number" step="0.1" value="2.0" />
+            </label>
+            <label>Beta (deg)
+              <input id="beta" type="number" step="0.1" value="0.0" />
+            </label>
+            <label>p (deg/s)
+              <input id="p" type="number" step="0.1" value="0.0" />
+            </label>
+            <label>q (deg/s)
+              <input id="q" type="number" step="0.1" value="0.0" />
+            </label>
+            <label>r (deg/s)
+              <input id="r" type="number" step="0.1" value="0.0" />
+            </label>
+            <label>Elevator (deg)
+              <input id="de" type="number" step="0.1" value="0.0" />
+            </label>
+            <label>Aileron (deg)
+              <input id="da" type="number" step="0.1" value="0.0" />
+            </label>
+            <label>Rudder (deg)
+              <input id="dr" type="number" step="0.1" value="0.0" />
+            </label>
+          </div>
+
+          <div class="subhead">Constraints</div>
+          <div class="grid-2">
+            <label>CL target
+              <input id="clc" type="number" step="0.01" value="0.6" />
+            </label>
+            <label>CMx target
+              <input id="cmx" type="number" step="0.001" value="0.0" />
+            </label>
+            <label>CMy target
+              <input id="cmy" type="number" step="0.001" value="0.0" />
+            </label>
+            <label>CMz target
+              <input id="cmz" type="number" step="0.001" value="0.0" />
+            </label>
+          </div>
+
+          <div class="row">
+            <button id="trimBtn" class="btn primary" type="button">Trim</button>
+            <label class="toggle">
+              <input id="execToggle" type="checkbox" />
+              <span>Run full EXEC</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-col">
+      <div class="stage stage-geo">
+        <div class="stage-header">
+          <div>
+            <div class="stage-title">Geometry</div>
+            <div class="stage-sub">Drag to orbit, scroll to zoom, right-drag to pan</div>
+          </div>
+          <div class="pill">3D Viewer</div>
+        </div>
+        <div id="viewer" class="viewer">
+          <div class="viewer-overlay">
+            <button class="viewer-btn icon-btn" id="viewerPan" type="button" title="Pan mode">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 2v4m0 12v4m10-10h-4M6 12H2M7 7l-3 3 3 3M17 7l3 3-3 3M7 17l3 3 3-3M17 17l-3 3-3-3" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerZoomIn" type="button" title="Zoom in">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6" />
+                <path d="M11 8v6m-3-3h6m4.5 4.5-3.5-3.5" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerZoomOut" type="button" title="Zoom out">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6" />
+                <path d="M8 11h6m4.5 4.5-3.5-3.5" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerHome" type="button" title="Fit to model">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 11.5 12 5l8 6.5" />
+                <path d="M7 10.5v7h10v-7" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerView" type="button" title="Cycle view">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 12a8 8 0 0 1 14-5" />
+                <path d="M20 7v-5h-5" />
+                <path d="M20 12a8 8 0 0 1-14 5" />
+                <path d="M4 17v5h5" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerGrid" type="button" title="Cycle grid">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="4" width="16" height="16" rx="1.5" />
+                <path d="M4 12h16M12 4v16" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="stage-header">
+          <div>
+            <div class="stage-title">Trefftz Plane</div>
+            <div class="stage-sub">Projected downwash / lift distribution</div>
+          </div>
+          <div class="pill">Plot</div>
+        </div>
+        <canvas id="trefftz" class="plot" width="1200" height="300"></canvas>
+      </div>
+    </main>
+
+    <aside class="output-col">
+      <div class="panel output">
+        <div class="panel-title">Trim Output</div>
+        <div class="panel-body">
+          <div class="kvs" id="trimOutput">
+            <div class="kv"><span>Alpha</span><strong id="outAlpha">-</strong></div>
+            <div class="kv"><span>Beta</span><strong id="outBeta">-</strong></div>
+            <div class="kv"><span>Bank</span><strong id="outBank">-</strong></div>
+            <div class="kv"><span>CL</span><strong id="outCL">-</strong></div>
+            <div class="kv"><span>CD</span><strong id="outCD">-</strong></div>
+            <div class="kv"><span>CY</span><strong id="outCY">-</strong></div>
+            <div class="kv"><span>Velocity</span><strong id="outV">-</strong></div>
+            <div class="kv"><span>Turn radius</span><strong id="outRad">-</strong></div>
+            <div class="kv"><span>Load factor</span><strong id="outFac">-</strong></div>
+            <div class="kv"><span>Pitch (theta)</span><strong id="outThe">-</strong></div>
+            <div class="kv"><span>CM (x,y,z)</span><strong id="outCM">-</strong></div>
+            <div class="kv"><span>Rates (p,q,r)</span><strong id="outRates">-</strong></div>
+            <div class="kv"><span>Deflections</span><strong id="outDef">-</strong></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel output">
+        <div class="panel-title">Stability Derivatives</div>
+        <div class="panel-body">
+          <pre class="mono-output" id="outStability">-</pre>
+        </div>
+      </div>
+      <div class="panel output">
+        <div class="panel-title">Body-Axis Derivatives</div>
+        <div class="panel-body">
+          <pre class="mono-output" id="outBodyDeriv">-</pre>
+        </div>
+      </div>
+      <div class="panel output">
+        <div class="panel-title">Total Forces</div>
+        <div class="panel-body">
+          <pre class="mono-output" id="outForcesTotal">-</pre>
+        </div>
+      </div>
+      <div class="panel output">
+        <div class="panel-title">Surface Forces</div>
+        <div class="panel-body">
+          <pre class="mono-output" id="outForcesSurface">-</pre>
+        </div>
+      </div>
+      <div class="panel output">
+        <div class="panel-title">Strip Forces</div>
+        <div class="panel-body">
+          <pre class="mono-output" id="outForcesStrip">-</pre>
+        </div>
+      </div>
+      <div class="panel output">
+        <div class="panel-title">Element Forces</div>
+        <div class="panel-body">
+          <pre class="mono-output" id="outForcesElement">-</pre>
+        </div>
+      </div>
+      <div class="panel output">
+        <div class="panel-title">Body Forces</div>
+        <div class="panel-body">
+          <pre class="mono-output" id="outForcesBody">-</pre>
+        </div>
+      </div>
+      <div class="panel output">
+        <div class="panel-title">Hinge Moments</div>
+        <div class="panel-body">
+          <pre class="mono-output" id="outHinge">-</pre>
+        </div>
+      </div>
+      <div class="panel output">
+        <div class="panel-title">Debug</div>
+        <div class="panel-body">
+          <div class="row">
+            <button id="clearDebug" class="btn ghost" type="button">Clear</button>
+          </div>
+          <pre id="debugLog" class="debug-log"></pre>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    (function () {
+      const el = document.getElementById('debugLog');
+      const format = (msg) => `[BOOT ${new Date().toLocaleTimeString()}] ${msg}`;
+      const log = (msg) => {
+        if (el) {
+          el.textContent += `${format(msg)}\n`;
+          el.scrollTop = el.scrollHeight;
+        }
+        console.log(format(msg));
+      };
+      window.__debugLog = window.__debugLog || log;
+      log('Boot script running.');
+      window.addEventListener('error', (evt) => {
+        log(`Window error: ${evt.message}`);
+      });
+      window.addEventListener('unhandledrejection', (evt) => {
+        log(`Window rejection: ${evt.reason?.message ?? evt.reason}`);
+      });
+    })();
+  </script>
+  <script type="module">
+    import('./app.js')
+      .then(() => window.__debugLog?.('App module loaded.'))
+      .catch((err) => window.__debugLog?.(`App module failed: ${err?.message ?? err}`));
+  </script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+      SUBROUTINE CFRAC(IR,NRUN,PROMPT,NPR)
+      INTEGER IR, NRUN, NPR
+      CHARACTER*(*) PROMPT
+      PROMPT = 'case'
+      NPR = 4
+      RETURN
+      END
+
+      SUBROUTINE ASKC(PROMPT,COM,CARG)
+      CHARACTER*(*) PROMPT, COM, CARG
+      COM = '    '
+      CARG = ' '
+      RETURN
+      END
+
+      SUBROUTINE ASKR(PROMPT,VAL)
+      CHARACTER*(*) PROMPT
+      REAL VAL
+      RETURN
+      END
+
+      SUBROUTINE GETINT(COM,IINP,NINP,ERROR)
+      CHARACTER*(*) COM
+      INTEGER IINP(*), NINP
+      LOGICAL ERROR
+      ERROR = .TRUE.
+      RETURN
+      END
+
+      SUBROUTINE GETFLT(CARG,RINP,NINP,ERROR)
+      CHARACTER*(*) CARG
+      REAL RINP(*)
+      INTEGER NINP
+      LOGICAL ERROR
+      ERROR = .TRUE.
+      RETURN
+      END
+
+      SUBROUTINE RCOPY(JR1,JR2)
+      INTEGER JR1, JR2
+      RETURN
+      END
