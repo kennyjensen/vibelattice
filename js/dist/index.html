@@ -34,74 +34,56 @@
 
       <div class="panel">
         <div class="panel-title">Flight Conditions</div>
-        <div class="panel-body grid-2">
-          <label>Bank angle (deg)
-            <input id="bank" type="number" step="0.1" value="5" />
+        <div class="panel-body">
+          <label>Flight mode
+            <select id="flightMode">
+              <option value="level">Level or banked</option>
+              <option value="looping">Looping</option>
+            </select>
           </label>
-          <label>CL
-            <input id="cl" type="number" step="0.01" value="0.6" />
-          </label>
-          <label>Velocity (m/s)
-            <input id="vel" type="number" step="0.1" value="30" />
-          </label>
-          <label>Mass (kg)
-            <input id="mass" type="number" step="0.1" value="120" />
-          </label>
-          <label>Air density (kg/m^3)
-            <input id="rho" type="number" step="0.001" value="1.225" />
-          </label>
-          <label>Gravity (m/s^2)
-            <input id="gee" type="number" step="0.01" value="9.81" />
-          </label>
+          <div id="levelInputs" class="grid-2">
+            <label>Bank angle (deg)
+              <input id="bank" type="number" step="0.1" value="0" />
+            </label>
+            <label>CL
+              <input id="cl" type="number" step="0.01" value="0.6" />
+            </label>
+            <label>Velocity (m/s)
+              <input id="vel" type="number" step="0.1" value="30" />
+            </label>
+          </div>
+          <div id="loopInputs" class="grid-2 hidden">
+            <label>CL
+              <input id="clLoop" type="number" step="0.01" value="0.6" />
+            </label>
+            <label>Velocity (m/s)
+              <input id="velLoop" type="number" step="0.1" value="30" />
+            </label>
+            <label>Turn radius (m)
+              <input id="radLoop" type="number" step="0.1" value="0" />
+            </label>
+            <label>Load factor
+              <input id="facLoop" type="number" step="0.01" value="0" />
+            </label>
+          </div>
+          <div class="grid-2">
+            <label>Mass (kg)
+              <input id="mass" type="number" step="0.1" value="120" />
+            </label>
+            <label>Air density (kg/m^3)
+              <input id="rho" type="number" step="0.001" value="1.225" />
+            </label>
+            <label>Gravity (m/s^2)
+              <input id="gee" type="number" step="0.01" value="9.81" />
+            </label>
+          </div>
         </div>
       </div>
 
       <div class="panel">
-        <div class="panel-title">Constraints & Trim</div>
+        <div class="panel-title">Constraints</div>
         <div class="panel-body">
-          <div class="subhead">Trim variables</div>
-          <div class="grid-2">
-            <label>Alpha (deg)
-              <input id="alpha" type="number" step="0.1" value="2.0" />
-            </label>
-            <label>Beta (deg)
-              <input id="beta" type="number" step="0.1" value="0.0" />
-            </label>
-            <label>p (deg/s)
-              <input id="p" type="number" step="0.1" value="0.0" />
-            </label>
-            <label>q (deg/s)
-              <input id="q" type="number" step="0.1" value="0.0" />
-            </label>
-            <label>r (deg/s)
-              <input id="r" type="number" step="0.1" value="0.0" />
-            </label>
-            <label>Elevator (deg)
-              <input id="de" type="number" step="0.1" value="0.0" />
-            </label>
-            <label>Aileron (deg)
-              <input id="da" type="number" step="0.1" value="0.0" />
-            </label>
-            <label>Rudder (deg)
-              <input id="dr" type="number" step="0.1" value="0.0" />
-            </label>
-          </div>
-
-          <div class="subhead">Constraints</div>
-          <div class="grid-2">
-            <label>CL target
-              <input id="clc" type="number" step="0.01" value="0.6" />
-            </label>
-            <label>CMx target
-              <input id="cmx" type="number" step="0.001" value="0.0" />
-            </label>
-            <label>CMy target
-              <input id="cmy" type="number" step="0.001" value="0.0" />
-            </label>
-            <label>CMz target
-              <input id="cmz" type="number" step="0.001" value="0.0" />
-            </label>
-          </div>
+          <div id="constraintTable" class="constraint-table"></div>
 
           <div class="row">
             <button id="trimBtn" class="btn primary" type="button">Trim</button>
@@ -160,6 +142,13 @@
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <rect x="4" y="4" width="16" height="16" rx="1.5" />
                 <path d="M4 12h16M12 4v16" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerCoord" type="button" title="Coordinate frame">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 19h16" />
+                <path d="M5 18l4-4 4 3 6-8" />
+                <path d="M18 6h2v2" />
               </svg>
             </button>
           </div>

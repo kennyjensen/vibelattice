@@ -2,7 +2,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXEC } from './aoper.js';
-import { MAKESURF, ENCALC } from './amake.js';
+import { MAKESURF, ENCALC, SDUPL } from './amake.js';
+import { GETCAM } from './airutil.js';
+import { AKIMA, NRMLIZ } from './sgutil.js';
 
 function parseNumbers(line) {
   return line
@@ -154,6 +156,10 @@ export function parseAVL(text) {
         const vals = parseNumbers(trimmed.slice(4));
         const val2 = vals.length >= 3 ? vals : readValueLine();
         if (val2.length >= 3) surface.translate = [val2[0], val2[1], val2[2]];
+      } else if (subkey === 'NOWA') {
+        surface.nowake = true;
+      } else if (subkey === 'NOLO') {
+        surface.noload = true;
       } else if (subkey === 'SECT') {
         const data = parseNumbers(trimmed.slice(4));
         const vals = data.length >= 5 ? data : readValueLine();
@@ -182,7 +188,9 @@ export function parseAVL(text) {
         }
       } else if (subkey === 'AFIL') {
         if (currentSection) {
-          const apath = trimmed.slice(4).trim() || (nextLine() || '');
+          const parts = trimmed.split(/\s+/);
+          let apath = parts.length > 1 ? parts.slice(1).join(' ') : '';
+          if (!apath) apath = nextLine() || '';
           currentSection.airfoilFile = apath || null;
           if (apath) inlineAirfoils.push(apath);
         }
@@ -190,16 +198,20 @@ export function parseAVL(text) {
         if (currentSection) {
           currentSection.airfoilCoords = readAirfoilBlock();
         }
-      } else if (subkey === 'CONT') {
-        if (currentSection) {
-          const parts = trimmed.split(/\s+/).slice(1);
-          const name = parts.shift() || 'CTRL';
-          const nums = parts.map((v) => Number(v)).filter((v) => Number.isFinite(v));
-          const gain = nums[0] ?? 1.0;
-          const xhinge = nums[1] ?? 0.75;
-          const vhinge = [nums[2] ?? 0.0, nums[3] ?? 0.0, nums[4] ?? 0.0];
-          const sgnDup = nums[5] ?? 1.0;
-          currentSection.controls.push({
+    } else if (subkey === 'CONT') {
+      if (currentSection) {
+        let parts = trimmed.split(/\s+/).slice(1);
+        if (parts.length < 2) {
+          const next = nextLine() || '';
+          parts = next.trim().split(/\s+/);
+        }
+        const name = parts.shift() || 'CTRL';
+        const nums = parts.map((v) => Number(v)).filter((v) => Number.isFinite(v));
+        const gain = nums[0] ?? 1.0;
+        const xhinge = nums[1] ?? 0.75;
+        const vhinge = [nums[2] ?? 0.0, nums[3] ?? 0.0, nums[4] ?? 0.0];
+        const sgnDup = nums[5] ?? 1.0;
+        currentSection.controls.push({
             name,
             gain,
             xhinge,
@@ -254,29 +266,36 @@ function interpY(curve, x) {
   return curve[curve.length - 1]?.[1] ?? 0.0;
 }
 
-export function buildCamberSlope(coords, samples = 60) {
-  const { upper, lower } = splitAirfoilSurfaces(coords);
-  if (!upper.length || !lower.length) return null;
-  const xs = [];
-  const camber = [];
-  for (let i = 0; i <= samples; i += 1) {
-    const x = i / samples;
-    const zu = interpY(upper, x);
-    const zl = interpY(lower, x);
-    xs.push(x);
-    camber.push(0.5 * (zu + zl));
+export function buildCamberSlope(coords, samples = 50) {
+  if (!coords?.length) return null;
+  const n = coords.length;
+  const X = new Float32Array(n);
+  const Y = new Float32Array(n);
+  for (let i = 0; i < n; i += 1) {
+    X[i] = coords[i][0];
+    Y[i] = coords[i][1];
   }
-  const slope = [];
-  for (let i = 0; i < xs.length; i += 1) {
-    if (i === 0) {
-      slope.push((camber[1] - camber[0]) / (xs[1] - xs[0] || 1e-6));
-    } else if (i === xs.length - 1) {
-      slope.push((camber[i] - camber[i - 1]) / (xs[i] - xs[i - 1] || 1e-6));
-    } else {
-      slope.push((camber[i + 1] - camber[i - 1]) / (xs[i + 1] - xs[i - 1] || 1e-6));
-    }
+
+  const nIn = Math.min(samples, n);
+  const XC = new Float32Array(nIn);
+  const YC = new Float32Array(nIn);
+  const TC = new Float32Array(nIn);
+  GETCAM(X, Y, n, XC, YC, TC, nIn, true);
+
+  const xs = new Float32Array(nIn);
+  const slope = new Float32Array(nIn);
+  const thick = new Float32Array(nIn);
+  const x0 = XC[0];
+  const x1 = XC[nIn - 1];
+  const den = nIn > 1 ? (nIn - 1) : 1;
+  for (let i = 0; i < nIn; i += 1) {
+    const xf = i / den;
+    xs[i] = x0 + (x1 - x0) * xf;
+    slope[i] = AKIMA(XC, YC, nIn, xs[i]).SLP;
+    thick[i] = AKIMA(XC, TC, nIn, xs[i]).YY;
   }
-  return { x: xs, s: slope, t: camber.map(() => 0.0) };
+  NRMLIZ(nIn, xs);
+  return { x: Array.from(xs), s: Array.from(slope), t: Array.from(thick) };
 }
 
 export function buildNacaSlope(code, samples = 60) {
@@ -347,20 +366,6 @@ export async function buildSolverModel(text, options = {}) {
       }
       sec.claf = 1.0;
     }
-    if (typeof surf.yduplicate === 'number') {
-      const mirror = JSON.parse(JSON.stringify(surf));
-      mirror.name = `${surf.name}-dup`;
-      mirror.component = surf.component;
-      mirror.imags = -1;
-      mirror.sections.forEach((sec) => {
-        sec.yle = 2 * surf.yduplicate - sec.yle;
-        sec.controls.forEach((ctrl) => {
-          ctrl.gain *= ctrl.sgnDup ?? 1.0;
-          if (ctrl.vhinge) ctrl.vhinge[1] *= -1;
-        });
-      });
-      surfaces.push(mirror);
-    }
   }
   model.surfaces = surfaces;
   model.controlMap = controlMap;
@@ -419,8 +424,11 @@ export function applyYDuplicate(model) {
     if (typeof ydup !== 'number') return;
     const copy = JSON.parse(JSON.stringify(base));
     copy.name = `${surf.name}-ydup`;
+    if (Array.isArray(copy.translate) && copy.translate.length >= 2) {
+      copy.translate[1] = 2 * ydup - copy.translate[1];
+    }
     copy.sections.forEach((sec) => {
-      sec.yle = 2 * ydup - sec.yle;
+      sec.yle = -sec.yle;
       if (sec.controls) {
         sec.controls.forEach((ctrl) => {
           if (ctrl.vhinge) ctrl.vhinge[1] *= -1;
@@ -504,7 +512,10 @@ export function buildExecState(model, options = {}) {
   const IPCMU = 30;
   const IPTOT = 30;
 
-  const NSURF = model.surfaces.length;
+  const dupCount = model.surfaces.reduce((sum, surf) => (
+    sum + (typeof surf.yduplicate === 'number' ? 1 : 0)
+  ), 0);
+  const NSURF = model.surfaces.length + dupCount;
   const NCONTROL = model.controlMap?.size ?? 0;
   const NDESIGN = 0;
   const NUMAX = 6;
@@ -517,10 +528,11 @@ export function buildExecState(model, options = {}) {
     const nvc = surf.nChord || 1;
     let nvs = surf.nSpan || 0;
     if (nvs === 0) {
-      nvs = surf.sections.reduce((sum, sec) => sum + (sec.nSpan ?? 0), 0);
+      nvs = surf.sections.slice(0, -1).reduce((sum, sec) => sum + (sec.nSpan ?? 0), 0);
     }
-    NSTRIP += nvs;
-    NVOR += nvs * nvc;
+    const copies = typeof surf.yduplicate === 'number' ? 2 : 1;
+    NSTRIP += nvs * copies;
+    NVOR += nvs * nvc * copies;
   });
 
   const NVMAX = Math.max(1, NVOR);
@@ -545,6 +557,7 @@ export function buildExecState(model, options = {}) {
     NVOR,
     NVMAX,
     NSTRIP,
+    NSTRMAX,
     NSURF,
     NCONTROL,
     NDESIGN,
@@ -554,7 +567,7 @@ export function buildExecState(model, options = {}) {
     IVMAX,
     ICMAX,
     NRMAX,
-    NVTOT: IVTOT,
+    NVTOT: IVTOT + NCONTROL,
     NBODY: 0,
     NLNODE: 0,
     NLMAX: 1,
@@ -607,7 +620,7 @@ export function buildExecState(model, options = {}) {
 
     PARVAL: new Float32Array((IPTOT + 1) * (NRMAX + 1)),
     CONVAL: new Float32Array((ICMAX + 1) * (NRMAX + 1)),
-    ICON: new Int32Array((IVTOT + 1) * (NRMAX + 1)),
+    ICON: new Int32Array((IVMAX + 1) * (NRMAX + 1)),
     ITRIM: new Int32Array(NRMAX + 1),
 
     DELCON: new Float32Array(NDMAX + 1),
@@ -861,11 +874,11 @@ export function buildExecState(model, options = {}) {
   state.CONVAL[idx2(ICMOMZ, IR, ICMAX)] = Math.fround(opts.cmz);
   state.CONVAL[idx2(ICBETA, IR, ICMAX)] = Math.fround(opts.beta);
 
-  state.ICON[idx2(IVALFA, IR, IVTOT)] = ICCL;
-  state.ICON[idx2(IVBETA, IR, IVTOT)] = ICBETA;
-  state.ICON[idx2(IVROTX, IR, IVTOT)] = ICMOMX;
-  state.ICON[idx2(IVROTY, IR, IVTOT)] = ICMOMY;
-  state.ICON[idx2(IVROTZ, IR, IVTOT)] = ICMOMZ;
+  state.ICON[idx2(IVALFA, IR, IVMAX)] = ICCL;
+  state.ICON[idx2(IVBETA, IR, IVMAX)] = ICBETA;
+  state.ICON[idx2(IVROTX, IR, IVMAX)] = ICMOMX;
+  state.ICON[idx2(IVROTY, IR, IVMAX)] = ICMOMY;
+  state.ICON[idx2(IVROTZ, IR, IVMAX)] = ICMOMZ;
 
   for (let n = 1; n <= NCONTROL; n += 1) {
     state.LCONDEF[n] = 1;
@@ -880,14 +893,21 @@ export function buildExecState(model, options = {}) {
 export function buildGeometry(state, model) {
   state.NVOR = 0;
   state.NSTRIP = 0;
-  model.surfaces.forEach((surf, idx) => {
-    const isurf = idx + 1;
+  let surfIndex = 0;
+  model.surfaces.forEach((surf) => {
+    surfIndex += 1;
+    const isurf = surfIndex;
     const comp = (surf.component == null || surf.component === 0) ? isurf : surf.component;
     state.LNCOMP[isurf] = comp;
-    state.LFWAKE[isurf] = 1;
-    state.LFLOAD[isurf] = 1;
-    MAKESURF(state, idx + 1, surf);
+    state.LFWAKE[isurf] = surf.nowake ? 0 : 1;
+    state.LFLOAD[isurf] = surf.noload ? 0 : 1;
+    MAKESURF(state, isurf, surf);
+    if (typeof surf.yduplicate === 'number') {
+      surfIndex += 1;
+      SDUPL(state, isurf, surf.yduplicate, surfIndex);
+    }
   });
+  state.NSURF = surfIndex;
   ENCALC(state);
 }
 

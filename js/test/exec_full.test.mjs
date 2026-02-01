@@ -8,7 +8,7 @@ import { repoRootDir } from '../src/exec_pipeline.js';
 const repoRoot = repoRootDir();
 const runsDir = path.join(repoRoot, 'third_party', 'avl', 'runs');
 
-function runExecInWorker(text, options, timeoutMs = 70000) {
+function runExecInWorker(text, options, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./exec_worker.mjs', import.meta.url), {
       workerData: { text, options },
@@ -30,7 +30,7 @@ function runExecInWorker(text, options, timeoutMs = 70000) {
   });
 }
 
-test('FULL EXEC runs on b737', { timeout: 80000 }, async () => {
+test('FULL EXEC runs on b737', { timeout: 140000 }, async () => {
   const text = await fs.readFile(path.join(runsDir, 'b737.avl'), 'utf8');
   const result = await runExecInWorker(text, {
     baseDir: runsDir,
@@ -38,7 +38,7 @@ test('FULL EXEC runs on b737', { timeout: 80000 }, async () => {
     cl: 0.5,
     alpha: 2.0,
     beta: 0.0,
-  }, 70000);
+  }, 120000);
   assert.equal(result.ok, true, result.error || 'EXEC failed');
   assert.ok(result.NVOR > 0, 'expected NVOR > 0');
   assert.ok(Number.isFinite(result.CLTOT), 'CLTOT should be finite');

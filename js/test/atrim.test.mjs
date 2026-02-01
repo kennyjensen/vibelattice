@@ -54,9 +54,10 @@ function makeState() {
   const IPTOT = 30;
   const IVTOT = 5;
   const ICMAX = 10;
+  const IVMAX = IVTOT;
   const parLen = IPTOT * (NRUN + 1) + 1;
   const conLen = ICMAX * (NRUN + 1) + 1;
-  const iconLen = IVTOT * (NRUN + 1) + 1;
+  const iconLen = IVMAX * (NRUN + 1) + 1;
   return {
     DTR: Math.fround(Math.PI / 180.0),
     CREF: Math.fround(1.5),
@@ -69,6 +70,7 @@ function makeState() {
     NVTOT: IVTOT,
     IPTOT,
     IVTOT,
+    IVMAX,
     ICMAX,
     IPPHI: 8,
     IPTHE: 9,
@@ -96,7 +98,7 @@ function makeState() {
 
 function initState(state) {
   state.CONVAL[idx2(state.ICCL, 1, state.ICMAX)] = Math.fround(0.7);
-  state.ICON[idx2(state.IVALFA, 1, state.IVTOT)] = state.ICCL;
+  state.ICON[idx2(state.IVALFA, 1, state.IVMAX)] = state.ICCL;
   state.PARVAL[idx2(state.IPPHI, 1, state.IPTOT)] = Math.fround(20.0);
   state.PARVAL[idx2(state.IPVEE, 1, state.IPTOT)] = Math.fround(0.0);
   state.PARVAL[idx2(state.IPCL, 1, state.IPTOT)] = Math.fround(0.0);
@@ -132,10 +134,10 @@ function extractCase(state, ir) {
     state.CONVAL[idx2(state.ICROTZ, ir, state.ICMAX)],
   ];
   const icons = [
-    state.ICON[idx2(state.IVALFA, ir, state.IVTOT)],
-    state.ICON[idx2(state.IVROTX, ir, state.IVTOT)],
-    state.ICON[idx2(state.IVROTY, ir, state.IVTOT)],
-    state.ICON[idx2(state.IVROTZ, ir, state.IVTOT)],
+    state.ICON[idx2(state.IVALFA, ir, state.IVMAX)],
+    state.ICON[idx2(state.IVROTX, ir, state.IVMAX)],
+    state.ICON[idx2(state.IVROTY, ir, state.IVMAX)],
+    state.ICON[idx2(state.IVROTZ, ir, state.IVMAX)],
   ];
   return { parvals, convals, icons, itrim: state.ITRIM[ir] };
 }

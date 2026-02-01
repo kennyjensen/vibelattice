@@ -45,8 +45,8 @@ export function RUNCHK(state, JRUN) {
   for (let iv = 1; iv <= state.NVTOT; iv += 1) {
     for (let jv = 1; jv <= state.NVTOT; jv += 1) {
       if (iv !== jv) {
-        const ic1 = state.ICON[idx2(iv, JRUN, state.IVTOT)];
-        const ic2 = state.ICON[idx2(jv, JRUN, state.IVTOT)];
+        const ic1 = state.ICON[idx2(iv, JRUN, state.IVMAX)];
+        const ic2 = state.ICON[idx2(jv, JRUN, state.IVMAX)];
         if (ic1 === ic2) {
           ok = false;
         }

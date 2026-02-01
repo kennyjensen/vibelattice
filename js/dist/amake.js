@@ -18,6 +18,10 @@ function zero3() {
   return new Float32Array([0.0, 0.0, 0.0]);
 }
 
+function dot3(a, b) {
+  return f32(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+}
+
 export function MAKESURF(state, isurf, surf) {
   const NSEC = surf.sections.length;
   if (NSEC < 2) return;
@@ -118,6 +122,7 @@ export function MAKESURF(state, isurf, surf) {
     NVS = 0;
     for (let isec = 1; isec <= NSEC - 1; isec += 1) NVS += NSPANS[isec - 1] ?? 0;
     YPT[1] = YZLEN[1];
+    IPTLOC[1] = 1;
     let nvs = 0;
     for (let isec = 1; isec <= NSEC - 1; isec += 1) {
       const dyzlen = f32(YZLEN[isec + 1] - YZLEN[isec]);
@@ -418,14 +423,120 @@ export function MAKESURF(state, isurf, surf) {
   state.CAVESURF[isurf] = wtot === 0.0 ? 0.0 : f32(sum / wtot);
 }
 
+export function SDUPL(state, baseSurf, ydup, newSurf) {
+  const yoff = f32(2.0 * ydup);
+
+  state.LNCOMP[newSurf] = state.LNCOMP[baseSurf];
+  if (state.LFWAKE) state.LFWAKE[newSurf] = state.LFWAKE[baseSurf];
+  if (state.LFLOAD) state.LFLOAD[newSurf] = state.LFLOAD[baseSurf];
+  state.SSURF[newSurf] = state.SSURF[baseSurf];
+  state.CAVESURF[newSurf] = state.CAVESURF[baseSurf];
+  state.IMAGS[newSurf] = -state.IMAGS[baseSurf];
+
+  state.IFRST[newSurf] = state.NVOR + 1;
+  state.JFRST[newSurf] = state.NSTRIP + 1;
+  state.NJ[newSurf] = state.NJ[baseSurf];
+  state.NK[newSurf] = state.NK[baseSurf];
+
+  const nvs = state.NJ[newSurf];
+  const nvc = state.NK[newSurf];
+
+  for (let ivs = 1; ivs <= nvs; ivs += 1) {
+    state.NSTRIP += 1;
+    const jji = state.JFRST[newSurf] + ivs - 1;
+    const jj = state.JFRST[baseSurf] + ivs - 1;
+
+    state.RLE1[idx2(1, jji, 4)] = state.RLE2[idx2(1, jj, 4)];
+    state.RLE1[idx2(2, jji, 4)] = f32(-state.RLE2[idx2(2, jj, 4)] + yoff);
+    state.RLE1[idx2(3, jji, 4)] = state.RLE2[idx2(3, jj, 4)];
+    state.CHORD1[jji] = state.CHORD2[jj];
+
+    state.RLE2[idx2(1, jji, 4)] = state.RLE1[idx2(1, jj, 4)];
+    state.RLE2[idx2(2, jji, 4)] = f32(-state.RLE1[idx2(2, jj, 4)] + yoff);
+    state.RLE2[idx2(3, jji, 4)] = state.RLE1[idx2(3, jj, 4)];
+    state.CHORD2[jji] = state.CHORD1[jj];
+
+    state.RLE[idx2(1, jji, 4)] = state.RLE[idx2(1, jj, 4)];
+    state.RLE[idx2(2, jji, 4)] = f32(-state.RLE[idx2(2, jj, 4)] + yoff);
+    state.RLE[idx2(3, jji, 4)] = state.RLE[idx2(3, jj, 4)];
+    state.CHORD[jji] = state.CHORD[jj];
+    state.WSTRIP[jji] = state.WSTRIP[jj];
+    state.TANLE[jji] = f32(-state.TANLE[jj]);
+    state.AINC[jji] = state.AINC[jj];
+    state.LSSURF[jji] = newSurf;
+
+    for (let l = 1; l <= 6; l += 1) {
+      state.CLCD[idx2(l, jji, 6)] = state.CLCD[idx2(l, jj, 6)];
+    }
+    state.LVISCSTRP[jji] = state.LVISCSTRP[jj];
+
+    state.IJFRST[jji] = state.NVOR + 1;
+    state.NVSTRP[jji] = nvc;
+
+    for (let ivc = 1; ivc <= nvc; ivc += 1) {
+      state.NVOR += 1;
+      const iii = state.IJFRST[jji] + ivc - 1;
+      const ii = state.IJFRST[jj] + ivc - 1;
+
+      state.RV1[idx2(1, iii, 4)] = state.RV2[idx2(1, ii, 4)];
+      state.RV1[idx2(2, iii, 4)] = f32(-state.RV2[idx2(2, ii, 4)] + yoff);
+      state.RV1[idx2(3, iii, 4)] = state.RV2[idx2(3, ii, 4)];
+
+      state.RV2[idx2(1, iii, 4)] = state.RV1[idx2(1, ii, 4)];
+      state.RV2[idx2(2, iii, 4)] = f32(-state.RV1[idx2(2, ii, 4)] + yoff);
+      state.RV2[idx2(3, iii, 4)] = state.RV1[idx2(3, ii, 4)];
+
+      state.RV[idx2(1, iii, 4)] = state.RV[idx2(1, ii, 4)];
+      state.RV[idx2(2, iii, 4)] = f32(-state.RV[idx2(2, ii, 4)] + yoff);
+      state.RV[idx2(3, iii, 4)] = state.RV[idx2(3, ii, 4)];
+
+      state.RC[idx2(1, iii, 4)] = state.RC[idx2(1, ii, 4)];
+      state.RC[idx2(2, iii, 4)] = f32(-state.RC[idx2(2, ii, 4)] + yoff);
+      state.RC[idx2(3, iii, 4)] = state.RC[idx2(3, ii, 4)];
+
+      state.RS[idx2(1, iii, 4)] = state.RS[idx2(1, ii, 4)];
+      state.RS[idx2(2, iii, 4)] = f32(-state.RS[idx2(2, ii, 4)] + yoff);
+      state.RS[idx2(3, iii, 4)] = state.RS[idx2(3, ii, 4)];
+
+      state.SLOPEC[iii] = state.SLOPEC[ii];
+      state.SLOPEV[iii] = state.SLOPEV[ii];
+      state.DXV[iii] = state.DXV[ii];
+      state.CHORDV[iii] = state.CHORDV[ii];
+      state.LVCOMP[iii] = state.LNCOMP[newSurf];
+      state.LVALBE[iii] = state.LVALBE[ii];
+      state.LVNC[iii] = state.LVNC[ii];
+
+      for (let n = 1; n <= state.NCONTROL; n += 1) {
+        const rsgn = state.VREFL[idx2(ii, n, state.NVMAX + 1)];
+        state.DCONTROL[idx2(iii, n, state.NVMAX + 1)] = f32(
+          -state.DCONTROL[idx2(ii, n, state.NVMAX + 1)] * rsgn,
+        );
+        state.VREFL[idx2(iii, n, state.NVMAX + 1)] = state.VREFL[idx2(ii, n, state.NVMAX + 1)];
+        state.VHINGE[idx3(1, iii, n, 4, state.NVMAX + 1)] = state.VHINGE[idx3(1, ii, n, 4, state.NVMAX + 1)];
+        state.VHINGE[idx3(2, iii, n, 4, state.NVMAX + 1)] = f32(
+          -state.VHINGE[idx3(2, ii, n, 4, state.NVMAX + 1)],
+        );
+        state.VHINGE[idx3(3, iii, n, 4, state.NVMAX + 1)] = state.VHINGE[idx3(3, ii, n, 4, state.NVMAX + 1)];
+        state.PHINGE[idx3(1, iii, n, 4, state.NVMAX + 1)] = state.PHINGE[idx3(1, ii, n, 4, state.NVMAX + 1)];
+        state.PHINGE[idx3(2, iii, n, 4, state.NVMAX + 1)] = f32(
+          -state.PHINGE[idx3(2, ii, n, 4, state.NVMAX + 1)] + yoff,
+        );
+        state.PHINGE[idx3(3, iii, n, 4, state.NVMAX + 1)] = state.PHINGE[idx3(3, ii, n, 4, state.NVMAX + 1)];
+      }
+    }
+  }
+}
+
 export function ENCALC(state) {
   const { NSTRIP, NCONTROL, NDESIGN } = state;
+  const dimN = state.NVMAX + 1;
   const SAXFR = state.SAXFR ?? 0.0;
   const RV1 = state.RV1;
   const RV2 = state.RV2;
   const RV = state.RV;
   const AINC = state.AINC;
   const SLOPEC = state.SLOPEC;
+  const SLOPEV = state.SLOPEV;
   const IJFRST = state.IJFRST;
   const NVSTRP = state.NVSTRP;
   const ENC = state.ENC;
@@ -470,9 +581,9 @@ export function ENCALC(state) {
     const yzmag = f32(Math.sqrt(f32(dyt * dyt + dzt * dzt)));
     if (!Number.isFinite(dmag) || dmag === 0.0 || !Number.isFinite(yzmag) || yzmag === 0.0 || WSTRIP[j] === 0.0) {
       LSTRIPOFF[j] = true;
-      ESS[idx3(1, j, 1, 4, state.NSTRIP + 1)] = 0.0;
-      ESS[idx3(2, j, 1, 4, state.NSTRIP + 1)] = 0.0;
-      ESS[idx3(3, j, 1, 4, state.NSTRIP + 1)] = 0.0;
+      ESS[idx2(1, j, 4)] = 0.0;
+      ESS[idx2(2, j, 4)] = 0.0;
+      ESS[idx2(3, j, 4)] = 0.0;
       ENSY[j] = 0.0;
       ENSZ[j] = 0.0;
 
@@ -490,9 +601,9 @@ export function ENCALC(state) {
       continue;
     }
 
-    ESS[idx3(1, j, 1, 4, state.NSTRIP + 1)] = f32(dxt / dmag);
-    ESS[idx3(2, j, 1, 4, state.NSTRIP + 1)] = f32(dyt / dmag);
-    ESS[idx3(3, j, 1, 4, state.NSTRIP + 1)] = f32(dzt / dmag);
+    ESS[idx2(1, j, 4)] = f32(dxt / dmag);
+    ESS[idx2(2, j, 4)] = f32(dyt / dmag);
+    ESS[idx2(3, j, 4)] = f32(dzt / dmag);
 
     ENSY[j] = f32(-dzt / yzmag);
     ENSZ[j] = f32(dyt / yzmag);
@@ -508,12 +619,12 @@ export function ENCALC(state) {
     for (let ii = 1; ii <= nv; ii += 1) {
       const iv = IJFRST[j] + (ii - 1);
       for (let n = 1; n <= NCONTROL; n += 1) {
-        ENV_D[idx3(1, iv, n, 4, state.NVMAX + 1)] = 0.0;
-        ENV_D[idx3(2, iv, n, 4, state.NVMAX + 1)] = 0.0;
-        ENV_D[idx3(3, iv, n, 4, state.NVMAX + 1)] = 0.0;
-        ENC_D[idx3(1, iv, n, 4, state.NVMAX + 1)] = 0.0;
-        ENC_D[idx3(2, iv, n, 4, state.NVMAX + 1)] = 0.0;
-        ENC_D[idx3(3, iv, n, 4, state.NVMAX + 1)] = 0.0;
+        ENV_D[idx3(1, iv, n, 4, dimN)] = 0.0;
+        ENV_D[idx3(2, iv, n, 4, dimN)] = 0.0;
+        ENV_D[idx3(3, iv, n, 4, dimN)] = 0.0;
+        ENC_D[idx3(1, iv, n, 4, dimN)] = 0.0;
+        ENC_D[idx3(2, iv, n, 4, dimN)] = 0.0;
+        ENC_D[idx3(3, iv, n, 4, dimN)] = 0.0;
       }
 
       const dxb = f32(RV2[idx2(1, iv, 4)] - RV1[idx2(1, iv, 4)]);
@@ -523,8 +634,8 @@ export function ENCALC(state) {
       const eb = [f32(dxb / emag), f32(dyb / emag), f32(dzb / emag)];
 
       let ang = f32(AINC[j] - Math.atan(SLOPEC[iv]));
-      const sinc = f32(Math.sin(ang));
-      const cosc = f32(Math.cos(ang));
+      let sinc = f32(Math.sin(ang));
+      let cosc = f32(Math.cos(ang));
       const ec = [
         cosc,
         f32(-sinc * ES[1]),
@@ -533,15 +644,80 @@ export function ENCALC(state) {
 
       const ecxb = zero3();
       CROSS(ec, eb, ecxb);
-      const em = f32(Math.sqrt(f32(ecxb[0] * ecxb[0] + ecxb[1] * ecxb[1] + ecxb[2] * ecxb[2])));
+      let em = f32(Math.sqrt(f32(ecxb[0] * ecxb[0] + ecxb[1] * ecxb[1] + ecxb[2] * ecxb[2])));
       if (em !== 0.0) {
         ENC[idx2(1, iv, 4)] = f32(ecxb[0] / em);
         ENC[idx2(2, iv, 4)] = f32(ecxb[1] / em);
         ENC[idx2(3, iv, 4)] = f32(ecxb[2] / em);
+      } else {
+        ENC[idx2(1, iv, 4)] = ES[0];
+        ENC[idx2(2, iv, 4)] = ES[1];
+        ENC[idx2(3, iv, 4)] = ES[2];
       }
-      ENV[idx2(1, iv, 4)] = ENC[idx2(1, iv, 4)];
-      ENV[idx2(2, iv, 4)] = ENC[idx2(2, iv, 4)];
-      ENV[idx2(3, iv, 4)] = ENC[idx2(3, iv, 4)];
+
+      ang = f32(AINC[j] - Math.atan(SLOPEV[iv]));
+      sinc = f32(Math.sin(ang));
+      cosc = f32(Math.cos(ang));
+      const ecv = [
+        cosc,
+        f32(-sinc * ES[1]),
+        f32(-sinc * ES[2]),
+      ];
+      const ecxbv = zero3();
+      CROSS(ecv, eb, ecxbv);
+      em = f32(Math.sqrt(f32(ecxbv[0] * ecxbv[0] + ecxbv[1] * ecxbv[1] + ecxbv[2] * ecxbv[2])));
+      if (em !== 0.0) {
+        ENV[idx2(1, iv, 4)] = f32(ecxbv[0] / em);
+        ENV[idx2(2, iv, 4)] = f32(ecxbv[1] / em);
+        ENV[idx2(3, iv, 4)] = f32(ecxbv[2] / em);
+      } else {
+        ENV[idx2(1, iv, 4)] = ES[0];
+        ENV[idx2(2, iv, 4)] = ES[1];
+        ENV[idx2(3, iv, 4)] = ES[2];
+      }
+
+      for (let n = 1; n <= NCONTROL; n += 1) {
+        const idx = idx2(iv, n, dimN);
+        if (DCONTROL[idx] === 0.0) continue;
+        const angd = f32(state.DTR * DCONTROL[idx] * state.DELCON[n]);
+        const angddc = f32(state.DTR * DCONTROL[idx]);
+        const cosd = f32(Math.cos(angd));
+        const sind = f32(Math.sin(angd));
+
+        const vhinge = [
+          VHINGE[idx3(1, iv, n, 4, dimN)],
+          VHINGE[idx3(2, iv, n, 4, dimN)],
+          VHINGE[idx3(3, iv, n, 4, dimN)],
+        ];
+
+        let end = dot3([ENC[idx2(1, iv, 4)], ENC[idx2(2, iv, 4)], ENC[idx2(3, iv, 4)]], vhinge);
+        const ep = [
+          f32(ENC[idx2(1, iv, 4)] - end * vhinge[0]),
+          f32(ENC[idx2(2, iv, 4)] - end * vhinge[1]),
+          f32(ENC[idx2(3, iv, 4)] - end * vhinge[2]),
+        ];
+        const eq = zero3();
+        CROSS(vhinge, ep, eq);
+        if (cosd || sind) {
+          ENC_D[idx3(1, iv, n, 4, dimN)] = f32(ENC_D[idx3(1, iv, n, 4, dimN)] + eq[0] * angddc);
+          ENC_D[idx3(2, iv, n, 4, dimN)] = f32(ENC_D[idx3(2, iv, n, 4, dimN)] + eq[1] * angddc);
+          ENC_D[idx3(3, iv, n, 4, dimN)] = f32(ENC_D[idx3(3, iv, n, 4, dimN)] + eq[2] * angddc);
+        }
+
+        end = dot3([ENV[idx2(1, iv, 4)], ENV[idx2(2, iv, 4)], ENV[idx2(3, iv, 4)]], vhinge);
+        const epv = [
+          f32(ENV[idx2(1, iv, 4)] - end * vhinge[0]),
+          f32(ENV[idx2(2, iv, 4)] - end * vhinge[1]),
+          f32(ENV[idx2(3, iv, 4)] - end * vhinge[2]),
+        ];
+        const eqv = zero3();
+        CROSS(vhinge, epv, eqv);
+        if (cosd || sind) {
+          ENV_D[idx3(1, iv, n, 4, dimN)] = f32(ENV_D[idx3(1, iv, n, 4, dimN)] + eqv[0] * angddc);
+          ENV_D[idx3(2, iv, n, 4, dimN)] = f32(ENV_D[idx3(2, iv, n, 4, dimN)] + eqv[1] * angddc);
+          ENV_D[idx3(3, iv, n, 4, dimN)] = f32(ENV_D[idx3(3, iv, n, 4, dimN)] + eqv[2] * angddc);
+        }
+      }
 
       LVNC[iv] = true;
     }

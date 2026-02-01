@@ -260,6 +260,11 @@ textarea.code {
   stroke-linejoin: round;
 }
 
+.viewer-btn.icon-btn.active {
+  border-color: rgba(34, 211, 238, 0.9);
+  color: #22d3ee;
+}
+
 .plot {
   width: 100%;
   height: calc(100% - 58px);
@@ -320,6 +325,56 @@ textarea.code {
   color: #d1d5f0;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   white-space: pre;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.constraint-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.constraint-head {
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.constraint-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 0.9fr;
+  gap: 10px;
+}
+
+.constraint-cell {
+  background: rgba(16, 23, 37, 0.65);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+}
+
+.constraint-select,
+.constraint-value {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #f8fafc;
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.constraint-row.dup .constraint-cell,
+.constraint-select.dup,
+.constraint-value.dup {
+  border-color: rgba(248, 113, 113, 0.9);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.35);
+  color: #fecaca;
 }
 
 @keyframes rise {

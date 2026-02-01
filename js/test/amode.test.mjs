@@ -64,6 +64,7 @@ function makeState() {
     NCONTROL: 1,
     NVTOT: 5,
     IVTOT: 5,
+    IVMAX: 6,
     NRMAX: 2,
     IPTOT: 30,
     UNITL: Math.fround(1.0),
@@ -122,7 +123,7 @@ function makeState() {
     AINER: new Float32Array(9),
 
     PARVAL: new Float32Array((30 + 1) * (2 + 1)),
-    ICON: new Int32Array((5 + 1) * (2 + 1)),
+    ICON: new Int32Array((6 + 1) * (2 + 1)),
   };
 
   for (let iu = 1; iu <= 6; iu += 1) {
@@ -183,8 +184,8 @@ function makeState() {
   state.PARVAL[idx2(state.IPCMA, IR, state.IPTOT)] = Math.fround(-0.015);
 
   for (let iv = 1; iv <= state.NVTOT; iv += 1) {
-    state.ICON[idx2(iv, 1, state.IVTOT)] = iv;
-    state.ICON[idx2(iv, 2, state.IVTOT)] = 1;
+    state.ICON[idx2(iv, 1, state.IVMAX)] = iv;
+    state.ICON[idx2(iv, 2, state.IVMAX)] = 1;
   }
 
   return state;

@@ -12,7 +12,7 @@ export function TRMSET_CORE(state, KTRIM, IR1, IR2, IR) {
   if (ktrim === 1 || ktrim === 2) {
     if (state.PARVAL[idx2(state.IPCL, IR, state.IPTOT)] === 0.0) {
       for (let iv = 1; iv <= state.NVTOT; iv += 1) {
-        if (state.ICON[idx2(iv, IR, state.IVTOT)] === state.ICCL) {
+        if (state.ICON[idx2(iv, IR, state.IVMAX)] === state.ICCL) {
           state.PARVAL[idx2(state.IPCL, IR, state.IPTOT)] = state.CONVAL[idx2(state.ICCL, IR, state.ICMAX)];
           break;
         }
@@ -86,10 +86,10 @@ export function TRMSET_CORE(state, KTRIM, IR1, IR2, IR) {
       state.CONVAL[idx2(state.ICROTY, jr, state.ICMAX)] = why;
       state.CONVAL[idx2(state.ICROTZ, jr, state.ICMAX)] = whz;
 
-      state.ICON[idx2(state.IVALFA, jr, state.IVTOT)] = state.ICCL;
-      state.ICON[idx2(state.IVROTX, jr, state.IVTOT)] = state.ICROTX;
-      state.ICON[idx2(state.IVROTY, jr, state.IVTOT)] = state.ICROTY;
-      state.ICON[idx2(state.IVROTZ, jr, state.IVTOT)] = state.ICROTZ;
+      state.ICON[idx2(state.IVALFA, jr, state.IVMAX)] = state.ICCL;
+      state.ICON[idx2(state.IVROTX, jr, state.IVMAX)] = state.ICROTX;
+      state.ICON[idx2(state.IVROTY, jr, state.IVMAX)] = state.ICROTY;
+      state.ICON[idx2(state.IVROTZ, jr, state.IVMAX)] = state.ICROTZ;
     } else if (ktrim === 2) {
       if (rad === 0.0 && cl > 0.0) {
         rad = f32(rmass / f32(0.5 * rho * srefD * cl));
@@ -123,10 +123,10 @@ export function TRMSET_CORE(state, KTRIM, IR1, IR2, IR) {
       state.CONVAL[idx2(state.ICROTY, jr, state.ICMAX)] = why;
       state.CONVAL[idx2(state.ICROTZ, jr, state.ICMAX)] = whz;
 
-      state.ICON[idx2(state.IVALFA, jr, state.IVTOT)] = state.ICCL;
-      state.ICON[idx2(state.IVROTX, jr, state.IVTOT)] = state.ICROTX;
-      state.ICON[idx2(state.IVROTY, jr, state.IVTOT)] = state.ICROTY;
-      state.ICON[idx2(state.IVROTZ, jr, state.IVTOT)] = state.ICROTZ;
+      state.ICON[idx2(state.IVALFA, jr, state.IVMAX)] = state.ICCL;
+      state.ICON[idx2(state.IVROTX, jr, state.IVMAX)] = state.ICROTX;
+      state.ICON[idx2(state.IVROTY, jr, state.IVMAX)] = state.ICROTY;
+      state.ICON[idx2(state.IVROTZ, jr, state.IVMAX)] = state.ICROTZ;
     }
   }
 

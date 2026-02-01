@@ -236,19 +236,19 @@ export function EXEC(state, NITER, INFO, IR) {
   SETUP(state);
 
   if (niter > 0) {
-    if (state.ICON[idx2(state.IVALFA, ir, state.IVTOT)] === state.ICALFA) {
+    if (state.ICON[idx2(state.IVALFA, ir, state.IVMAX)] === state.ICALFA) {
       state.ALFA = f32(state.CONVAL[idx2(state.ICALFA, ir, state.ICMAX)] * state.DTR);
     }
-    if (state.ICON[idx2(state.IVBETA, ir, state.IVTOT)] === state.ICBETA) {
+    if (state.ICON[idx2(state.IVBETA, ir, state.IVMAX)] === state.ICBETA) {
       state.BETA = f32(state.CONVAL[idx2(state.ICBETA, ir, state.ICMAX)] * state.DTR);
     }
-    if (state.ICON[idx2(state.IVROTX, ir, state.IVTOT)] === state.ICROTX) {
+    if (state.ICON[idx2(state.IVROTX, ir, state.IVMAX)] === state.ICROTX) {
       state.WROT[0] = f32(state.CONVAL[idx2(state.ICROTX, ir, state.ICMAX)] * 2.0 / state.BREF);
     }
-    if (state.ICON[idx2(state.IVROTY, ir, state.IVTOT)] === state.ICROTY) {
+    if (state.ICON[idx2(state.IVROTY, ir, state.IVMAX)] === state.ICROTY) {
       state.WROT[1] = f32(state.CONVAL[idx2(state.ICROTY, ir, state.ICMAX)] * 2.0 / state.CREF);
     }
-    if (state.ICON[idx2(state.IVROTZ, ir, state.IVTOT)] === state.ICROTZ) {
+    if (state.ICON[idx2(state.IVROTZ, ir, state.IVMAX)] === state.ICROTZ) {
       state.WROT[2] = f32(state.CONVAL[idx2(state.ICROTZ, ir, state.ICMAX)] * 2.0 / state.BREF);
     }
   }
@@ -297,8 +297,11 @@ export function EXEC(state, NITER, INFO, IR) {
       }
 
       for (let iv = 1; iv <= state.NVTOT; iv += 1) {
-        const ic = state.ICON[idx2(iv, ir, state.IVTOT)];
-        if (ic === state.ICALFA) {
+        const ic = state.ICON[idx2(iv, ir, state.IVMAX)];
+        if (ic === 0) {
+          vres[iv] = 0.0;
+          vsys[idxA(iv, iv, ivmax + 1)] = 1.0;
+        } else if (ic === state.ICALFA) {
           vres[iv] = f32(state.ALFA - f32(state.CONVAL[idx2(ic, ir, state.ICMAX)] * state.DTR));
           vsys[idxA(iv, state.IVALFA, ivmax + 1)] = 1.0;
         } else if (ic === state.ICBETA) {
@@ -492,6 +495,17 @@ export function EXEC(state, NITER, INFO, IR) {
 
       LUDCMP_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, work);
       BAKSUB_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, vres);
+
+      let badSolve = false;
+      for (let iv = 1; iv <= state.NVTOT; iv += 1) {
+        if (!Number.isFinite(vres[iv])) {
+          badSolve = true;
+          break;
+        }
+      }
+      if (badSolve) {
+        return state;
+      }
 
       const dal = -vres[state.IVALFA];
       const dbe = -vres[state.IVBETA];

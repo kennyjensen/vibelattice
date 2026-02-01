@@ -1,6 +1,8 @@
 import { TRMSET_CORE } from './atrim.js';
 import { EXEC } from './aoper.js';
-import { MAKESURF, ENCALC } from './amake.js';
+import { MAKESURF, ENCALC, SDUPL } from './amake.js';
+import { GETCAM } from './airutil.js';
+import { AKIMA, NRMLIZ } from './sgutil.js';
 
 let THREE = null;
 let OrbitControls = null;
@@ -17,18 +19,13 @@ const els = {
   mass: document.getElementById('mass'),
   rho: document.getElementById('rho'),
   gee: document.getElementById('gee'),
-  alpha: document.getElementById('alpha'),
-  beta: document.getElementById('beta'),
-  p: document.getElementById('p'),
-  q: document.getElementById('q'),
-  r: document.getElementById('r'),
-  de: document.getElementById('de'),
-  da: document.getElementById('da'),
-  dr: document.getElementById('dr'),
-  clc: document.getElementById('clc'),
-  cmx: document.getElementById('cmx'),
-  cmy: document.getElementById('cmy'),
-  cmz: document.getElementById('cmz'),
+  flightMode: document.getElementById('flightMode'),
+  levelInputs: document.getElementById('levelInputs'),
+  loopInputs: document.getElementById('loopInputs'),
+  clLoop: document.getElementById('clLoop'),
+  velLoop: document.getElementById('velLoop'),
+  radLoop: document.getElementById('radLoop'),
+  facLoop: document.getElementById('facLoop'),
   trimBtn: document.getElementById('trimBtn'),
   execToggle: document.getElementById('execToggle'),
   viewer: document.getElementById('viewer'),
@@ -62,6 +59,9 @@ const els = {
   viewerHome: document.getElementById('viewerHome'),
   viewerView: document.getElementById('viewerView'),
   viewerGrid: document.getElementById('viewerGrid'),
+  viewerCoord: document.getElementById('viewerCoord'),
+  constraintRows: [],
+  constraintTable: document.getElementById('constraintTable'),
 };
 
 const uiState = {
@@ -69,6 +69,9 @@ const uiState = {
   text: '',
   surfaceColors: [0xf59e0b, 0x7dd3fc, 0xf97316, 0xa78bfa, 0x22d3ee],
   trefftzData: null,
+  modelHeader: null,
+  levelDriver: 'cl',
+  loopDriver: 'cl',
 };
 
 const viewerState = {
@@ -79,6 +82,7 @@ const viewerState = {
   gridIndex: 0,
   bounds: null,
   fitDistance: 12,
+  coordMode: 'body',
 };
 
 let execInProgress = false;
@@ -137,8 +141,11 @@ function applyYDuplicate(model) {
     if (typeof ydup !== 'number') return;
     const copy = JSON.parse(JSON.stringify(base));
     copy.name = `${surf.name}-ydup`;
+    if (Array.isArray(copy.translate) && copy.translate.length >= 2) {
+      copy.translate[1] = 2 * ydup - copy.translate[1];
+    }
     copy.sections.forEach((sec) => {
-      sec.yle = 2 * ydup - sec.yle;
+      sec.yle = -sec.yle;
       if (sec.controls) {
         sec.controls.forEach((ctrl) => {
           if (ctrl.vhinge) ctrl.vhinge[1] *= -1;
@@ -196,6 +203,75 @@ function fmt(value, digits = 3) {
   return Number(value).toFixed(digits);
 }
 
+function getHeaderRefs() {
+  const header = uiState.modelHeader || {};
+  return {
+    sref: Number(header.sref ?? 1.0),
+    cref: Number(header.cref ?? 1.0),
+    bref: Number(header.bref ?? 1.0),
+    unitl: Number(header.unitl ?? 1.0),
+  };
+}
+
+function setNumericInput(el, value, digits = 3) {
+  if (!el || !Number.isFinite(value)) return;
+  el.value = fmt(value, digits);
+}
+
+function updateFlightConditions(driverHint = null) {
+  const mode = els.flightMode?.value || 'level';
+  const { sref, unitl } = getHeaderRefs();
+  const srefD = sref * unitl * unitl;
+  const rho = Number(els.rho?.value || 0);
+  const gee = Number(els.gee?.value || 0);
+  const mass = Number(els.mass?.value || 0);
+
+  if (mode === 'looping') {
+    if (driverHint) uiState.loopDriver = driverHint;
+    const cl = Number(els.clLoop?.value || 0);
+    const vee = Number(els.velLoop?.value || 0);
+    const rad = Number(els.radLoop?.value || 0);
+
+    if (uiState.loopDriver === 'cl' && cl > 0 && rho > 0 && mass > 0) {
+      const radNew = mass / (0.5 * rho * srefD * cl);
+      if (Number.isFinite(radNew)) setNumericInput(els.radLoop, radNew, 3);
+    } else if (uiState.loopDriver === 'rad' && rad > 0 && rho > 0 && mass > 0) {
+      const clNew = mass / (0.5 * rho * srefD * rad);
+      if (Number.isFinite(clNew)) setNumericInput(els.clLoop, clNew, 3);
+    }
+
+    const clUse = Number(els.clLoop?.value || 0);
+    if (clUse > 0 && rho > 0 && mass > 0 && gee > 0 && vee > 0) {
+      const fac = (0.5 * rho * vee * vee * srefD * clUse) / (mass * gee);
+      if (Number.isFinite(fac)) setNumericInput(els.facLoop, fac, 3);
+    }
+    return;
+  }
+
+  if (driverHint) uiState.levelDriver = driverHint;
+  const bank = Number(els.bank?.value || 0);
+  const cl = Number(els.cl?.value || 0);
+  const vee = Number(els.vel?.value || 0);
+  const sinp = Math.sin(bank * (Math.PI / 180.0));
+  const cosp = Math.cos(bank * (Math.PI / 180.0));
+
+  if (uiState.levelDriver === 'cl' && cl > 0 && rho > 0 && mass > 0 && gee > 0 && cosp !== 0) {
+    const veeNew = Math.sqrt((2.0 * mass * gee) / (rho * srefD * cl * cosp));
+    if (Number.isFinite(veeNew)) setNumericInput(els.vel, veeNew, 2);
+  } else if (uiState.levelDriver === 'vel' && vee > 0 && rho > 0 && mass > 0 && gee > 0 && cosp !== 0) {
+    const clNew = (2.0 * mass * gee) / (rho * srefD * vee * vee * cosp);
+    if (Number.isFinite(clNew)) setNumericInput(els.cl, clNew, 3);
+  }
+}
+
+function getActiveCLValue() {
+  const mode = els.flightMode?.value || 'level';
+  const value = mode === 'looping'
+    ? Number(els.clLoop?.value || els.cl?.value || 0)
+    : Number(els.cl?.value || 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
 function logDebug(message) {
   const line = `[${new Date().toLocaleTimeString()}] ${message}`;
   if (typeof window.__debugLog === 'function') {
@@ -207,6 +283,198 @@ function logDebug(message) {
     els.debugLog.scrollTop = els.debugLog.scrollHeight;
   }
   console.log(line);
+}
+
+function readConstraintRows() {
+  const rows = [];
+  els.constraintRows.forEach((row) => {
+    if (!row.dataset.var) return;
+    const variable = row.dataset.var;
+    const select = row.querySelector('.constraint-select');
+    const value = row.querySelector('.constraint-value');
+    rows.push({
+      row,
+      variable,
+      select,
+      value,
+      constraint: select?.value || 'none',
+      numeric: Number(value?.value || 0),
+    });
+  });
+  return rows;
+}
+
+function updateConstraintDuplicates() {
+  const rows = readConstraintRows();
+  const counts = new Map();
+  rows.forEach((entry) => {
+    const key = entry.constraint;
+    if (!key || key === 'none') return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  rows.forEach((entry) => {
+    const key = entry.constraint;
+    const dup = key && counts.get(key) > 1;
+    entry.row.classList.toggle('dup', dup);
+    entry.select?.classList.toggle('dup', dup);
+    entry.value?.classList.toggle('dup', dup);
+  });
+}
+
+function applyConstraintRowsToState(state, controlMap) {
+  const idx2 = (i, j, dim1) => i + dim1 * j;
+  const controlNames = controlMap ? Array.from(controlMap.keys()) : [];
+  const controlIndex = new Map();
+  controlNames.forEach((name, idx) => controlIndex.set(name, idx + 1));
+
+  state.NCONTROL = controlNames.length;
+  state.NDMAX = Math.max(1, state.NCONTROL);
+  state.IVMAX = state.IVTOT + state.NDMAX;
+  state.NVTOT = state.IVTOT + state.NCONTROL;
+  state.ICMAX = state.ICTOT + state.NDMAX;
+
+  state.ICON = new Int32Array((state.IVMAX + 1) * (state.NRMAX + 1));
+  state.CONVAL = new Float32Array((state.ICMAX + 1) * (state.NRMAX + 1));
+
+  const { ICALFA, ICBETA, ICROTX, ICROTY, ICROTZ, ICCL, ICCY, ICMOMX, ICMOMY, ICMOMZ } = state;
+  const { IVALFA, IVBETA, IVROTX, IVROTY, IVROTZ } = state;
+  const constraintMap = {
+    none: null,
+    alpha: ICALFA,
+    beta: ICBETA,
+    p: ICROTX,
+    q: ICROTY,
+    r: ICROTZ,
+    cl: ICCL,
+    cy: ICCY,
+    cmx: ICMOMX,
+    cmy: ICMOMY,
+    cmz: ICMOMZ,
+  };
+  const variableMap = {
+    alpha: IVALFA,
+    beta: IVBETA,
+    p: IVROTX,
+    q: IVROTY,
+    r: IVROTZ,
+  };
+
+  const rows = readConstraintRows();
+  rows.forEach((entry) => {
+    const constraintKey = entry.constraint;
+    let ic = constraintMap[constraintKey];
+    if (!ic && constraintKey?.startsWith('ctrl:')) {
+      const name = constraintKey.slice(5);
+      const idx = controlIndex.get(name);
+      if (idx) ic = state.ICTOT + idx;
+    }
+    if (!ic) return;
+    state.CONVAL[idx2(ic, 1, state.ICMAX)] = entry.numeric;
+
+    let iv = variableMap[entry.variable];
+    if (!iv && entry.variable?.startsWith('ctrl:')) {
+      const name = entry.variable.slice(5);
+      const idx = controlIndex.get(name);
+      if (idx) iv = state.IVTOT + idx;
+    }
+    if (iv) state.ICON[idx2(iv, 1, state.IVMAX)] = ic;
+  });
+}
+
+function rebuildConstraintUI(model) {
+  if (!els.constraintTable) return;
+  const controlNames = model?.controlMap ? Array.from(model.controlMap.keys()) : [];
+  const controlLabels = controlNames.map((name, idx) => `D${idx + 1} ${name}`);
+  const rows = [
+    { key: 'alpha', label: 'Alpha', value: 0.0, selected: 'alpha' },
+    { key: 'beta', label: 'Beta', value: 0.0, selected: 'beta' },
+    { key: 'p', label: 'Roll rate', value: 0.0, selected: 'p' },
+    { key: 'q', label: 'Pitch rate', value: 0.0, selected: 'q' },
+    { key: 'r', label: 'Yaw rate', value: 0.0, selected: 'r' },
+  ];
+  controlNames.forEach((name, idx) => {
+    rows.push({ key: `ctrl:${name}`, label: controlLabels[idx], value: 0.0, selected: `ctrl:${name}` });
+  });
+
+  const constraintOptions = [
+    { value: 'alpha', label: 'A  alpha' },
+    { value: 'beta', label: 'B  beta' },
+    { value: 'p', label: 'R  pb/2V' },
+    { value: 'q', label: 'P  qc/2V' },
+    { value: 'r', label: 'Y  rb/2V' },
+    { value: 'cl', label: 'C  CL' },
+    { value: 'cy', label: 'S  CY' },
+    { value: 'cmx', label: 'RM Cl roll mom' },
+    { value: 'cmy', label: 'PM Cm pitchmom' },
+    { value: 'cmz', label: 'YM Cn yaw  mom' },
+    { value: 'none', label: 'None' },
+  ];
+  controlNames.forEach((name, idx) => {
+    constraintOptions.push({ value: `ctrl:${name}`, label: controlLabels[idx] });
+  });
+
+  els.constraintTable.innerHTML = '';
+  const headerRow = document.createElement('div');
+  headerRow.className = 'constraint-row';
+  ['Variable', 'Constraint', 'Value'].forEach((text) => {
+    const div = document.createElement('div');
+    div.className = 'constraint-head';
+    div.textContent = text;
+    headerRow.appendChild(div);
+  });
+  els.constraintTable.appendChild(headerRow);
+
+  rows.forEach((row) => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'constraint-row';
+    rowEl.dataset.var = row.key;
+
+    const cellVar = document.createElement('div');
+    cellVar.className = 'constraint-cell';
+    cellVar.textContent = row.label;
+
+    const cellConstraint = document.createElement('div');
+    cellConstraint.className = 'constraint-cell';
+    const select = document.createElement('select');
+    select.className = 'constraint-select';
+    constraintOptions.forEach((opt) => {
+      const option = document.createElement('option');
+      option.value = opt.value;
+      option.textContent = opt.label;
+      if (opt.value === row.selected) option.selected = true;
+      select.appendChild(option);
+    });
+    select.addEventListener('change', () => {
+      if (select.value === 'cl') {
+        updateFlightConditions();
+        setNumericInput(input, getActiveCLValue(), 3);
+      }
+    });
+    cellConstraint.appendChild(select);
+
+    const cellValue = document.createElement('div');
+    cellValue.className = 'constraint-cell';
+    const input = document.createElement('input');
+    input.className = 'constraint-value';
+    input.type = 'number';
+    input.step = '0.01';
+    input.value = row.value;
+    cellValue.appendChild(input);
+
+    rowEl.appendChild(cellVar);
+    rowEl.appendChild(cellConstraint);
+    rowEl.appendChild(cellValue);
+    els.constraintTable.appendChild(rowEl);
+  });
+
+  els.constraintRows = Array.from(document.querySelectorAll('.constraint-row'));
+  els.constraintRows.forEach((row) => {
+    row.querySelectorAll('select, input').forEach((el) => {
+      el.addEventListener('change', updateConstraintDuplicates);
+      el.addEventListener('input', updateConstraintDuplicates);
+    });
+  });
+  updateConstraintDuplicates();
 }
 
 window.addEventListener('error', (evt) => {
@@ -300,6 +568,37 @@ els.viewerGrid?.addEventListener('click', () => {
   applyGridMode();
   updateViewerButtons();
 });
+els.viewerCoord?.addEventListener('click', () => {
+  viewerState.coordMode = viewerState.coordMode === 'world' ? 'body' : 'world';
+  updateBank(Number(els.bank.value));
+  updateViewerButtons();
+});
+
+els.flightMode?.addEventListener('change', () => {
+  const mode = els.flightMode.value;
+  const isLoop = mode === 'looping';
+  els.levelInputs?.classList.toggle('hidden', isLoop);
+  els.loopInputs?.classList.toggle('hidden', !isLoop);
+  updateFlightConditions();
+});
+
+if (els.flightMode) {
+  const isLoop = els.flightMode.value === 'looping';
+  els.levelInputs?.classList.toggle('hidden', isLoop);
+  els.loopInputs?.classList.toggle('hidden', !isLoop);
+}
+
+els.cl?.addEventListener('input', () => updateFlightConditions('cl'));
+els.vel?.addEventListener('input', () => updateFlightConditions('vel'));
+els.bank?.addEventListener('input', () => updateFlightConditions());
+els.rho?.addEventListener('input', () => updateFlightConditions());
+els.gee?.addEventListener('input', () => updateFlightConditions());
+els.mass?.addEventListener('input', () => updateFlightConditions());
+
+els.clLoop?.addEventListener('input', () => updateFlightConditions('cl'));
+els.velLoop?.addEventListener('input', () => updateFlightConditions('vel'));
+els.radLoop?.addEventListener('input', () => updateFlightConditions('rad'));
+els.facLoop?.addEventListener('input', () => updateFlightConditions());
 
 let fileUpdateTimer = null;
 els.fileText.addEventListener('input', () => {
@@ -318,13 +617,21 @@ function makeTrimState() {
     NVTOT: 5,
     NRMAX: 1,
     IVALFA: 1,
+    IVBETA: 2,
     IVROTX: 3,
     IVROTY: 4,
     IVROTZ: 5,
-    ICCL: 6,
+    ICALFA: 1,
+    ICBETA: 2,
     ICROTX: 3,
     ICROTY: 4,
     ICROTZ: 5,
+    ICCL: 6,
+    ICCY: 7,
+    ICMOMX: 8,
+    ICMOMY: 9,
+    ICMOMZ: 10,
+    ICTOT: 10,
     IPCL: 6,
     IPPHI: 8,
     IPTHE: 9,
@@ -348,37 +655,47 @@ function makeTrimState() {
     CONVAL: new Float32Array((10 + 1) * (2 + 1)),
   };
 
-  const { IVALFA, IVROTX, IVROTY, IVROTZ, ICCL, ICROTX, ICROTY, ICROTZ } = state;
+  const {
+    IVALFA, IVBETA, IVROTX, IVROTY, IVROTZ,
+    ICALFA, ICBETA, ICCL, ICCY, ICMOMX, ICMOMY, ICMOMZ, ICROTX, ICROTY, ICROTZ,
+  } = state;
   const { IPPHI, IPTHE, IPVEE, IPRHO, IPGEE, IPRAD, IPFAC, IPMASS, IPCL } = state;
 
   const IR = 1;
   const idx2 = (i, j, dim1) => i + dim1 * j;
 
-  state.PARVAL[idx2(IPPHI, IR, state.IPTOT)] = Number(els.bank.value);
-  state.PARVAL[idx2(IPTHE, IR, state.IPTOT)] = 0.0;
-  state.PARVAL[idx2(IPVEE, IR, state.IPTOT)] = Number(els.vel.value);
+  const mode = els.flightMode?.value || 'level';
+  if (mode === 'looping') {
+    state.PARVAL[idx2(IPPHI, IR, state.IPTOT)] = 0.0;
+    state.PARVAL[idx2(IPTHE, IR, state.IPTOT)] = 0.0;
+    state.PARVAL[idx2(IPVEE, IR, state.IPTOT)] = Number(els.velLoop?.value || els.vel.value);
+  } else {
+    state.PARVAL[idx2(IPPHI, IR, state.IPTOT)] = Number(els.bank.value);
+    state.PARVAL[idx2(IPTHE, IR, state.IPTOT)] = 0.0;
+    state.PARVAL[idx2(IPVEE, IR, state.IPTOT)] = Number(els.vel.value);
+  }
   state.PARVAL[idx2(IPRHO, IR, state.IPTOT)] = Number(els.rho.value);
   state.PARVAL[idx2(IPGEE, IR, state.IPTOT)] = Number(els.gee.value);
   state.PARVAL[idx2(IPMASS, IR, state.IPTOT)] = Number(els.mass.value);
-  state.PARVAL[idx2(IPCL, IR, state.IPTOT)] = Number(els.cl.value);
-  state.PARVAL[idx2(IPRAD, IR, state.IPTOT)] = 0.0;
-  state.PARVAL[idx2(IPFAC, IR, state.IPTOT)] = 0.0;
+  state.PARVAL[idx2(IPCL, IR, state.IPTOT)] = mode === 'looping'
+    ? Number(els.clLoop?.value || els.cl.value)
+    : Number(els.cl.value);
+  state.PARVAL[idx2(IPRAD, IR, state.IPTOT)] = mode === 'looping'
+    ? Number(els.radLoop?.value || 0)
+    : 0.0;
+  state.PARVAL[idx2(IPFAC, IR, state.IPTOT)] = mode === 'looping'
+    ? Number(els.facLoop?.value || 0)
+    : 0.0;
 
-  state.CONVAL[idx2(ICCL, IR, state.ICMAX)] = Number(els.clc.value);
-  state.CONVAL[idx2(ICROTX, IR, state.ICMAX)] = Number(els.p.value);
-  state.CONVAL[idx2(ICROTY, IR, state.ICMAX)] = Number(els.q.value);
-  state.CONVAL[idx2(ICROTZ, IR, state.ICMAX)] = Number(els.r.value);
-
-  state.ICON[idx2(IVALFA, IR, state.IVTOT)] = ICCL;
-  state.ICON[idx2(IVROTX, IR, state.IVTOT)] = ICROTX;
-  state.ICON[idx2(IVROTY, IR, state.IVTOT)] = ICROTY;
-  state.ICON[idx2(IVROTZ, IR, state.IVTOT)] = ICROTZ;
+  const model = parseAVL(uiState.text || '');
+  applyConstraintRowsToState(state, model.controlMap);
 
   return state;
 }
 
 function applyTrim() {
   logDebug('Trim requested.');
+  updateFlightConditions();
   let state;
   const IR = 1;
   try {
@@ -388,6 +705,12 @@ function applyTrim() {
     logDebug(`Trim setup failed: ${err?.message ?? err}`);
     return;
   }
+
+  const constraintRows = readConstraintRows();
+  const findVar = (key, fallback = 0) => {
+    const row = constraintRows.find((r) => r.variable === key);
+    return row ? row.numeric : fallback;
+  };
 
   const idx2 = (i, j, dim1) => i + dim1 * j;
   const IPPHI = 8;
@@ -404,16 +727,16 @@ function applyTrim() {
   const fac = state.PARVAL[idx2(IPFAC, IR, state.IPTOT)];
   const cl = state.PARVAL[idx2(IPCL, IR, state.IPTOT)];
 
-  els.outAlpha.textContent = `${fmt(Number(els.alpha.value), 2)} deg`;
-  els.outBeta.textContent = `${fmt(Number(els.beta.value), 2)} deg`;
+  els.outAlpha.textContent = `${fmt(findVar('alpha'), 2)} deg`;
+  els.outBeta.textContent = `${fmt(findVar('beta'), 2)} deg`;
   els.outBank.textContent = `${fmt(phi, 2)} deg`;
   els.outCL.textContent = fmt(cl, 3);
   els.outV.textContent = `${fmt(vee, 2)} m/s`;
   els.outRad.textContent = rad > 0 ? `${fmt(rad, 2)} m` : 'level';
   els.outFac.textContent = fmt(fac, 3);
   els.outThe.textContent = `${fmt(the, 2)} deg`;
-  els.outRates.textContent = `${fmt(Number(els.p.value), 2)}, ${fmt(Number(els.q.value), 2)}, ${fmt(Number(els.r.value), 2)}`;
-  els.outDef.textContent = `de ${fmt(Number(els.de.value), 1)} / da ${fmt(Number(els.da.value), 1)} / dr ${fmt(Number(els.dr.value), 1)}`;
+  els.outRates.textContent = `${fmt(findVar('p'), 2)}, ${fmt(findVar('q'), 2)}, ${fmt(findVar('r'), 2)}`;
+  els.outDef.textContent = '-';
 
   try {
     updateTrefftz(cl);
@@ -738,6 +1061,10 @@ function parseAVL(text) {
         const nums = parseNumbers(trimmed.slice(4));
         const vals = nums.length ? nums : readValueLine();
         if (vals.length >= 3) surface.translate = vals.slice(0, 3);
+      } else if (subkey === 'NOWA') {
+        surface.nowake = true;
+      } else if (subkey === 'NOLO') {
+        surface.noload = true;
       } else if (subkey === 'ANGL') {
         const nums = parseNumbers(trimmed.slice(4));
         const vals = nums.length ? nums : readValueLine();
@@ -771,9 +1098,11 @@ function parseAVL(text) {
         }
       } else if (subkey === 'AFIL') {
         if (currentSection) {
-          const path = trimmed.slice(4).trim() || (nextLine() || '');
-          currentSection.airfoilFile = path || null;
-          if (path) inlineAirfoils.push(path);
+          const parts = trimmed.split(/\s+/);
+          let apath = parts.length > 1 ? parts.slice(1).join(' ') : '';
+          if (!apath) apath = nextLine() || '';
+          currentSection.airfoilFile = apath || null;
+          if (apath) inlineAirfoils.push(apath);
         }
       } else if (subkey === 'AIRF') {
         if (currentSection) {
@@ -781,7 +1110,11 @@ function parseAVL(text) {
         }
       } else if (subkey === 'CONT') {
         if (currentSection) {
-          const parts = trimmed.split(/\s+/).slice(1);
+          let parts = trimmed.split(/\s+/).slice(1);
+          if (parts.length < 2) {
+            const next = nextLine() || '';
+            parts = next.trim().split(/\s+/);
+          }
           const name = parts.shift() || 'CTRL';
           const nums = parts.map((v) => Number(v)).filter((v) => Number.isFinite(v));
           const gain = nums[0] ?? 1.0;
@@ -843,29 +1176,36 @@ function interpY(curve, x) {
   return curve[curve.length - 1]?.[1] ?? 0.0;
 }
 
-function buildCamberSlope(coords, samples = 60) {
-  const { upper, lower } = splitAirfoilSurfaces(coords);
-  if (!upper.length || !lower.length) return null;
-  const xs = [];
-  const camber = [];
-  for (let i = 0; i <= samples; i += 1) {
-    const x = i / samples;
-    const zu = interpY(upper, x);
-    const zl = interpY(lower, x);
-    xs.push(x);
-    camber.push(0.5 * (zu + zl));
+function buildCamberSlope(coords, samples = 50) {
+  if (!coords?.length) return null;
+  const n = coords.length;
+  const X = new Float32Array(n);
+  const Y = new Float32Array(n);
+  for (let i = 0; i < n; i += 1) {
+    X[i] = coords[i][0];
+    Y[i] = coords[i][1];
   }
-  const slope = [];
-  for (let i = 0; i < xs.length; i += 1) {
-    if (i === 0) {
-      slope.push((camber[1] - camber[0]) / (xs[1] - xs[0] || 1e-6));
-    } else if (i === xs.length - 1) {
-      slope.push((camber[i] - camber[i - 1]) / (xs[i] - xs[i - 1] || 1e-6));
-    } else {
-      slope.push((camber[i + 1] - camber[i - 1]) / (xs[i + 1] - xs[i - 1] || 1e-6));
-    }
+
+  const nIn = Math.min(samples, n);
+  const XC = new Float32Array(nIn);
+  const YC = new Float32Array(nIn);
+  const TC = new Float32Array(nIn);
+  GETCAM(X, Y, n, XC, YC, TC, nIn, true);
+
+  const xs = new Float32Array(nIn);
+  const slope = new Float32Array(nIn);
+  const thick = new Float32Array(nIn);
+  const x0 = XC[0];
+  const x1 = XC[nIn - 1];
+  const den = nIn > 1 ? (nIn - 1) : 1;
+  for (let i = 0; i < nIn; i += 1) {
+    const xf = i / den;
+    xs[i] = x0 + (x1 - x0) * xf;
+    slope[i] = AKIMA(XC, YC, nIn, xs[i]).SLP;
+    thick[i] = AKIMA(XC, TC, nIn, xs[i]).YY;
   }
-  return { x: xs, s: slope, t: camber.map((_, i) => 0.0) };
+  NRMLIZ(nIn, xs);
+  return { x: Array.from(xs), s: Array.from(slope), t: Array.from(thick) };
 }
 
 function buildNacaSlope(code, samples = 60) {
@@ -963,20 +1303,6 @@ function buildSolverModel(text) {
       }
       sec.claf = 1.0;
     });
-    if (typeof surf.yduplicate === 'number') {
-      const mirror = JSON.parse(JSON.stringify(surf));
-      mirror.name = `${surf.name}-dup`;
-      mirror.component = surf.component;
-      mirror.imags = -1;
-      mirror.sections.forEach((sec) => {
-        sec.yle = 2 * surf.yduplicate - sec.yle;
-        sec.controls.forEach((ctrl) => {
-          ctrl.gain *= ctrl.sgnDup ?? 1.0;
-          if (ctrl.vhinge) ctrl.vhinge[1] *= -1;
-        });
-      });
-      surfaces.push(mirror);
-    }
   });
   model.surfaces = surfaces;
   model.controlMap = controlMap;
@@ -1132,6 +1458,31 @@ function buildSurfaceMesh(surface, color) {
     group.add(foilLine);
   });
 
+  const labelCanvas = document.createElement('canvas');
+  const ctx = labelCanvas.getContext('2d');
+  labelCanvas.width = 256;
+  labelCanvas.height = 128;
+  ctx.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = '28px JetBrains Mono, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(surface.name || 'Surface', 128, 64);
+  const tex = new THREE.CanvasTexture(labelCanvas);
+  const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+  const sprite = new THREE.Sprite(spriteMat);
+  const center = surface.sections.reduce((acc, sec) => {
+    acc.x += sec.xle;
+    acc.y += sec.yle;
+    acc.z += sec.zle;
+    return acc;
+  }, { x: 0, y: 0, z: 0 });
+  const denom = surface.sections.length || 1;
+  const labelPos = applyTransforms([center.x / denom, center.y / denom, center.z / denom]);
+  sprite.position.set(labelPos[0], labelPos[1], labelPos[2] + 0.2);
+  sprite.scale.set(1.6, 0.8, 1);
+  group.add(sprite);
+
   return group;
 }
 
@@ -1168,6 +1519,10 @@ function updateViewerButtons() {
   const gridLabel = viewerState.gridModes[viewerState.gridIndex] || 'xy';
   els.viewerView.title = `View: ${viewLabel.toUpperCase()}`;
   els.viewerGrid.title = `Grid: ${gridLabel.toUpperCase()}`;
+  if (els.viewerCoord) {
+    els.viewerCoord.classList.toggle('active', viewerState.coordMode === 'world');
+    els.viewerCoord.title = viewerState.coordMode === 'world' ? 'World frame' : 'Body frame';
+  }
 }
 
 function setControlMode(mode) {
@@ -1360,17 +1715,27 @@ function buildPlaceholderAircraft() {
 
 function updateBank(phiDeg) {
   if (!aircraft) return;
-  aircraft.rotation.x = THREE.MathUtils.degToRad(phiDeg);
+  if (viewerState.coordMode === 'world') {
+    aircraft.rotation.x = THREE.MathUtils.degToRad(phiDeg);
+  } else {
+    aircraft.rotation.x = 0;
+  }
 }
 
 function loadGeometryFromText(text, shouldFit = true) {
   if (!scene) return;
   const parsed = parseAVL(text || '');
+  uiState.modelHeader = parsed.header || null;
+  const solverModel = buildSolverModel(text || '');
+  rebuildConstraintUI(solverModel);
   const withDup = applyYDuplicate(parsed);
   const withY = (typeof applyYSymmetry === 'function') ? applyYSymmetry(withDup) : withDup;
   const model = (typeof applyZSymmetry === 'function') ? applyZSymmetry(withY) : withY;
   const dbg = [];
-  dbg.push(`Geometry debug: surfaces=${model.surfaces.length}`);
+  dbg.push(`Geometry debug: surfaces=${model.surfaces.length} controls=${solverModel.controlMap?.size ?? 0}`);
+  if (solverModel.controlMap && solverModel.controlMap.size) {
+    dbg.push(`Controls: ${Array.from(solverModel.controlMap.keys()).join(', ')}`);
+  }
   model.surfaces.forEach((surf, sIdx) => {
     if (!surf.sections?.length) return;
     const left = surf.sections[0];
@@ -1399,6 +1764,7 @@ function loadGeometryFromText(text, shouldFit = true) {
     logDebug(`Bounds: min=(${fmt(bounds.box.min.x, 3)},${fmt(bounds.box.min.y, 3)},${fmt(bounds.box.min.z, 3)}) max=(${fmt(bounds.box.max.x, 3)},${fmt(bounds.box.max.y, 3)},${fmt(bounds.box.max.z, 3)})`);
   }
   if (shouldFit) fitCameraToObject(aircraft);
+  updateFlightConditions();
   logDebug(`Geometry rebuilt: surfaces=${model.surfaces.length}`);
 }
 
@@ -1454,7 +1820,10 @@ function buildExecState(model) {
   const IPCMU = 30;
   const IPTOT = 30;
 
-  const NSURF = model.surfaces.length;
+  const dupCount = model.surfaces.reduce((sum, surf) => (
+    sum + (typeof surf.yduplicate === 'number' ? 1 : 0)
+  ), 0);
+  const NSURF = model.surfaces.length + dupCount;
   const NCONTROL = model.controlMap?.size ?? 0;
   const NDESIGN = 0;
   const NUMAX = 6;
@@ -1467,10 +1836,11 @@ function buildExecState(model) {
     const nvc = surf.nChord || 1;
     let nvs = surf.nSpan || 0;
     if (nvs === 0) {
-      nvs = surf.sections.reduce((sum, sec) => sum + (sec.nSpan ?? 0), 0);
+      nvs = surf.sections.slice(0, -1).reduce((sum, sec) => sum + (sec.nSpan ?? 0), 0);
     }
-    NSTRIP += nvs;
-    NVOR += nvs * nvc;
+    const copies = typeof surf.yduplicate === 'number' ? 2 : 1;
+    NSTRIP += nvs * copies;
+    NVOR += nvs * nvc * copies;
   });
 
   const NVMAX = Math.max(1, NVOR);
@@ -1502,7 +1872,7 @@ function buildExecState(model) {
     IVMAX,
     ICMAX,
     NRMAX,
-    NVTOT: IVTOT,
+    NVTOT: IVTOT + NCONTROL,
     NBODY: 0,
     NLNODE: 0,
     NLMAX: 1,
@@ -1548,14 +1918,14 @@ function buildExecState(model) {
     VINF_B: new Float32Array(3),
     WROT: new Float32Array(3),
     XYZREF: new Float32Array(3),
-    SREF: Math.fround(model.header.sref ?? 1.0),
-    CREF: Math.fround(model.header.cref ?? 1.0),
-    BREF: Math.fround(model.header.bref ?? 1.0),
+    SREF: Math.fround(Number.isFinite(model.header.sref) ? model.header.sref : 1.0),
+    CREF: Math.fround(Number.isFinite(model.header.cref) ? model.header.cref : 1.0),
+    BREF: Math.fround(Number.isFinite(model.header.bref) ? model.header.bref : 1.0),
     CDREF: 0.0,
 
     PARVAL: new Float32Array((IPTOT + 1) * (NRMAX + 1)),
     CONVAL: new Float32Array((ICMAX + 1) * (NRMAX + 1)),
-    ICON: new Int32Array((IVTOT + 1) * (NRMAX + 1)),
+    ICON: new Int32Array((IVMAX + 1) * (NRMAX + 1)),
     ITRIM: new Int32Array(NRMAX + 1),
 
     DELCON: new Float32Array(NDMAX + 1),
@@ -1784,31 +2154,30 @@ function buildExecState(model) {
   const IR = 1;
   const idx2 = (i, j, dim1) => i + dim1 * j;
   state.PARVAL[idx2(IPMACH, IR, IPTOT)] = state.MACH;
-  state.PARVAL[idx2(IPVEE, IR, IPTOT)] = Math.fround(Number(els.vel.value));
+  state.PARVAL[idx2(IPVEE, IR, IPTOT)] = Math.fround(Number(els.vel?.value || 0));
   state.PARVAL[idx2(IPRHO, IR, IPTOT)] = Math.fround(Number(els.rho.value));
   state.PARVAL[idx2(IPGEE, IR, IPTOT)] = Math.fround(Number(els.gee.value));
-  state.PARVAL[idx2(IPCL, IR, IPTOT)] = Math.fround(Number(els.cl.value));
-  state.PARVAL[idx2(IPPHI, IR, IPTOT)] = Math.fround(Number(els.bank.value));
-  state.PARVAL[idx2(IPXCG, IR, IPTOT)] = Math.fround(model.header.xref ?? 0.0);
-  state.PARVAL[idx2(IPYCG, IR, IPTOT)] = Math.fround(model.header.yref ?? 0.0);
-  state.PARVAL[idx2(IPZCG, IR, IPTOT)] = Math.fround(model.header.zref ?? 0.0);
+  {
+    const massVal = Number(els.mass?.value || 0);
+    const massUse = massVal > 0 ? massVal : 1.0;
+    state.PARVAL[idx2(IPMASS, IR, IPTOT)] = Math.fround(massUse);
+  }
+  state.PARVAL[idx2(IPCL, IR, IPTOT)] = Math.fround(Number(els.cl?.value || 0));
+  state.PARVAL[idx2(IPPHI, IR, IPTOT)] = Math.fround(Number(els.bank?.value || 0));
+  state.PARVAL[idx2(IPXCG, IR, IPTOT)] = Math.fround(Number.isFinite(model.header.xref) ? model.header.xref : 0.0);
+  state.PARVAL[idx2(IPYCG, IR, IPTOT)] = Math.fround(Number.isFinite(model.header.yref) ? model.header.yref : 0.0);
+  state.PARVAL[idx2(IPZCG, IR, IPTOT)] = Math.fround(Number.isFinite(model.header.zref) ? model.header.zref : 0.0);
   state.PARVAL[idx2(IPCD0, IR, IPTOT)] = 0.0;
-  state.ALFA = Math.fround(Number(els.alpha.value) * state.DTR);
-  state.BETA = Math.fround(Number(els.beta.value) * state.DTR);
+  // Seed alpha to a small positive value to avoid singular trim steps.
+  state.ALFA = Math.fround(2.0 * state.DTR);
+  state.BETA = 0.0;
 
-  // Constraints
-  state.CONVAL[idx2(ICCL, IR, ICMAX)] = Math.fround(Number(els.clc.value));
-  state.CONVAL[idx2(ICMOMX, IR, ICMAX)] = Math.fround(Number(els.cmx.value));
-  state.CONVAL[idx2(ICMOMY, IR, ICMAX)] = Math.fround(Number(els.cmy.value));
-  state.CONVAL[idx2(ICMOMZ, IR, ICMAX)] = Math.fround(Number(els.cmz.value));
-  state.CONVAL[idx2(ICBETA, IR, ICMAX)] = Math.fround(Number(els.beta.value));
-
-  // Trim variable selection
-  state.ICON[idx2(IVALFA, IR, IVTOT)] = ICCL;
-  state.ICON[idx2(IVBETA, IR, IVTOT)] = ICBETA;
-  state.ICON[idx2(IVROTX, IR, IVTOT)] = ICMOMX;
-  state.ICON[idx2(IVROTY, IR, IVTOT)] = ICMOMY;
-  state.ICON[idx2(IVROTZ, IR, IVTOT)] = ICMOMZ;
+  // Trim variable selection (defaults; overridden by constraint UI)
+  state.ICON[idx2(IVALFA, IR, IVMAX)] = ICCL;
+  state.ICON[idx2(IVBETA, IR, IVMAX)] = ICBETA;
+  state.ICON[idx2(IVROTX, IR, IVMAX)] = ICMOMX;
+  state.ICON[idx2(IVROTY, IR, IVMAX)] = ICMOMY;
+  state.ICON[idx2(IVROTZ, IR, IVMAX)] = ICMOMZ;
 
   for (let n = 1; n <= NCONTROL; n += 1) {
     state.LCONDEF[n] = 1;
@@ -1823,14 +2192,21 @@ function buildExecState(model) {
 function buildGeometry(state, model) {
   state.NVOR = 0;
   state.NSTRIP = 0;
-  model.surfaces.forEach((surf, idx) => {
-    const isurf = idx + 1;
+  let surfIndex = 0;
+  model.surfaces.forEach((surf) => {
+    surfIndex += 1;
+    const isurf = surfIndex;
     const comp = (surf.component == null || surf.component === 0) ? isurf : surf.component;
     state.LNCOMP[isurf] = comp;
-    state.LFWAKE[isurf] = 1;
-    state.LFLOAD[isurf] = 1;
-    MAKESURF(state, idx + 1, surf);
+    state.LFWAKE[isurf] = surf.nowake ? 0 : 1;
+    state.LFLOAD[isurf] = surf.noload ? 0 : 1;
+    MAKESURF(state, isurf, surf);
+    if (typeof surf.yduplicate === 'number') {
+      surfIndex += 1;
+      SDUPL(state, isurf, surf.yduplicate, surfIndex);
+    }
   });
+  state.NSURF = surfIndex;
   ENCALC(state);
 }
 
@@ -1839,6 +2215,31 @@ function runExecFromText(text) {
   logDebug('EXEC start');
   const model = buildSolverModel(text);
   const state = buildExecState(model);
+  try {
+    const rows = readConstraintRows();
+    if (rows.length) {
+      const line = rows.map((r) => `${r.variable}:${r.constraint}=${r.numeric}`).join(' | ');
+      logDebug(`EXEC constraints (UI): ${line}`);
+    }
+  } catch {
+    // ignore logging failures
+  }
+  applyConstraintRowsToState(state, model.controlMap);
+  try {
+    const names = model.controlMap ? Array.from(model.controlMap.keys()) : [];
+    if (names.length) {
+      const idx2 = (i, j, dim1) => i + dim1 * j;
+      const entries = names.map((name, i) => {
+        const iv = state.IVTOT + i + 1;
+        const ic = state.ICON[idx2(iv, 1, state.IVMAX)];
+        const cv = state.CONVAL[idx2(ic, 1, state.ICMAX)];
+        return `${name}:IC${ic}=${fmt(cv, 4)}`;
+      });
+      logDebug(`EXEC constraints (controls): ${entries.join(' | ')}`);
+    }
+  } catch {
+    // ignore logging failures
+  }
   buildGeometry(state, model);
   const worker = ensureExecWorker();
   if (!worker) {
@@ -2103,8 +2504,30 @@ function applyExecResults(result) {
   }
 
   if (result.TREFFTZ && result.TREFFTZ.strips?.length) {
-    uiState.trefftzData = result.TREFFTZ;
-    const strips = result.TREFFTZ.strips;
+    const rawTrefftz = result.TREFFTZ;
+    const stripsRaw = rawTrefftz.strips;
+    let badCnc = 0;
+    let badCl = 0;
+    let badClt = 0;
+    let badDw = 0;
+    const toFinite = (v, kind) => {
+      if (Number.isFinite(v)) return v;
+      if (kind === 'cnc') badCnc += 1;
+      if (kind === 'cl') badCl += 1;
+      if (kind === 'clt') badClt += 1;
+      if (kind === 'dw') badDw += 1;
+      return 0.0;
+    };
+    const strips = stripsRaw.map((entry) => [
+      entry[0],
+      entry[1],
+      toFinite(entry[2], 'cnc'),
+      toFinite(entry[3], 'cl'),
+      toFinite(entry[4], 'clt'),
+      toFinite(entry[5], 'dw'),
+      entry[6],
+    ]);
+    uiState.trefftzData = { ...rawTrefftz, strips };
     let ymin = Infinity;
     let ymax = -Infinity;
     let cmin = Infinity;
@@ -2119,6 +2542,9 @@ function applyExecResults(result) {
       wmin = Math.min(wmin, dw);
       wmax = Math.max(wmax, dw);
     });
+    if (badCnc || badCl || badClt || badDw) {
+      logDebug(`Trefftz non-finite: cnc=${badCnc} cl=${badCl} clt=${badClt} dw=${badDw}`);
+    }
     logDebug(`Trefftz: strips=${strips.length} y=[${fmt(ymin, 2)}, ${fmt(ymax, 2)}] c=[${fmt(cmin, 4)}, ${fmt(cmax, 4)}] dw=[${fmt(wmin, 4)}, ${fmt(wmax, 4)}]`);
     const sample = strips.slice(0, 5).map((s) => s.map((v) => (Number.isFinite(v) ? Number(v).toFixed(4) : String(v))));
     logDebug(`Trefftz sample: ${JSON.stringify(sample)}`);
@@ -2162,6 +2588,17 @@ window.addEventListener('resize', handleResize);
 async function bootApp() {
   updateTrefftz(Number(els.cl.value));
   applyTrim();
+  try {
+    const model = buildSolverModel(els.fileText.value || '');
+    rebuildConstraintUI(model);
+  } catch {
+    rebuildConstraintUI({ controlMap: new Map() });
+  }
+  if (els.constraintTable) {
+    logDebug(`Constraint table rows: ${els.constraintTable.children.length}`);
+  } else {
+    logDebug('Constraint table missing in DOM.');
+  }
   if (await ensureThree()) {
     initScene();
     loadGeometryFromText(els.fileText.value, true);

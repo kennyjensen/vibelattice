@@ -17,14 +17,67 @@ onmessage = (evt) => {
   try {
     const t0 = Date.now();
     log('Worker EXEC start');
+    try {
+      const IR = 1;
+      const idx2 = (i, j, dim1) => i + dim1 * j;
+      const ipcl = state.IPCL ?? 6;
+      const ipvee = state.IPVEE ?? 12;
+      const ipphi = state.IPPHI ?? 8;
+      const iprho = state.IPRHO ?? 13;
+      const ipgee = state.IPGEE ?? 14;
+      const ipmass = state.IPMASS ?? 20;
+      const par = state.PARVAL || [];
+      log(`EXEC inputs: CL=${par[idx2(ipcl, IR, state.IPTOT || 30)]} V=${par[idx2(ipvee, IR, state.IPTOT || 30)]} PHI=${par[idx2(ipphi, IR, state.IPTOT || 30)]} RHO=${par[idx2(iprho, IR, state.IPTOT || 30)]} GEE=${par[idx2(ipgee, IR, state.IPTOT || 30)]} MASS=${par[idx2(ipmass, IR, state.IPTOT || 30)]}`);
+      log(`EXEC refs: SREF=${state.SREF} CREF=${state.CREF} BREF=${state.BREF}`);
+      const ivmax = state.IVMAX || 0;
+      const icmax = state.ICMAX || 0;
+      if (state.ICON && state.CONVAL && ivmax && icmax) {
+        const iValfa = state.IVALFA || 1;
+        const iVbeta = state.IVBETA || 2;
+        const iVrotx = state.IVROTX || 3;
+        const iVroty = state.IVROTY || 4;
+        const iVrotz = state.IVROTZ || 5;
+        const icMap = [
+          ['IVALFA', iValfa],
+          ['IVBETA', iVbeta],
+          ['IVROTX', iVrotx],
+          ['IVROTY', iVroty],
+          ['IVROTZ', iVrotz],
+        ];
+        const iconVals = icMap.map(([label, iv]) => {
+          const ic = state.ICON[idx2(iv, IR, ivmax)];
+          const cv = state.CONVAL[idx2(ic, IR, icmax)];
+          return `${label}=>IC${ic} CON=${cv}`;
+        });
+        log(`EXEC constraints: ${iconVals.join(' | ')}`);
+      }
+    } catch (err) {
+      log(`EXEC precheck failed: ${err?.message ?? err}`);
+    }
     EXEC(state, 8, 0, 1);
     const dt = Date.now() - t0;
     log(`Worker EXEC done (${dt} ms)`);
+    log(`EXEC state: ALFA=${state.ALFA} BETA=${state.BETA} MACH=${state.MACH}`);
+    if (state.VINF && state.WROT) {
+      log(`EXEC VINF=[${state.VINF[0]}, ${state.VINF[1]}, ${state.VINF[2]}] WROT=[${state.WROT[0]}, ${state.WROT[1]}, ${state.WROT[2]}]`);
+    }
     const trefftz = {
       axis: 'Y',
       cref: state.CREF,
       strips: [],
       surfaces: [],
+    };
+    let badCnc = 0;
+    let badCl = 0;
+    let badClt = 0;
+    let badDw = 0;
+    const toFinite = (v, kind) => {
+      if (Number.isFinite(v)) return v;
+      if (kind === 'cnc') badCnc += 1;
+      if (kind === 'cl') badCl += 1;
+      if (kind === 'clt') badClt += 1;
+      if (kind === 'dw') badDw += 1;
+      return 0.0;
     };
     if (state.DWWAKE && state.RLE && state.CNC && state.CLA_LSTRP && state.CLT_LSTRP && state.JFRST && state.NJ) {
       for (let n = 1; n <= state.NSURF; n += 1) {
@@ -36,14 +89,17 @@ onmessage = (evt) => {
           const j = j1 + jj;
           const y = state.RLE[idx2(2, j, 4)];
           const z = state.RLE[idx2(3, j, 4)];
-          const cnc = state.CNC[j] ?? 0.0;
-          const cl = state.CLA_LSTRP[j] ?? 0.0;
-          const clPerp = state.CLT_LSTRP[j] ?? 0.0;
-          const dw = state.DWWAKE[j] ?? 0.0;
+          const cnc = toFinite(state.CNC[j], 'cnc');
+          const cl = toFinite(state.CLA_LSTRP[j], 'cl');
+          const clPerp = toFinite(state.CLT_LSTRP[j], 'clt');
+          const dw = toFinite(state.DWWAKE[j], 'dw');
           trefftz.strips.push([y, z, cnc, cl, clPerp, dw, n]);
         }
         trefftz.surfaces.push({ id: n, start, count: nj });
       }
+    }
+    if (badCnc || badCl || badClt || badDw) {
+      log(`Trefftz non-finite: cnc=${badCnc} cl=${badCl} clt=${badClt} dw=${badDw}`);
     }
     const surfVec = (arr, is) => (arr ? [
       arr[idx2(0, is, 3)],
