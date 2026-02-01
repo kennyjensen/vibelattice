@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AVL Static JS - Trim & Geometry</title>
   <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.26/dist/uPlot.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
   <script type="importmap">
   {
     "imports": {
@@ -13,10 +15,26 @@
     }
   }
   </script>
+  <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.26/dist/uPlot.iife.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 </head>
 <body>
-  <div class="app">
-    <aside class="panel-col">
+  <header class="app-header">
+    <div class="title-bar">
+      <div class="title-text">
+        <div class="title">VibeLattice</div>
+        <div class="title-sub">A vortex lattice method based on <a href="https://web.mit.edu/drela/Public/web/avl/" target="_blank" rel="noopener">AVL</a></div>
+      </div>
+    </div>
+    <div class="top-nav">
+      <button id="navSettings" class="nav-btn active" type="button">Settings</button>
+      <button id="navPlots" class="nav-btn" type="button">Plots</button>
+      <button id="navOutputs" class="nav-btn" type="button">Outputs</button>
+    </div>
+  </header>
+  <div class="app" id="appRoot">
+    <section class="col settings-col" id="settingsCol">
+      <aside class="panel-col">
       <div class="panel">
         <div class="panel-title">File</div>
         <div class="panel-body">
@@ -87,24 +105,15 @@
 
           <div class="row">
             <button id="trimBtn" class="btn primary" type="button">Trim</button>
-            <label class="toggle">
-              <input id="execToggle" type="checkbox" />
-              <span>Run full EXEC</span>
-            </label>
           </div>
         </div>
       </div>
-    </aside>
+      </aside>
+    </section>
 
-    <main class="main-col">
+    <section class="col plots-col" id="plotsCol">
+      <main class="main-col">
       <div class="stage stage-geo">
-        <div class="stage-header">
-          <div>
-            <div class="stage-title">Geometry</div>
-            <div class="stage-sub">Drag to orbit, scroll to zoom, right-drag to pan</div>
-          </div>
-          <div class="pill">3D Viewer</div>
-        </div>
         <div id="viewer" class="viewer">
           <div class="viewer-overlay">
             <button class="viewer-btn icon-btn" id="viewerPan" type="button" title="Pan mode">
@@ -156,18 +165,13 @@
       </div>
 
       <div class="stage">
-        <div class="stage-header">
-          <div>
-            <div class="stage-title">Trefftz Plane</div>
-            <div class="stage-sub">Projected downwash / lift distribution</div>
-          </div>
-          <div class="pill">Plot</div>
-        </div>
-        <canvas id="trefftz" class="plot" width="1200" height="300"></canvas>
+        <div id="trefftz" class="trefftz-plot"></div>
       </div>
-    </main>
+      </main>
+    </section>
 
-    <aside class="output-col">
+    <section class="col outputs-col" id="outputsCol">
+      <aside class="output-col">
       <div class="panel output">
         <div class="panel-title">Trim Output</div>
         <div class="panel-body">
@@ -245,8 +249,85 @@
           <pre id="debugLog" class="debug-log"></pre>
         </div>
       </div>
-    </aside>
+      </aside>
+    </section>
   </div>
+  <script id="defaultPlane" type="text/plain">
+!***************************************
+!Sample AVL input dataset
+!***************************************
+Plane Vanilla
+!Mach
+ 0.0    
+!IYsym   IZsym   Zsym
+ 0       0       0.0
+!Sref    Cref    Bref
+12.0     1.0     15.0
+!Xref    Yref    Zref
+0.0      0.0      0.0
+
+#--------------------------------------------------
+SURFACE 
+WING 
+!Nchordwise  Cspace  Nspanwise  Sspace
+1            1.0     16         -2.0
+YDUPLICATE 
+0.0
+ANGLE
+4.0
+
+SECTION
+!Xle    Yle    Zle     Chord   Ainc  Nspanwise  Sspace
+-0.25   0.     0.      1.000   0.    8          1.0
+CONTROL
+aileron  1.0  0.0  0. 0. 0.  -1
+
+SECTION
+!Xle    Yle    Zle     Chord   Ainc  Nspanwise  Sspace
+-0.175  7.5    0.5     0.700   0.    0          0
+CONTROL
+aileron  1.0  0.0  0. 0. 0.  -1
+
+#--------------------------------------------------
+SURFACE
+STAB
+!Nchordwise  Cspace  Nspanwise  Sspace
+1            1.0     7          -2.0
+YDUPLICATE 
+0.0
+TRANSLATE 
+6.0  0.0  0.5
+SECTION
+!Xle    Yle    Zle     Chord   Ainc  Nspanwise  Sspace
+-0.1    0.     0.0     0.4     0.    7          -1.25
+CONTROL
+elevator  1.0  0.0  0. 0. 0.  1
+
+SECTION
+!Xle    Yle    Zle     Chord   Ainc  Nspanwise  Sspace
+-0.075  2.00   0.0     0.3     0.    0          0
+CONTROL
+elevator  1.0  0.0  0. 0. 0.  1
+
+#--------------------------------------------------
+SURFACE
+FIN
+!Nchordwise  Cspace   Nspanewise  Sspace
+1            1.0      10          1.0
+TRANSLATE
+6.0   0.0  0.5
+SECTION
+!Xle    Yle    Zle     Chord   Ainc  Nspanwise  Sspace
+-0.1    0.     0.0     0.4     0.    7          -1.25
+CONTROL
+rudder  1.0  0.0  0. 0. 0.  1
+
+SECTION
+!Xle    Yle    Zle     Chord   Ainc  Nspanwise  Sspace
+-0.075  0.     1.0     0.3     0.    0          0
+CONTROL
+rudder  1.0  0.0  0. 0. 0.  1
+  </script>
 
   <script>
     (function () {

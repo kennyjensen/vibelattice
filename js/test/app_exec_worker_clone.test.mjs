@@ -75,7 +75,6 @@ test('EXEC worker should not produce NaNs after structured clone', async () => {
     radLoop: makeEl('0'),
     facLoop: makeEl('0'),
     trimBtn: makeEl(),
-    execToggle: makeEl(),
     viewer: makeEl(),
     trefftz: makeEl(),
     outAlpha: makeEl(),

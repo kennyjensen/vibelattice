@@ -23,18 +23,107 @@ body {
   background: radial-gradient(1200px 800px at 20% 0%, #1b2334 0%, #0e1116 55%, #0b0e14 100%);
 }
 
+.app-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: rgba(10, 14, 22, 0.9);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(36, 49, 70, 0.6);
+}
+
+.title-bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 12px 16px 6px;
+}
+
+.title-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.title {
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.05;
+}
+
+.title-sub {
+  margin-top: -2.25rem;
+  font-size: 0.9rem;
+  line-height: 1.25;
+  color: var(--muted);
+}
+
+.title-sub a {
+  color: #7dd3fc;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.title-sub a:hover {
+  border-bottom-color: #7dd3fc;
+}
+
+.top-nav {
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 16px 10px;
+}
+
+.nav-btn {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(17, 24, 39, 0.7);
+  color: var(--muted);
+  padding: 8px 14px;
+  border-radius: 999px;
+  font: 600 12px "Space Grotesk", system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.nav-btn.active {
+  color: #0b0f17;
+  background: linear-gradient(135deg, #22d3ee, #2dd4bf);
+  border-color: transparent;
+}
+
 .app {
-  display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) 300px;
-  gap: 20px;
-  padding: 20px;
+  display: flex;
+  gap: 16px;
+  padding: 120px 16px 24px;
   min-height: 100vh;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scroll-padding: 16px;
+}
+
+.col {
+  flex: 0 0 100%;
+  scroll-snap-align: start;
+}
+
+.settings-col, .plots-col, .outputs-col {
+  display: flex;
 }
 
 .panel-col, .output-col {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  width: 100%;
+}
+
+.main-col {
+  width: 100%;
 }
 
 .panel {
@@ -144,9 +233,9 @@ textarea.code {
 }
 
 .main-col {
-  display: grid;
-  grid-template-rows: minmax(360px, 1fr) 280px;
-  gap: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .stage {
@@ -223,7 +312,7 @@ textarea.code {
 
 .viewer {
   position: relative;
-  height: clamp(280px, 52vh, 520px);
+  height: clamp(240px, 44vh, 460px);
   touch-action: none;
 }
 
@@ -267,14 +356,152 @@ textarea.code {
 
 .plot {
   width: 100%;
-  height: calc(100% - 58px);
+  height: clamp(200px, 30vh, 320px);
   display: block;
   background: radial-gradient(800px 300px at 20% 0%, #111827 0%, #0b0f17 60%);
+}
+
+.trefftz-plot {
+  width: 100%;
+  height: clamp(200px, 30vh, 320px);
+  background: radial-gradient(800px 300px at 20% 0%, #111827 0%, #0b0f17 60%);
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+  overflow: hidden;
+  position: relative;
+}
+
+.trefftz-plot .uplot {
+  width: 100%;
+  height: 100%;
+}
+
+.trefftz-plot .u-axis .u-label,
+.trefftz-plot .u-axis .u-tick,
+.trefftz-plot .u-axis .u-values,
+.trefftz-plot .u-legend {
+  color: #9aa8b7;
+}
+
+.trefftz-plot .u-legend {
+  font: 11px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  background: rgba(15, 23, 42, 0.7);
+  padding: 6px 8px;
+  border-radius: 8px;
+  display: block !important;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  max-width: 55%;
+  max-height: 60%;
+  overflow: auto;
+}
+
+.trefftz-legend {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(15, 23, 42, 0.7);
+  border-radius: 8px;
+  padding: 6px 8px;
+  display: grid;
+  gap: 4px;
+  font: 11px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: #9aa8b7;
+}
+
+.trefftz-axis-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font: 11px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: #9aa8b7;
+}
+
+.trefftz-axis-label {
+  position: absolute;
+  opacity: 0.85;
+}
+
+.trefftz-axis-label .katex,
+.trefftz-legend-item .katex {
+  font-size: 0.95em;
+}
+
+.trefftz-axis-label.x {
+  right: 8px;
+  bottom: 16px;
+}
+
+.trefftz-axis-label.y-left {
+  left: 6px;
+  top: 6px;
+}
+
+.trefftz-axis-label.y-right {
+  right: 8px;
+  top: 6px;
+}
+
+.trefftz-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trefftz-legend-item .swatch.line {
+  width: 28px;
+  height: 10px;
+  stroke-width: 1.2;
+  fill: none;
+  flex: 0 0 auto;
+}
+
+.trefftz-legend-item .swatch.line.clp line { stroke: #ef4444; }
+.trefftz-legend-item .swatch.line.cl line { stroke: #fb923c; }
+.trefftz-legend-item .swatch.line.cnc line { stroke: #22c55e; }
+.trefftz-legend-item .swatch.line.dw line { stroke: #3b82f6; }
+
+.trefftz-legend-item sub {
+  font-size: 0.7em;
+  line-height: 0;
+  vertical-align: -0.3em;
+}
+
+.trefftz-legend-item .perp {
+  font-size: 0.8em;
+  margin-left: 2px;
+}
+
+.trefftz-legend-item .swatch {
+  width: 12px;
+  height: 2px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.panel select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: #0b0f17;
+  color: #e2e8f0;
+  font: 500 13px "Space Grotesk", system-ui, sans-serif;
+}
+
+.trefftz-plot .u-grid .u-gridline {
+  stroke: rgba(255,255,255,0.08);
 }
 
 .output .kvs {
   display: grid;
   gap: 12px;
+}
+
+.output .panel-body {
+  max-height: 55vh;
+  overflow: auto;
 }
 
 .kv {
@@ -321,6 +548,7 @@ textarea.code {
   padding: 10px;
   max-height: 240px;
   overflow: auto;
+  overflow-x: auto;
   font-size: 0.78rem;
   color: #d1d5f0;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
@@ -383,13 +611,39 @@ textarea.code {
 }
 
 @media (max-width: 1200px) {
-  .app {
-    grid-template-columns: 1fr;
-  }
-  .main-col {
-    grid-template-rows: minmax(320px, 1fr) 240px;
-  }
   .stage-geo .viewer {
     height: clamp(240px, 50vh, 480px);
+  }
+}
+
+@media (min-width: 1081px) {
+  .app {
+    display: grid;
+    grid-template-columns: 320px minmax(0, 1fr) 320px;
+    gap: 20px;
+    padding: 120px 20px 24px;
+    overflow: visible;
+  }
+
+  .col {
+    flex: initial;
+  }
+
+  .title-sub {
+    max-width: 26ch;
+  }
+}
+
+@media (max-width: 1080px) {
+  .title-text {
+    flex-direction: row;
+    align-items: flex-end;
+    gap: 12px;
+  }
+
+  .title-sub {
+    margin-top: 0;
+    max-width: min(60vw, 18rem);
+    font-size: 0.85rem;
   }
 }

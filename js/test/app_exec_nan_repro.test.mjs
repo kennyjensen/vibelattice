@@ -49,7 +49,6 @@ test('app build pipeline should not yield NaN for b737 EXEC', async () => {
     radLoop: makeEl('0'),
     facLoop: makeEl('0'),
     trimBtn: makeEl(),
-    execToggle: makeEl(),
     viewer: makeEl(),
     trefftz: makeEl(),
     outAlpha: makeEl(),

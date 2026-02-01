@@ -27,7 +27,13 @@ const els = {
   radLoop: document.getElementById('radLoop'),
   facLoop: document.getElementById('facLoop'),
   trimBtn: document.getElementById('trimBtn'),
-  execToggle: document.getElementById('execToggle'),
+  appRoot: document.getElementById('appRoot'),
+  navSettings: document.getElementById('navSettings'),
+  navPlots: document.getElementById('navPlots'),
+  navOutputs: document.getElementById('navOutputs'),
+  settingsCol: document.getElementById('settingsCol'),
+  plotsCol: document.getElementById('plotsCol'),
+  outputsCol: document.getElementById('outputsCol'),
   viewer: document.getElementById('viewer'),
   trefftz: document.getElementById('trefftz'),
   outAlpha: document.getElementById('outAlpha'),
@@ -86,8 +92,54 @@ const viewerState = {
 };
 
 let execInProgress = false;
+let trefftzPlot = null;
 let execWorker = null;
 let execTimeoutId = null;
+
+function initTopNav() {
+  if (!els.appRoot || !els.navSettings || !els.navPlots || !els.navOutputs) return;
+  const navItems = [
+    { btn: els.navSettings, col: els.settingsCol },
+    { btn: els.navPlots, col: els.plotsCol },
+    { btn: els.navOutputs, col: els.outputsCol },
+  ];
+
+  const setActive = (btn) => {
+    navItems.forEach(({ btn: b }) => b?.classList?.toggle('active', b === btn));
+  };
+
+  navItems.forEach(({ btn, col }) => {
+    if (!btn || !col) return;
+    btn.addEventListener('click', () => {
+      const left = col.offsetLeft - els.appRoot.offsetLeft;
+      els.appRoot.scrollTo({ left, behavior: 'smooth' });
+      setActive(btn);
+    });
+  });
+
+  let raf = 0;
+  const onScroll = () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      const scrollLeft = els.appRoot.scrollLeft;
+      let best = navItems[0];
+      let bestDist = Infinity;
+      navItems.forEach((item) => {
+        if (!item.col) return;
+        const dist = Math.abs(item.col.offsetLeft - scrollLeft);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = item;
+        }
+      });
+      if (best?.btn) setActive(best.btn);
+    });
+  };
+
+  els.appRoot.addEventListener('scroll', onScroll, { passive: true });
+  setActive(els.navSettings);
+}
 
 function applyYSymmetry(model) {
   if (!model || !model.header || model.header.iysym !== 1) return model;
@@ -513,6 +565,45 @@ function handleFileLoad(file) {
   reader.readAsText(file);
 }
 
+async function loadDefaultAVL() {
+  const existing = els.fileText.value?.trim();
+  if (existing) {
+    uiState.text = existing;
+    return;
+  }
+  const candidates = [
+    new URL('./third_party/avl/runs/plane.avl', window.location.href).toString(),
+    new URL('../third_party/avl/runs/plane.avl', window.location.href).toString(),
+    new URL('../../third_party/avl/runs/plane.avl', window.location.href).toString(),
+  ];
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const text = await res.text();
+      if (!text.trim()) continue;
+      uiState.text = text;
+      uiState.filename = 'plane.avl';
+      els.fileText.value = text;
+      if (els.fileMeta) els.fileMeta.textContent = 'Loaded: plane.avl (default)';
+      logDebug('Loaded default file: plane.avl');
+      return;
+    } catch {
+      // try next
+    }
+  }
+  const embedded = document.getElementById('defaultPlane')?.textContent || '';
+  if (embedded.trim()) {
+    uiState.text = embedded;
+    uiState.filename = 'plane.avl';
+    els.fileText.value = embedded;
+    if (els.fileMeta) els.fileMeta.textContent = 'Loaded: plane.avl (embedded)';
+    logDebug('Loaded embedded default file: plane.avl');
+    return;
+  }
+  logDebug('Default file plane.avl not found.');
+}
+
 els.fileInput.addEventListener('change', (evt) => {
   const file = evt.target.files?.[0];
   if (file) handleFileLoad(file);
@@ -748,7 +839,7 @@ function applyTrim() {
   logDebug('Trim base outputs updated.');
 
   // Full EXEC solve based on loaded AVL file
-  if (uiState.text.trim() && els.execToggle?.checked) {
+  if (uiState.text.trim()) {
     setTimeout(() => {
       if (execInProgress) {
         logDebug('EXEC skipped: already running.');
@@ -770,6 +861,249 @@ els.trimBtn.addEventListener('click', applyTrim);
 
 function updateTrefftz(cl) {
   const canvas = els.trefftz;
+  const uPlotCtor = window?.uPlot;
+  const katexLib = window?.katex;
+  const hasTrefftz = uiState.trefftzData && uiState.trefftzData.strips?.length;
+
+  if (uPlotCtor && canvas?.clientWidth != null) {
+    if (!hasTrefftz) {
+      if (trefftzPlot) {
+        trefftzPlot.destroy();
+        trefftzPlot = null;
+      }
+      canvas.innerHTML = '<div style="color:#9aa8b7;font:12px JetBrains Mono, monospace;padding:12px;">Trefftz data not available.</div>';
+      return;
+    }
+
+    const { strips, surfaces, cref } = uiState.trefftzData;
+    const x = [];
+    const cnc = [];
+    const clArr = [];
+    const clPerp = [];
+    const dw = [];
+
+    const segments = surfaces.map((surf) => {
+      const seg = [];
+      for (let i = 0; i < surf.count; i += 1) {
+        const entry = strips[surf.start + i];
+        const y = Number(entry[0]);
+        const z = Number(entry[1]);
+        const cncVal = Number(entry[2]);
+        const clVal = Number(entry[3]);
+        const clpVal = Number(entry[4]);
+        const dwVal = Number(entry[5]);
+        if (!Number.isFinite(y) || !Number.isFinite(cncVal) || !Number.isFinite(clVal) || !Number.isFinite(clpVal) || !Number.isFinite(dwVal)) {
+          continue;
+        }
+        seg.push([y, z, cncVal, clVal, clpVal, dwVal]);
+      }
+      seg.sort((a, b) => a[0] - b[0]);
+      const minY = seg.length ? seg[0][0] : 0;
+      const maxY = seg.length ? seg[seg.length - 1][0] : 0;
+      return { seg, minY, maxY };
+    });
+
+    const merged = [];
+    const used = new Array(segments.length).fill(false);
+    const tol = 1e-2;
+    for (let i = 0; i < segments.length; i += 1) {
+      if (used[i] || segments[i].seg.length === 0) continue;
+      let combo = segments[i].seg.slice();
+      used[i] = true;
+      for (let j = i + 1; j < segments.length; j += 1) {
+        if (used[j] || segments[j].seg.length === 0) continue;
+        const a = segments[i];
+        const b = segments[j];
+        if (Math.abs(a.minY + b.maxY) < tol && Math.abs(a.maxY + b.minY) < tol) {
+          combo = combo.concat(b.seg);
+          used[j] = true;
+          break;
+        }
+      }
+      combo.sort((a, b) => a[0] - b[0]);
+      merged.push(combo);
+    }
+
+    const mergedSegments = [];
+    merged.forEach((seg) => {
+      seg.forEach((entry) => {
+        const y = entry[0];
+        x.push(y);
+        cnc.push(entry[2] / (cref || 1.0));
+        clArr.push(entry[3]);
+        clPerp.push(entry[4]);
+        dw.push(-entry[5]);
+      });
+      if (seg.length) {
+        const start = x.length - seg.length;
+        mergedSegments.push({ start, count: seg.length });
+      }
+    });
+
+    const width = Math.max(320, canvas.clientWidth || 600);
+    const height = Math.max(220, canvas.clientHeight || 300);
+    const data = [x];
+    const series = [{ }]; // x
+    const seriesColors = [
+      { label: 'CNC/Cref', color: '#22c55e', key: 'cnc', dash: [] },
+      { label: 'CL', color: '#fb923c', key: 'cl', dash: [6, 3, 1.5, 3] },
+      { label: 'CL_perp', color: '#ef4444', key: 'clp', dash: [6, 4] },
+      { label: 'alpha_i', color: '#3b82f6', key: 'dw', dash: [1.5, 3] },
+    ];
+    const baseSeries = { cnc, cl: clArr, clp: clPerp, dw };
+    mergedSegments.forEach((seg, sidx) => {
+      seriesColors.forEach((meta) => {
+        const arr = new Array(x.length).fill(null);
+        const src = baseSeries[meta.key];
+        for (let i = 0; i < seg.count; i += 1) {
+          arr[seg.start + i] = src[seg.start + i];
+        }
+        data.push(arr);
+        series.push({
+          label: `${meta.label} S${sidx + 1}`,
+          scale: meta.key === 'dw' ? 'induced' : 'coeff',
+          stroke: meta.color,
+          width: 1,
+          dash: meta.dash,
+          spanGaps: false,
+        });
+      });
+    });
+    const finiteX = x.filter((v) => Number.isFinite(v));
+    let xMin = 0;
+    let xMax = 0;
+    if (finiteX.length) {
+      xMin = Math.min(...finiteX);
+      xMax = Math.max(...finiteX);
+    }
+    if (typeof logDebug === 'function') {
+      logDebug(`uPlot data: x=${x.length} finite=${finiteX.length} range=[${fmt(xMin, 3)}, ${fmt(xMax, 3)}] width=${width} height=${height}`);
+    }
+    const opts = {
+      width,
+      height,
+      padding: [6, 6, 6, 6],
+      legend: { show: false },
+      scales: {
+        x: Number.isFinite(xMin) && Number.isFinite(xMax) && xMin !== xMax ? { min: xMin, max: xMax } : {},
+        coeff: {},
+        induced: {},
+      },
+      axes: [
+        {
+          label: '',
+          stroke: '#9aa8b7',
+          grid: { stroke: 'rgba(255,255,255,0.08)' },
+          values: (u, vals) => vals.map((v) => fmt(v, 1)),
+          labelSize: 0,
+          labelGap: 0,
+        },
+        {
+          scale: 'coeff',
+          label: '',
+          stroke: '#9aa8b7',
+          grid: { stroke: 'rgba(255,255,255,0.08)' },
+          values: (u, vals) => vals.map((v) => fmt(v, 1)),
+          labelSize: 0,
+          labelGap: 0,
+        },
+        {
+          scale: 'induced',
+          label: '',
+          side: 1,
+          stroke: '#9aa8b7',
+          grid: { stroke: 'rgba(255,255,255,0.08)' },
+          values: (u, vals) => vals.map((v) => fmt(v, 1)),
+          labelSize: 0,
+          labelGap: 0,
+        },
+      ],
+      series,
+    };
+
+    if (!trefftzPlot) {
+      canvas.innerHTML = '';
+      trefftzPlot = new uPlotCtor(opts, data, canvas);
+    } else {
+      if (trefftzPlot.width !== width || trefftzPlot.height !== height) {
+        trefftzPlot.setSize({ width, height });
+      }
+      trefftzPlot.setData(data);
+    }
+
+    let legend = canvas.querySelector?.('.trefftz-legend');
+    if (!legend) {
+      legend = document.createElement?.('div');
+      if (legend) {
+        legend.className = 'trefftz-legend';
+        canvas.appendChild(legend);
+      }
+    }
+    if (legend) {
+      legend.innerHTML = `
+        <div class="trefftz-legend-item">
+          <svg class="swatch line clp" viewBox="0 0 24 8" aria-hidden="true">
+            <line x1="1" y1="4" x2="23" y2="4" stroke-dasharray="6 4" />
+          </svg>
+          <span class="katex-label" data-math="c_{l\\perp}"></span>
+        </div>
+        <div class="trefftz-legend-item">
+          <svg class="swatch line cl" viewBox="0 0 24 8" aria-hidden="true">
+            <line x1="1" y1="4" x2="23" y2="4" stroke-dasharray="6 3 1.5 3" />
+          </svg>
+          <span class="katex-label" data-math="c_l"></span>
+        </div>
+        <div class="trefftz-legend-item">
+          <svg class="swatch line cnc" viewBox="0 0 24 8" aria-hidden="true">
+            <line x1="1" y1="4" x2="23" y2="4" />
+          </svg>
+          <span class="katex-label" data-math="c_l c / c_{ref}"></span>
+        </div>
+        <div class="trefftz-legend-item">
+          <svg class="swatch line dw" viewBox="0 0 24 8" aria-hidden="true">
+            <line x1="1" y1="4" x2="23" y2="4" stroke-dasharray="1.5 3" />
+          </svg>
+          <span class="katex-label" data-math="a_i"></span>
+        </div>
+      `;
+    }
+    let axisLabels = canvas.querySelector?.('.trefftz-axis-labels');
+    if (!axisLabels) {
+      axisLabels = document.createElement?.('div');
+      if (axisLabels) {
+        axisLabels.className = 'trefftz-axis-labels';
+        canvas.appendChild(axisLabels);
+      }
+    }
+    if (axisLabels) {
+      axisLabels.innerHTML = `
+        <div class="trefftz-axis-label x">Span (m)</div>
+        <div class="trefftz-axis-label y-left"><span class="katex-label" data-math="c_l"></span></div>
+        <div class="trefftz-axis-label y-right"><span class="katex-label" data-math="a_i"></span></div>
+      `;
+    }
+    if (katexLib) {
+      canvas.querySelectorAll?.('.katex-label').forEach((el) => {
+        const expr = el.getAttribute('data-math') || '';
+        if (!expr) return;
+        try {
+          katexLib.render(expr, el, { throwOnError: false, strict: false });
+        } catch {
+          el.textContent = expr;
+        }
+      });
+    } else {
+      canvas.querySelectorAll?.('.katex-label').forEach((el) => {
+        const expr = el.getAttribute('data-math') || '';
+        el.textContent = expr.replace(/\\mathrm\{([^}]+)\}/g, '$1').replace(/\\,/g, ' ');
+      });
+    }
+    return;
+  }
+
+  if (!canvas?.getContext) {
+    return;
+  }
   const ctx = canvas.getContext('2d');
   const w = canvas.width;
   const h = canvas.height;
@@ -788,7 +1122,7 @@ function updateTrefftz(cl) {
     ctx.stroke();
   }
 
-  if (uiState.trefftzData && uiState.trefftzData.strips?.length) {
+  if (hasTrefftz) {
     const { strips, surfaces, cref } = uiState.trefftzData;
     let ymin = Infinity;
     let ymax = -Infinity;
@@ -2563,7 +2897,7 @@ function fitCameraToObject(obj) {
   }
   const fitDist = viewerState.fitDistance || 10;
   camera.up.set(0, 0, 1);
-  camera.position.set(fitDist, -fitDist * 0.6, fitDist * 0.45);
+  camera.position.set(fitDist * 0.6, -fitDist * 0.4, fitDist * 0.28);
   controls.target.set(0, 0, 0);
   controls.update();
 }
@@ -2586,8 +2920,8 @@ function handleResize() {
 window.addEventListener('resize', handleResize);
 
 async function bootApp() {
-  updateTrefftz(Number(els.cl.value));
-  applyTrim();
+  initTopNav();
+  await loadDefaultAVL();
   try {
     const model = buildSolverModel(els.fileText.value || '');
     rebuildConstraintUI(model);
@@ -2606,6 +2940,8 @@ async function bootApp() {
   } else {
     logDebug('App ready (3D viewer disabled).');
   }
+  updateTrefftz(Number(els.cl.value));
+  applyTrim();
 }
 
 bootApp().catch((err) => logDebug(`Boot failed: ${err?.message ?? err}`));
