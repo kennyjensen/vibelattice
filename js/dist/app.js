@@ -95,6 +95,7 @@ let execInProgress = false;
 let trefftzPlot = null;
 let execWorker = null;
 let execTimeoutId = null;
+let trimInProgress = false;
 
 function initTopNav() {
   if (!els.appRoot || !els.navSettings || !els.navPlots || !els.navOutputs) return;
@@ -222,9 +223,17 @@ function ensureExecWorker() {
     } else if (msg.type === 'error') {
       logDebug(`EXEC worker error: ${msg.message}`);
       execInProgress = false;
+      trimInProgress = false;
       if (execTimeoutId) {
         clearTimeout(execTimeoutId);
         execTimeoutId = null;
+      }
+    } else if (msg.type === 'trimResult') {
+      trimInProgress = false;
+      try {
+        applyTrimResults(msg.state);
+      } catch (err) {
+        logDebug(`Trim apply failed: ${err?.message ?? err}`);
       }
     } else if (msg.type === 'result') {
       execInProgress = false;
@@ -232,12 +241,17 @@ function ensureExecWorker() {
         clearTimeout(execTimeoutId);
         execTimeoutId = null;
       }
-      applyExecResults(msg);
+      try {
+        applyExecResults(msg);
+      } catch (err) {
+        logDebug(`EXEC apply failed: ${err?.message ?? err}`);
+      }
     }
   };
   execWorker.onerror = (evt) => {
     logDebug(`EXEC worker failed: ${evt.message}`);
     execInProgress = false;
+    trimInProgress = false;
     if (execTimeoutId) {
       clearTimeout(execTimeoutId);
       execTimeoutId = null;
@@ -700,7 +714,7 @@ els.fileText.addEventListener('input', () => {
   }, 250);
 });
 
-function makeTrimState() {
+function makeTrimState(controlMap = null) {
   const state = {
     IPTOT: 30,
     IVTOT: 5,
@@ -778,8 +792,13 @@ function makeTrimState() {
     ? Number(els.facLoop?.value || 0)
     : 0.0;
 
-  const model = parseAVL(uiState.text || '');
-  applyConstraintRowsToState(state, model.controlMap);
+  const map = controlMap || uiState.controlMap;
+  if (!map) {
+    const model = parseAVL(uiState.text || '');
+    applyConstraintRowsToState(state, model.controlMap);
+  } else {
+    applyConstraintRowsToState(state, map);
+  }
 
   return state;
 }
@@ -788,21 +807,41 @@ function applyTrim() {
   logDebug('Trim requested.');
   updateFlightConditions();
   let state;
-  const IR = 1;
   try {
-    state = makeTrimState();
-    TRMSET_CORE(state, 1, IR, IR, IR);
+    state = makeTrimState(uiState.controlMap || null);
   } catch (err) {
     logDebug(`Trim setup failed: ${err?.message ?? err}`);
     return;
   }
+  if (trimInProgress) {
+    logDebug('Trim skipped: already running.');
+    return;
+  }
+  trimInProgress = true;
+  uiState.lastConstraintRows = readConstraintRows();
+  const worker = ensureExecWorker();
+  if (!worker) {
+    try {
+      const IR = 1;
+      TRMSET_CORE(state, 1, IR, IR, IR);
+      trimInProgress = false;
+      applyTrimResults(state);
+    } catch (err) {
+      logDebug(`Trim setup failed: ${err?.message ?? err}`);
+      trimInProgress = false;
+    }
+    return;
+  }
+  worker.postMessage({ type: 'trim', state });
+}
 
-  const constraintRows = readConstraintRows();
+function applyTrimResults(state) {
+  const constraintRows = uiState.lastConstraintRows || readConstraintRows();
   const findVar = (key, fallback = 0) => {
     const row = constraintRows.find((r) => r.variable === key);
     return row ? row.numeric : fallback;
   };
-
+  const IR = 1;
   const idx2 = (i, j, dim1) => i + dim1 * j;
   const IPPHI = 8;
   const IPTHE = 9;
@@ -838,7 +877,6 @@ function applyTrim() {
 
   logDebug('Trim base outputs updated.');
 
-  // Full EXEC solve based on loaded AVL file
   if (uiState.text.trim()) {
     setTimeout(() => {
       if (execInProgress) {
@@ -857,7 +895,7 @@ function applyTrim() {
   }
 }
 
-  els.trimBtn.addEventListener('click', applyTrim);
+els.trimBtn.addEventListener('click', applyTrim);
 
   if (typeof ResizeObserver !== 'undefined') {
     const trefPanel = els.trefftz?.parentElement;
@@ -2168,6 +2206,8 @@ function loadGeometryFromText(text, shouldFit = true) {
   const parsed = parseAVL(text || '');
   uiState.modelHeader = parsed.header || null;
   const solverModel = buildSolverModel(text || '');
+  uiState.controlMap = solverModel.controlMap;
+  uiState.modelCache = solverModel;
   rebuildConstraintUI(solverModel);
   const withDup = applyYDuplicate(parsed);
   const withY = (typeof applyYSymmetry === 'function') ? applyYSymmetry(withDup) : withDup;
@@ -2767,6 +2807,30 @@ function runExecFromText(text) {
 }
 
 function applyExecResults(result) {
+  const schedule = (fn) => {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(fn, { timeout: 200 });
+    } else {
+      setTimeout(fn, 0);
+    }
+  };
+  const renderLinesChunked = (el, lines, chunk = 200) => {
+    if (!el) return;
+    if (lines.length <= chunk) {
+      el.textContent = lines.length ? lines.join('\n') : '-';
+      return;
+    }
+    el.textContent = lines.slice(0, chunk).join('\n');
+    let idx = chunk;
+    const pump = () => {
+      const next = lines.slice(idx, idx + chunk).join('\n');
+      if (next) el.textContent += `\n${next}`;
+      idx += chunk;
+      if (idx < lines.length) schedule(pump);
+    };
+    schedule(pump);
+  };
+
   const idx2 = (i, j, dim1) => i + dim1 * j;
   const IR = 1;
   const IPPHI = 8;
@@ -2800,8 +2864,8 @@ function applyExecResults(result) {
   }
   if (result.DELCON) {
     const deflections = [];
-    const model = buildSolverModel(uiState.text || '');
-    if (model.controlMap && model.controlMap.size) {
+    const model = uiState.modelCache;
+    if (model?.controlMap && model.controlMap.size) {
       for (const [name, idx] of model.controlMap.entries()) {
         const val = result.DELCON[idx] ?? 0.0;
         deflections.push(`${name} ${fmt(val, 2)}`);
@@ -2841,27 +2905,33 @@ function applyExecResults(result) {
     stabilityLines.push(`CD_D: ${result.CDTOT_D.map((v) => fmt(v, 5)).join(', ')}`);
     stabilityLines.push(`CY_D: ${result.CYTOT_D.map((v) => fmt(v, 5)).join(', ')}`);
   }
-  if (els.outStability) {
-    els.outStability.textContent = stabilityLines.length ? stabilityLines.join('\n') : '-';
-  }
+  schedule(() => {
+    try {
+      if (els.outStability) {
+        els.outStability.textContent = stabilityLines.length ? stabilityLines.join('\n') : '-';
+      }
 
-  if (els.outBodyDeriv) {
-    const lines = [];
-    if (result.CFTOT_U) {
-      lines.push('dCF/dU (rows x,y,z):');
-      lines.push(`x: ${result.CFTOT_U[0].map((v) => fmt(v, 5)).join(', ')}`);
-      lines.push(`y: ${result.CFTOT_U[1].map((v) => fmt(v, 5)).join(', ')}`);
-      lines.push(`z: ${result.CFTOT_U[2].map((v) => fmt(v, 5)).join(', ')}`);
+      if (els.outBodyDeriv) {
+        const lines = [];
+        if (result.CFTOT_U) {
+          lines.push('dCF/dU (rows x,y,z):');
+          lines.push(`x: ${result.CFTOT_U[0].map((v) => fmt(v, 5)).join(', ')}`);
+          lines.push(`y: ${result.CFTOT_U[1].map((v) => fmt(v, 5)).join(', ')}`);
+          lines.push(`z: ${result.CFTOT_U[2].map((v) => fmt(v, 5)).join(', ')}`);
+        }
+        if (result.CMTOT_U) {
+          lines.push('');
+          lines.push('dCM/dU (rows x,y,z):');
+          lines.push(`x: ${result.CMTOT_U[0].map((v) => fmt(v, 5)).join(', ')}`);
+          lines.push(`y: ${result.CMTOT_U[1].map((v) => fmt(v, 5)).join(', ')}`);
+          lines.push(`z: ${result.CMTOT_U[2].map((v) => fmt(v, 5)).join(', ')}`);
+        }
+        renderLinesChunked(els.outBodyDeriv, lines, 80);
+      }
+    } catch (err) {
+      logDebug(`EXEC derive render failed: ${err?.message ?? err}`);
     }
-    if (result.CMTOT_U) {
-      lines.push('');
-      lines.push('dCM/dU (rows x,y,z):');
-      lines.push(`x: ${result.CMTOT_U[0].map((v) => fmt(v, 5)).join(', ')}`);
-      lines.push(`y: ${result.CMTOT_U[1].map((v) => fmt(v, 5)).join(', ')}`);
-      lines.push(`z: ${result.CMTOT_U[2].map((v) => fmt(v, 5)).join(', ')}`);
-    }
-    els.outBodyDeriv.textContent = lines.length ? lines.join('\n') : '-';
-  }
+  });
 
   if (els.outForcesTotal) {
     const lines = [];
@@ -2874,75 +2944,81 @@ function applyExecResults(result) {
     els.outForcesTotal.textContent = lines.length ? lines.join('\n') : '-';
   }
 
-  if (els.outForcesSurface) {
-    const model = buildSolverModel(uiState.text || '');
-    const lines = [];
-    if (result.CDSURF && result.CLSURF && result.CYSURF) {
-      for (let i = 1; i < result.CLSURF.length; i += 1) {
-        const name = model.surfaces?.[i - 1]?.name ?? `Surf ${i}`;
-        const cdv = result.CDVSURF?.[i] ?? 0;
-        const cf = result.CFSURF?.[i] ?? null;
-        const cm = result.CMSURF?.[i] ?? null;
-        lines.push(`${name}: CL ${fmt(result.CLSURF[i], 5)} CD ${fmt(result.CDSURF[i], 5)} CY ${fmt(result.CYSURF[i], 5)} CDV ${fmt(cdv, 5)}`);
-        if (cf) lines.push(`  CF: ${cf.map((v) => fmt(v, 5)).join(', ')}`);
-        if (cm) lines.push(`  CM: ${cm.map((v) => fmt(v, 5)).join(', ')}`);
+  schedule(() => {
+    try {
+      if (els.outForcesSurface) {
+        const model = uiState.modelCache;
+        const lines = [];
+        if (result.CDSURF && result.CLSURF && result.CYSURF) {
+          for (let i = 1; i < result.CLSURF.length; i += 1) {
+            const name = model?.surfaces?.[i - 1]?.name ?? `Surf ${i}`;
+            const cdv = result.CDVSURF?.[i] ?? 0;
+            const cf = result.CFSURF?.[i] ?? null;
+            const cm = result.CMSURF?.[i] ?? null;
+            lines.push(`${name}: CL ${fmt(result.CLSURF[i], 5)} CD ${fmt(result.CDSURF[i], 5)} CY ${fmt(result.CYSURF[i], 5)} CDV ${fmt(cdv, 5)}`);
+            if (cf) lines.push(`  CF: ${cf.map((v) => fmt(v, 5)).join(', ')}`);
+            if (cm) lines.push(`  CM: ${cm.map((v) => fmt(v, 5)).join(', ')}`);
+          }
+        }
+        renderLinesChunked(els.outForcesSurface, lines, 120);
       }
-    }
-    els.outForcesSurface.textContent = lines.length ? lines.join('\n') : '-';
-  }
 
-  if (els.outForcesStrip) {
-    const lines = [];
-    if (result.CDSTRP && result.CLSTRP && result.CYSTRP && result.RLE) {
-      for (let j = 1; j < result.CLSTRP.length; j += 1) {
-        const y = result.RLE[idx2(2, j, 4)];
-        const z = result.RLE[idx2(3, j, 4)];
-        const cnc = result.CNC?.[j] ?? 0;
-        const cla = result.CLA_LSTRP?.[j] ?? 0;
-        const clt = result.CLT_LSTRP?.[j] ?? 0;
-        const dw = result.DWWAKE?.[j] ?? 0;
-        lines.push(`${j}: y ${fmt(y, 3)} z ${fmt(z, 3)} CL ${fmt(result.CLSTRP[j], 5)} CD ${fmt(result.CDSTRP[j], 5)} CY ${fmt(result.CYSTRP[j], 5)} CNC ${fmt(cnc, 5)} CLA ${fmt(cla, 5)} CLT ${fmt(clt, 5)} DW ${fmt(dw, 5)}`);
+      if (els.outForcesStrip) {
+        const lines = [];
+        if (result.CDSTRP && result.CLSTRP && result.CYSTRP && result.RLE) {
+          for (let j = 1; j < result.CLSTRP.length; j += 1) {
+            const y = result.RLE[idx2(2, j, 4)];
+            const z = result.RLE[idx2(3, j, 4)];
+            const cnc = result.CNC?.[j] ?? 0;
+            const cla = result.CLA_LSTRP?.[j] ?? 0;
+            const clt = result.CLT_LSTRP?.[j] ?? 0;
+            const dw = result.DWWAKE?.[j] ?? 0;
+            lines.push(`${j}: y ${fmt(y, 3)} z ${fmt(z, 3)} CL ${fmt(result.CLSTRP[j], 5)} CD ${fmt(result.CDSTRP[j], 5)} CY ${fmt(result.CYSTRP[j], 5)} CNC ${fmt(cnc, 5)} CLA ${fmt(cla, 5)} CLT ${fmt(clt, 5)} DW ${fmt(dw, 5)}`);
+          }
+        }
+        renderLinesChunked(els.outForcesStrip, lines, 200);
       }
-    }
-    els.outForcesStrip.textContent = lines.length ? lines.join('\n') : '-';
-  }
 
-  if (els.outForcesElement) {
-    const lines = [];
-    if (result.DCP) {
-      for (let i = 1; i < result.DCP.length; i += 1) {
-        lines.push(`${i}: DCP ${fmt(result.DCP[i], 6)}`);
+      if (els.outForcesElement) {
+        const lines = [];
+        if (result.DCP) {
+          for (let i = 1; i < result.DCP.length; i += 1) {
+            lines.push(`${i}: DCP ${fmt(result.DCP[i], 6)}`);
+          }
+        }
+        renderLinesChunked(els.outForcesElement, lines, 200);
       }
-    }
-    els.outForcesElement.textContent = lines.length ? lines.join('\n') : '-';
-  }
 
-  if (els.outForcesBody) {
-    const lines = [];
-    if (result.CDBDY && result.CYBDY && result.CLBDY) {
-      for (let i = 0; i < result.CDBDY.length; i += 1) {
-        lines.push(`Body ${i + 1}: CL ${fmt(result.CLBDY[i], 5)} CD ${fmt(result.CDBDY[i], 5)} CY ${fmt(result.CYBDY[i], 5)}`);
-        const cf = result.CFBDY?.[i] ?? null;
-        const cm = result.CMBDY?.[i] ?? null;
-        if (cf) lines.push(`  CF: ${cf.map((v) => fmt(v, 5)).join(', ')}`);
-        if (cm) lines.push(`  CM: ${cm.map((v) => fmt(v, 5)).join(', ')}`);
+      if (els.outForcesBody) {
+        const lines = [];
+        if (result.CDBDY && result.CYBDY && result.CLBDY) {
+          for (let i = 0; i < result.CDBDY.length; i += 1) {
+            lines.push(`Body ${i + 1}: CL ${fmt(result.CLBDY[i], 5)} CD ${fmt(result.CDBDY[i], 5)} CY ${fmt(result.CYBDY[i], 5)}`);
+            const cf = result.CFBDY?.[i] ?? null;
+            const cm = result.CMBDY?.[i] ?? null;
+            if (cf) lines.push(`  CF: ${cf.map((v) => fmt(v, 5)).join(', ')}`);
+            if (cm) lines.push(`  CM: ${cm.map((v) => fmt(v, 5)).join(', ')}`);
+          }
+        }
+        renderLinesChunked(els.outForcesBody, lines, 120);
       }
-    }
-    els.outForcesBody.textContent = lines.length ? lines.join('\n') : 'No bodies';
-  }
 
-  if (els.outHinge) {
-    const lines = [];
-    if (result.CHINGE) {
-      const model = buildSolverModel(uiState.text || '');
-      const names = model.controlMap ? Array.from(model.controlMap.keys()) : [];
-      for (let i = 1; i < result.CHINGE.length; i += 1) {
-        const name = names[i - 1] ?? `Ctrl ${i}`;
-        lines.push(`${name}: ${fmt(result.CHINGE[i], 6)}`);
+      if (els.outHinge) {
+        const lines = [];
+        if (result.CHINGE) {
+          const model = uiState.modelCache;
+          const names = model?.controlMap ? Array.from(model.controlMap.keys()) : [];
+          for (let i = 1; i < result.CHINGE.length; i += 1) {
+            const name = names[i - 1] ?? `Ctrl ${i}`;
+            lines.push(`${name}: ${fmt(result.CHINGE[i], 6)}`);
+          }
+        }
+        renderLinesChunked(els.outHinge, lines, 120);
       }
+    } catch (err) {
+      logDebug(`EXEC detail render failed: ${err?.message ?? err}`);
     }
-    els.outHinge.textContent = lines.length ? lines.join('\n') : '-';
-  }
+  });
 
   if (result.TREFFTZ && result.TREFFTZ.strips?.length) {
     const rawTrefftz = result.TREFFTZ;
@@ -2989,7 +3065,7 @@ function applyExecResults(result) {
     logDebug(`Trefftz: strips=${strips.length} y=[${fmt(ymin, 2)}, ${fmt(ymax, 2)}] c=[${fmt(cmin, 4)}, ${fmt(cmax, 4)}] dw=[${fmt(wmin, 4)}, ${fmt(wmax, 4)}]`);
     const sample = strips.slice(0, 5).map((s) => s.map((v) => (Number.isFinite(v) ? Number(v).toFixed(4) : String(v))));
     logDebug(`Trefftz sample: ${JSON.stringify(sample)}`);
-    updateTrefftz(Number(els.cl.value));
+    schedule(() => updateTrefftz(Number(els.cl.value)));
   }
 }
 function fitCameraToObject(obj) {

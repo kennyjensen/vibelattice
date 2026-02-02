@@ -1,4 +1,5 @@
 import { EXEC } from './aoper.js';
+import { TRMSET_CORE } from './atrim.js';
 
 function idx2(i, j, dim1) {
   return i + dim1 * j;
@@ -9,9 +10,19 @@ function log(message) {
 }
 
 onmessage = (evt) => {
-  const { state } = evt.data || {};
+  const { state, type } = evt.data || {};
   if (!state) {
     postMessage({ type: 'error', message: 'Missing state.' });
+    return;
+  }
+  if (type === 'trim') {
+    try {
+      const IR = 1;
+      TRMSET_CORE(state, 1, IR, IR, IR);
+      postMessage({ type: 'trimResult', state });
+    } catch (err) {
+      postMessage({ type: 'error', message: err?.message ?? String(err) });
+    }
     return;
   }
   try {

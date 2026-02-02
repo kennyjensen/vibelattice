@@ -13,7 +13,20 @@ function makeEl(value = '') {
     addEventListener() {},
     classList: { toggle() {} },
     style: {},
-    getContext() { return { fillRect() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillText() {} }; },
+    getContext() {
+      return {
+        setTransform() {},
+        fillRect() {},
+        clearRect() {},
+        beginPath() {},
+        moveTo() {},
+        lineTo() {},
+        stroke() {},
+        fillText() {},
+        measureText(text = '') { return { width: String(text).length * 6 }; },
+        setLineDash() {},
+      };
+    },
   };
 }
 
