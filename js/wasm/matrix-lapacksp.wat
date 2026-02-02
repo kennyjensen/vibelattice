@@ -1,3 +1,6 @@
+;; Ported from AVL Fortran source by Mark Drela and Harold Youngren.
+;; Derived work under GPL-2.0.
+;; Original source: https://web.mit.edu/drela/Public/web/avl/
 (module
   (memory (export "memory") 1)
   (func (export "LUDCMP") (param $nsiz i32) (param $n i32) (param $a i32) (param $indx i32) (param $work i32)

@@ -1,3 +1,8 @@
+/*
+ * Ported from AVL Fortran source by Mark Drela and Harold Youngren.
+ * Derived work under GPL-2.0.
+ * Original source: https://web.mit.edu/drela/Public/web/avl/
+ */
 // Port of AVL amode.f (selected non-interactive routines) with float32 math.
 
 import { M3INV, ROTENS3, RATEKI3 } from './autil.js';

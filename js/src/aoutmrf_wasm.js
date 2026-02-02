@@ -1,3 +1,8 @@
+/*
+ * Ported from AVL Fortran source by Mark Drela and Harold Youngren.
+ * Derived work under GPL-2.0.
+ * Original source: https://web.mit.edu/drela/Public/web/avl/
+ */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { MRFTOT, MRFSURF, MRFBODY, MRFSTRP, MRFELE, MRFHINGE, MRFCNC, MRFVM } from './aoutmrf.js';

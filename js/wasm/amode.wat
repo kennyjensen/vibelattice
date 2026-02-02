@@ -1,3 +1,6 @@
+;; Ported from AVL Fortran source by Mark Drela and Harold Youngren.
+;; Derived work under GPL-2.0.
+;; Original source: https://web.mit.edu/drela/Public/web/avl/
 (module
   (import "env" "runchk_js" (func $runchk_js (param i32)))
   (import "env" "sysmat_js" (func $sysmat_js (param i32)))

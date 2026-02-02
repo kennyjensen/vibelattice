@@ -1,3 +1,6 @@
+;; Ported from AVL Fortran source by Mark Drela and Harold Youngren.
+;; Derived work under GPL-2.0.
+;; Original source: https://web.mit.edu/drela/Public/web/avl/
 (module
   (import "env" "exec_js" (func $exec_js (param i32) (param i32) (param i32) (param i32)))
   (memory (export "memory") 1)

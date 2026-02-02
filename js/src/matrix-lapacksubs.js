@@ -1,3 +1,8 @@
+/*
+ * Ported from AVL Fortran source by Mark Drela and Harold Youngren.
+ * Derived work under GPL-2.0.
+ * Original source: https://web.mit.edu/drela/Public/web/avl/
+ */
 // Port of AVL matrix-lapacksubs.f (selected LAPACK/BLAS routines).
 // Column-major layout with leading dimensions, matching Fortran.
 

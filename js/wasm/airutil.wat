@@ -1,3 +1,6 @@
+;; Ported from AVL Fortran source by Mark Drela and Harold Youngren.
+;; Derived work under GPL-2.0.
+;; Original source: https://web.mit.edu/drela/Public/web/avl/
 (module
   (import "env" "cos" (func $cos (param f32) (result f32)))
   (import "env" "atan" (func $atan (param f32) (result f32)))

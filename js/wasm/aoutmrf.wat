@@ -1,3 +1,6 @@
+;; Ported from AVL Fortran source by Mark Drela and Harold Youngren.
+;; Derived work under GPL-2.0.
+;; Original source: https://web.mit.edu/drela/Public/web/avl/
 (module
   (import "env" "mrftot_js" (func $mrftot_js (param i32)))
   (import "env" "mrfsurf_js" (func $mrfsurf_js (param i32)))

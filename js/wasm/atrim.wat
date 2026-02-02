@@ -1,3 +1,6 @@
+;; Ported from AVL Fortran source by Mark Drela and Harold Youngren.
+;; Derived work under GPL-2.0.
+;; Original source: https://web.mit.edu/drela/Public/web/avl/
 (module
   (import "env" "sin_f32" (func $sin_f32 (param f32) (result f32)))
   (import "env" "cos_f32" (func $cos_f32 (param f32) (result f32)))
