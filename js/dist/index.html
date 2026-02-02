@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AVL Static JS - Trim & Geometry</title>
   <link rel="stylesheet" href="./styles.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.26/dist/uPlot.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
   <script type="importmap">
   {
@@ -15,7 +14,6 @@
     }
   }
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.26/dist/uPlot.iife.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 </head>
 <body>
@@ -165,7 +163,7 @@
       </div>
 
       <div class="stage">
-        <div id="trefftz" class="trefftz-plot"></div>
+        <canvas id="trefftz" class="trefftz-plot" width="860" height="320"></canvas>
       </div>
       </main>
     </section>

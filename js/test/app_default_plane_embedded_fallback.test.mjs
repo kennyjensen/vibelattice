@@ -15,6 +15,7 @@ function makeEl(value = '') {
     querySelectorAll() { return []; },
     getContext() {
       return {
+        setTransform() {},
         fillRect() {},
         clearRect() {},
         beginPath() {},
