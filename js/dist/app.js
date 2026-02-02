@@ -73,7 +73,7 @@ const els = {
 const uiState = {
   filename: null,
   text: '',
-  surfaceColors: [0xf59e0b, 0x7dd3fc, 0xf97316, 0xa78bfa, 0x22d3ee],
+  surfaceColors: [0xff0000, 0xff8c00, 0xffff00, 0x00ff00, 0x00ffff, 0x0000ff, 0x8a2be2, 0xff00ff],
   trefftzData: null,
   modelHeader: null,
   levelDriver: 'cl',
@@ -1829,8 +1829,13 @@ function buildSurfaceMesh(surface, color) {
   const controlVerts = new Map();
   const camberLines = [];
   const airfoilOutlines = [];
+  const hingeSegments = [];
   const pushQuad = (le1, le2, te2, te1) => {
     verts.push(...le1, ...le2, ...te2, ...le1, ...te2, ...te1);
+  };
+  const outline = [];
+  const pushEdge = (a, b) => {
+    outline.push(...a, ...b);
   };
 
   const applyTransforms = (p) => {
@@ -1899,10 +1904,22 @@ function buildSurfaceMesh(surface, color) {
     const te1 = applyTransforms(rotateSectionPoint(a, [a.xle + a.chord, a.yle, a.zle]));
     const te2 = applyTransforms(rotateSectionPoint(b, [b.xle + b.chord, b.yle, b.zle]));
     pushQuad(le1, le2, te2, te1);
+    pushEdge(le1, le2);
+    pushEdge(le2, te2);
+    pushEdge(te2, te1);
+    pushEdge(te1, le1);
 
     if (typeof surface.yduplicate === 'number') {
       const mirror = (p) => [p[0], 2 * surface.yduplicate - p[1], p[2]];
-      pushQuad(mirror(le1), mirror(le2), mirror(te2), mirror(te1));
+      const mle1 = mirror(le1);
+      const mle2 = mirror(le2);
+      const mte2 = mirror(te2);
+      const mte1 = mirror(te1);
+      pushQuad(mle1, mle2, mte2, mte1);
+      pushEdge(mle1, mle2);
+      pushEdge(mle2, mte2);
+      pushEdge(mte2, mte1);
+      pushEdge(mte1, mle1);
     }
 
     const controlsA = a.controls || [];
@@ -1914,9 +1931,13 @@ function buildSurfaceMesh(surface, color) {
       const h1 = applyTransforms(rotateSectionPoint(a, [hx1, a.yle, a.zle]));
       const h2 = applyTransforms(rotateSectionPoint(b, [hx2, b.yle, b.zle]));
       addControlQuad(ctrl.name, h1, h2, te2, te1);
+      hingeSegments.push([h1, h2]);
       if (typeof surface.yduplicate === 'number') {
         const mirror = (p) => [p[0], 2 * surface.yduplicate - p[1], p[2]];
-        addControlQuad(ctrl.name, mirror(h1), mirror(h2), mirror(te2), mirror(te1));
+        const mh1 = mirror(h1);
+        const mh2 = mirror(h2);
+        addControlQuad(ctrl.name, mh1, mh2, mirror(te2), mirror(te1));
+        hingeSegments.push([mh1, mh2]);
       }
     });
   }
@@ -1934,31 +1955,49 @@ function buildSurfaceMesh(surface, color) {
     }
   });
 
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  geometry.computeVertexNormals();
-  const material = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.05, side: THREE.DoubleSide });
-  const mesh = new THREE.Mesh(geometry, material);
-  const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geometry), new THREE.LineBasicMaterial({ color: 0x1f2937 }));
-  group.add(mesh, wire);
+  const outlineGeom = new THREE.BufferGeometry();
+  outlineGeom.setAttribute('position', new THREE.Float32BufferAttribute(outline, 3));
+  const outlineMat = new THREE.LineBasicMaterial({ color, linewidth: 1 });
+  const sectionMat = new THREE.LineBasicMaterial({ color, linewidth: 1, transparent: true, opacity: 0.55 });
+  const controlMat = new THREE.LineBasicMaterial({ color, linewidth: 1, transparent: true, opacity: 0.7 });
+  const hingeMat = new THREE.LineDashedMaterial({ color, linewidth: 1, dashSize: 0.15, gapSize: 0.12 });
+  const outlineLine = new THREE.LineSegments(outlineGeom, outlineMat);
+  group.add(outlineLine);
 
   controlVerts.forEach((ctrlVerts, name) => {
     if (!ctrlVerts.length) return;
+    const ctrlEdges = [];
+    for (let i = 0; i < ctrlVerts.length; i += 18) {
+      const le1 = ctrlVerts.slice(i, i + 3);
+      const le2 = ctrlVerts.slice(i + 3, i + 6);
+      const te2 = ctrlVerts.slice(i + 6, i + 9);
+      const te1 = ctrlVerts.slice(i + 15, i + 18);
+      ctrlEdges.push(...le1, ...le2, ...le2, ...te2, ...te2, ...te1, ...te1, ...le1);
+    }
     const ctrlGeom = new THREE.BufferGeometry();
-    ctrlGeom.setAttribute('position', new THREE.Float32BufferAttribute(ctrlVerts, 3));
-    ctrlGeom.computeVertexNormals();
-    const ctrlMat = new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.35, metalness: 0.1, side: THREE.DoubleSide, opacity: 0.8, transparent: true });
-    const ctrlMesh = new THREE.Mesh(ctrlGeom, ctrlMat);
-    const ctrlWire = new THREE.LineSegments(new THREE.WireframeGeometry(ctrlGeom), new THREE.LineBasicMaterial({ color: 0x7f1d1d }));
-    ctrlMesh.name = `control:${name}`;
-    group.add(ctrlMesh, ctrlWire);
+    ctrlGeom.setAttribute('position', new THREE.Float32BufferAttribute(ctrlEdges, 3));
+    const ctrlLine = new THREE.LineSegments(ctrlGeom, controlMat);
+    ctrlLine.name = `control:${name}`;
+    group.add(ctrlLine);
   });
+
+  if (hingeSegments.length) {
+    const hingeVerts = [];
+    hingeSegments.forEach(([a, b]) => {
+      hingeVerts.push(...a, ...b);
+    });
+    const hingeGeom = new THREE.BufferGeometry();
+    hingeGeom.setAttribute('position', new THREE.Float32BufferAttribute(hingeVerts, 3));
+    const hingeLine = new THREE.LineSegments(hingeGeom, hingeMat);
+    hingeLine.computeLineDistances();
+    group.add(hingeLine);
+  }
 
   camberLines.forEach((line) => {
     const flat = line.flat();
     const camGeom = new THREE.BufferGeometry();
     camGeom.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
-    const camLine = new THREE.Line(camGeom, new THREE.LineBasicMaterial({ color: 0x22d3ee }));
+    const camLine = new THREE.Line(camGeom, sectionMat);
     group.add(camLine);
   });
 
@@ -1966,7 +2005,7 @@ function buildSurfaceMesh(surface, color) {
     const flat = line.flat();
     const foilGeom = new THREE.BufferGeometry();
     foilGeom.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
-    const foilLine = new THREE.Line(foilGeom, new THREE.LineBasicMaterial({ color: 0x34d399 }));
+    const foilLine = new THREE.Line(foilGeom, sectionMat);
     group.add(foilLine);
   });
 
