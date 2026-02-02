@@ -53,10 +53,10 @@ const els = {
   outBodyDeriv: document.getElementById('outBodyDeriv'),
   outForcesTotal: document.getElementById('outForcesTotal'),
   outForcesSurface: document.getElementById('outForcesSurface'),
-  outForcesStrip: document.getElementById('outForcesStrip'),
-  outForcesElement: document.getElementById('outForcesElement'),
   outForcesBody: document.getElementById('outForcesBody'),
   outHinge: document.getElementById('outHinge'),
+  downloadForcesStrip: document.getElementById('downloadForcesStrip'),
+  downloadForcesElement: document.getElementById('downloadForcesElement'),
   debugLog: document.getElementById('debugLog'),
   clearDebug: document.getElementById('clearDebug'),
   viewerPan: document.getElementById('viewerPan'),
@@ -78,6 +78,7 @@ const uiState = {
   modelHeader: null,
   levelDriver: 'cl',
   loopDriver: 'cl',
+  lastExecResult: null,
 };
 
 const viewerState = {
@@ -896,6 +897,38 @@ function applyTrimResults(state) {
 }
 
 els.trimBtn.addEventListener('click', applyTrim);
+
+if (els.downloadForcesStrip) {
+  els.downloadForcesStrip.addEventListener('click', () => {
+    const result = uiState.lastExecResult;
+    if (!result) {
+      logDebug('Strip forces download skipped: no EXEC results yet.');
+      return;
+    }
+    const lines = buildForcesStripLines(result);
+    if (!lines.length) {
+      logDebug('Strip forces download skipped: no strip data available.');
+      return;
+    }
+    downloadText(`${uiState.filename || 'model'}_strip_forces.txt`, lines.join('\n'));
+  });
+}
+
+if (els.downloadForcesElement) {
+  els.downloadForcesElement.addEventListener('click', () => {
+    const result = uiState.lastExecResult;
+    if (!result) {
+      logDebug('Element forces download skipped: no EXEC results yet.');
+      return;
+    }
+    const lines = buildForcesElementLines(result);
+    if (!lines.length) {
+      logDebug('Element forces download skipped: no element data available.');
+      return;
+    }
+    downloadText(`${uiState.filename || 'model'}_element_forces.txt`, lines.join('\n'));
+  });
+}
 
   if (typeof ResizeObserver !== 'undefined') {
     const trefPanel = els.trefftz?.parentElement;
@@ -2806,7 +2839,47 @@ function runExecFromText(text) {
   logDebug(`EXEC dispatched (${fmt(dt, 1)} ms)`);
 }
 
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function buildForcesStripLines(result) {
+  const lines = [];
+  const idx2 = (i, j, dim1) => i + dim1 * j;
+  if (result?.CDSTRP && result.CLSTRP && result.CYSTRP && result.RLE) {
+    for (let j = 1; j < result.CLSTRP.length; j += 1) {
+      const y = result.RLE[idx2(2, j, 4)];
+      const z = result.RLE[idx2(3, j, 4)];
+      const cnc = result.CNC?.[j] ?? 0;
+      const cla = result.CLA_LSTRP?.[j] ?? 0;
+      const clt = result.CLT_LSTRP?.[j] ?? 0;
+      const dw = result.DWWAKE?.[j] ?? 0;
+      lines.push(`${j}: y ${fmt(y, 3)} z ${fmt(z, 3)} CL ${fmt(result.CLSTRP[j], 5)} CD ${fmt(result.CDSTRP[j], 5)} CY ${fmt(result.CYSTRP[j], 5)} CNC ${fmt(cnc, 5)} CLA ${fmt(cla, 5)} CLT ${fmt(clt, 5)} DW ${fmt(dw, 5)}`);
+    }
+  }
+  return lines;
+}
+
+function buildForcesElementLines(result) {
+  const lines = [];
+  if (result?.DCP) {
+    for (let i = 1; i < result.DCP.length; i += 1) {
+      lines.push(`${i}: DCP ${fmt(result.DCP[i], 6)}`);
+    }
+  }
+  return lines;
+}
+
 function applyExecResults(result) {
+  uiState.lastExecResult = result;
   const schedule = (fn) => {
     if (typeof requestIdleCallback === 'function') {
       requestIdleCallback(fn, { timeout: 200 });
@@ -2961,32 +3034,6 @@ function applyExecResults(result) {
           }
         }
         renderLinesChunked(els.outForcesSurface, lines, 120);
-      }
-
-      if (els.outForcesStrip) {
-        const lines = [];
-        if (result.CDSTRP && result.CLSTRP && result.CYSTRP && result.RLE) {
-          for (let j = 1; j < result.CLSTRP.length; j += 1) {
-            const y = result.RLE[idx2(2, j, 4)];
-            const z = result.RLE[idx2(3, j, 4)];
-            const cnc = result.CNC?.[j] ?? 0;
-            const cla = result.CLA_LSTRP?.[j] ?? 0;
-            const clt = result.CLT_LSTRP?.[j] ?? 0;
-            const dw = result.DWWAKE?.[j] ?? 0;
-            lines.push(`${j}: y ${fmt(y, 3)} z ${fmt(z, 3)} CL ${fmt(result.CLSTRP[j], 5)} CD ${fmt(result.CDSTRP[j], 5)} CY ${fmt(result.CYSTRP[j], 5)} CNC ${fmt(cnc, 5)} CLA ${fmt(cla, 5)} CLT ${fmt(clt, 5)} DW ${fmt(dw, 5)}`);
-          }
-        }
-        renderLinesChunked(els.outForcesStrip, lines, 200);
-      }
-
-      if (els.outForcesElement) {
-        const lines = [];
-        if (result.DCP) {
-          for (let i = 1; i < result.DCP.length; i += 1) {
-            lines.push(`${i}: DCP ${fmt(result.DCP[i], 6)}`);
-          }
-        }
-        renderLinesChunked(els.outForcesElement, lines, 200);
       }
 
       if (els.outForcesBody) {
