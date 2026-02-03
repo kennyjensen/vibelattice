@@ -3,8 +3,6 @@
  * Derived work under GPL-2.0.
  * Original source: https://web.mit.edu/drela/Public/web/avl/
  */
-import fs from 'node:fs/promises';
-import path from 'node:path';
 
 function writeF32(view, offset, arr) {
   view.set(arr, offset / 4);
@@ -68,10 +66,11 @@ function makeAllocator(start = 0, ensure) {
   return { alloc, reset };
 }
 
-export async function loadAicWasm(options = {}) {
-  const wasmPath = options.wasmPath
-    ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'dist', 'aic.wasm');
-  const wasmBytes = await fs.readFile(wasmPath);
+export async function loadAicWasm() {
+  const url = new URL('./aic.wasm', import.meta.url);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to load wasm: ${res.status}`);
+  const wasmBytes = await res.arrayBuffer();
   const { instance } = await WebAssembly.instantiate(wasmBytes, {});
   const { memory, VORVELC, SRDVELC, SRDSET, VSRD, VVOR } = instance.exports;
   let f32 = new Float32Array(memory.buffer);

@@ -46,7 +46,7 @@ test('EXEC tolerates unconstrained control variables without NaNs', async () => 
     state.ICON[idx2(state.IVTOT + 1, IR, state.IVMAX)] = 0;
   }
 
-  EXEC(state, 8, 0, IR);
+  EXEC(state, 20, 0, IR);
   assert.ok(Number.isFinite(state.ALFA), 'ALFA should be finite');
   assert.ok(Number.isFinite(state.BETA), 'BETA should be finite');
   assert.ok(state.VINF.every((v) => Number.isFinite(v)), 'VINF should be finite');

@@ -356,7 +356,7 @@ test('EXEC JS matches Fortran reference', () => {
   }
   const ref = runFortranRef();
   const state = makeState();
-  EXEC(state, 0, 0, 1);
+  EXEC(state, 20, 0, 1);
   const actual = extractOutputs(state);
   assertCloseArray(actual, ref, 1e-4);
 });

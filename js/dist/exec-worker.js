@@ -1,5 +1,32 @@
-import { EXEC } from './aoper.js';
+import { EXEC, preloadAoperLinSolveWasm, preloadAsetupWasm, preloadAeroWasm, preloadAicWasmBridge, preloadAsetpLuWasmBridge } from './aoper.js';
 import { TRMSET_CORE } from './atrim.js';
+
+let execWasm = null;
+let execWasmReady = null;
+let execWasmState = null;
+
+async function loadExecWasm() {
+  if (execWasm) return execWasm;
+  if (execWasmReady) return execWasmReady;
+  execWasmReady = (async () => {
+    const url = new URL('./aoper.wasm', import.meta.url);
+    const bytes = await (await fetch(url)).arrayBuffer();
+    const imports = {
+      env: {
+        exec_js: (niter, info, ir) => {
+          if (!execWasmState) {
+            throw new Error('EXEC wasm called without bound state');
+          }
+          EXEC(execWasmState, niter, info, ir);
+        },
+      },
+    };
+    const { instance } = await WebAssembly.instantiate(bytes, imports);
+    execWasm = instance.exports.EXEC;
+    return execWasm;
+  })();
+  return execWasmReady;
+}
 
 function idx2(i, j, dim1) {
   return i + dim1 * j;
@@ -9,8 +36,8 @@ function log(message) {
   postMessage({ type: 'log', message });
 }
 
-onmessage = (evt) => {
-  const { state, type } = evt.data || {};
+onmessage = async (evt) => {
+  const { state, type, requestId, useWasm } = evt.data || {};
   if (!state) {
     postMessage({ type: 'error', message: 'Missing state.' });
     return;
@@ -19,7 +46,7 @@ onmessage = (evt) => {
     try {
       const IR = 1;
       TRMSET_CORE(state, 1, IR, IR, IR);
-      postMessage({ type: 'trimResult', state });
+      postMessage({ type: 'trimResult', state, requestId });
     } catch (err) {
       postMessage({ type: 'error', message: err?.message ?? String(err) });
     }
@@ -65,7 +92,23 @@ onmessage = (evt) => {
     } catch (err) {
       log(`EXEC precheck failed: ${err?.message ?? err}`);
     }
-    EXEC(state, 8, 0, 1);
+    state.USE_WASM_SOLVE = Boolean(useWasm);
+    state.USE_WASM_GAM = Boolean(useWasm);
+    state.USE_WASM_AERO = Boolean(useWasm);
+    state.USE_WASM_AIC = Boolean(useWasm);
+    state.USE_WASM_LU = Boolean(useWasm);
+    if (useWasm) {
+      try {
+        await preloadAoperLinSolveWasm();
+        await preloadAsetupWasm();
+        await preloadAeroWasm();
+        await preloadAicWasmBridge();
+        await preloadAsetpLuWasmBridge();
+      } catch (err) {
+        log(`EXEC wasm solve preload failed: ${err?.message ?? err}`);
+      }
+    }
+    EXEC(state, 20, 0, 1);
     const dt = Date.now() - t0;
     log(`Worker EXEC done (${dt} ms)`);
     log(`EXEC state: ALFA=${state.ALFA} BETA=${state.BETA} MACH=${state.MACH}`);
@@ -130,6 +173,7 @@ onmessage = (evt) => {
     })() : null;
     postMessage({
       type: 'result',
+      requestId,
       ALFA: state.ALFA,
       BETA: state.BETA,
       CLTOT: state.CLTOT,

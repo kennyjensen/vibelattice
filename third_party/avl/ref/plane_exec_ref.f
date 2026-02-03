@@ -24,7 +24,7 @@
         FILAVL = 'plane.avl'
       ENDIF
 
-      NITER = 8
+      NITER = NITMAX
       CALL GETARG0(2,ARG2)
       IF(ARG2 .NE. ' ') THEN
         READ(ARG2,*,ERR=10) NITER

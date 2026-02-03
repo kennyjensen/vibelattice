@@ -103,6 +103,10 @@
 
           <div class="row">
             <button id="trimBtn" class="btn primary" type="button">Trim</button>
+            <label class="toggle">
+              <input id="useWasmExec" type="checkbox" checked />
+              Use WASM for EXEC
+            </label>
           </div>
         </div>
       </div>
@@ -163,6 +167,10 @@
       </div>
 
       <div class="stage">
+        <div class="trefftz-overlay" id="trefftzOverlay" aria-hidden="true">
+          <div class="trefftz-spinner" aria-hidden="true"></div>
+          <div class="trefftz-overlay-text">Thinking…</div>
+        </div>
         <canvas id="trefftz" class="trefftz-plot" width="860" height="320"></canvas>
       </div>
       </main>

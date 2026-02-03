@@ -10,20 +10,13 @@ import {
   repoRootDir,
 } from '../src/exec_pipeline.js';
 import { EXEC } from '../src/aoper.js';
+import { ensureRefBuilt } from './ref_build_lock.mjs';
 
 const repoRoot = repoRootDir();
 const runsDir = path.join(repoRoot, 'third_party', 'avl', 'runs');
 const refDir = path.join(repoRoot, 'third_party', 'avl', 'ref');
 const planePath = path.join(runsDir, 'plane.avl');
 const refBin = path.join(refDir, 'plane_exec_ref');
-
-function ensureRefBuilt() {
-  const proc = spawnSync('make', ['-B', 'plane_exec_ref'], { cwd: refDir, encoding: 'utf8' });
-  if (proc.error) throw proc.error;
-  if (proc.status !== 0) {
-    throw new Error(proc.stderr || proc.stdout || `make failed with ${proc.status}`);
-  }
-}
 
 function parseRefOutput(stdout) {
   const lines = stdout.trim().split(/\r?\n/);
@@ -81,9 +74,9 @@ function idx2(i, j, dim1) {
 }
 
 test('EXEC matches Fortran for plane.avl forces and trefftz', { timeout: 80000 }, async () => {
-  ensureRefBuilt();
+  await ensureRefBuilt('plane_exec_ref', refDir);
 
-  const refProc = spawnSync(refBin, [planePath, '0'], { encoding: 'utf8' });
+  const refProc = spawnSync(refBin, [planePath], { encoding: 'utf8' });
   if (refProc.error) throw refProc.error;
   if (refProc.status !== 0) {
     throw new Error(refProc.stderr || refProc.stdout || `ref exited with ${refProc.status}`);
@@ -108,7 +101,7 @@ test('EXEC matches Fortran for plane.avl forces and trefftz', { timeout: 80000 }
     cmz: 0.0,
   });
   buildGeometry(state, model);
-  EXEC(state, 0, 0, 1);
+  EXEC(state, 20, 0, 1);
 
   const tolForce = 2e-4;
   const tolStrip = 2e-3;
@@ -144,9 +137,9 @@ test('EXEC matches Fortran for plane.avl forces and trefftz', { timeout: 80000 }
 });
 
 test('EXEC matches Fortran for plane.avl with iterations', { timeout: 120000 }, async () => {
-  ensureRefBuilt();
+  await ensureRefBuilt('plane_exec_ref', refDir);
 
-  const refProc = spawnSync(refBin, [planePath, '3'], { encoding: 'utf8' });
+  const refProc = spawnSync(refBin, [planePath, '20'], { encoding: 'utf8' });
   if (refProc.error) throw refProc.error;
   if (refProc.status !== 0) {
     throw new Error(refProc.stderr || refProc.stdout || `ref exited with ${refProc.status}`);
@@ -171,7 +164,7 @@ test('EXEC matches Fortran for plane.avl with iterations', { timeout: 120000 }, 
     cmz: 0.0,
   });
   buildGeometry(state, model);
-  EXEC(state, 3, 0, 1);
+  EXEC(state, 20, 0, 1);
 
   const tolForce = 5e-4;
   const tolStrip = 5e-3;

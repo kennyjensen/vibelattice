@@ -3,8 +3,6 @@
  * Derived work under GPL-2.0.
  * Original source: https://web.mit.edu/drela/Public/web/avl/
  */
-import fs from 'node:fs/promises';
-import path from 'node:path';
 
 function makeAllocator(start = 0, ensure) {
   let offset = start;
@@ -29,10 +27,11 @@ function readF32(view, offset, length) {
   return Float32Array.from(view.subarray(offset / 4, offset / 4 + length));
 }
 
-export async function loadAsetupWasm(options = {}) {
-  const wasmPath = options.wasmPath
-    ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'dist', 'asetup.wasm');
-  const wasmBytes = await fs.readFile(wasmPath);
+export async function loadAsetupWasm() {
+  const url = new URL('./asetup.wasm', import.meta.url);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to load wasm: ${res.status}`);
+  const wasmBytes = await res.arrayBuffer();
   const { instance } = await WebAssembly.instantiate(wasmBytes, {});
 
   const { memory, GAMSUM, VELSUM } = instance.exports;
@@ -130,15 +129,6 @@ export async function loadAsetupWasm(options = {}) {
     const wcsrdPtr = allocF32(state.WCSRD.length);
     const wvsrdPtr = allocF32(state.WVSRD.length);
 
-    const wcPtr = allocF32(state.WC.length);
-    const wvPtr = allocF32(state.WV.length);
-    const wcUPtr = allocF32(state.WC_U.length);
-    const wvUPtr = allocF32(state.WV_U.length);
-    const wcDPtr = allocF32(state.WC_D.length);
-    const wvDPtr = allocF32(state.WV_D.length);
-    const wcGPtr = allocF32(state.WC_G.length);
-    const wvGPtr = allocF32(state.WV_G.length);
-
     writeF32(f32, vinfPtr, state.VINF);
     writeF32(f32, wrotPtr, state.WROT);
     writeF32(f32, wcGamPtr, state.WC_GAM);
@@ -147,7 +137,6 @@ export async function loadAsetupWasm(options = {}) {
     writeF32(f32, gamUPtr, state.GAM_U);
     writeF32(f32, gamDPtr, state.GAM_D);
     writeF32(f32, gamGPtr, state.GAM_G);
-
     writeF32(f32, vcPtr, state.VC);
     writeF32(f32, vvPtr, state.VV);
     writeF32(f32, vcUPtr, state.VC_U);
@@ -156,54 +145,33 @@ export async function loadAsetupWasm(options = {}) {
     writeF32(f32, vvDPtr, state.VV_D);
     writeF32(f32, vcGPtr, state.VC_G);
     writeF32(f32, vvGPtr, state.VV_G);
-
     writeF32(f32, wcsrdUPtr, state.WCSRD_U);
     writeF32(f32, wvsrdUPtr, state.WVSRD_U);
     writeF32(f32, wcsrdPtr, state.WCSRD);
     writeF32(f32, wvsrdPtr, state.WVSRD);
 
-    writeF32(f32, wcPtr, state.WC);
-    writeF32(f32, wvPtr, state.WV);
-    writeF32(f32, wcUPtr, state.WC_U);
-    writeF32(f32, wvUPtr, state.WV_U);
-    writeF32(f32, wcDPtr, state.WC_D);
-    writeF32(f32, wvDPtr, state.WV_D);
-    writeF32(f32, wcGPtr, state.WC_G);
-    writeF32(f32, wvGPtr, state.WV_G);
-
     VELSUM(
-      state.NVOR, state.NCONTROL, state.NDESIGN, state.NUMAX, state.NDMAX, state.NGMAX,
-      state.DIM_N, state.DIM_U, state.DIM_C, state.DIM_G,
+      state.NVOR, state.NCONTROL, state.NDESIGN, state.NLNODE, state.NSTRIP, state.NUMAX,
+      state.DIM_N, state.DIM_U, state.DIM_C, state.DIM_G, state.DIM_L,
       vinfPtr, wrotPtr,
       wcGamPtr, wvGamPtr,
       gamPtr, gamUPtr, gamDPtr, gamGPtr,
-      vcPtr, vvPtr, vcUPtr, vvUPtr,
-      vcDPtr, vvDPtr, vcGPtr, vvGPtr,
-      wcsrdUPtr, wvsrdUPtr,
-      wcsrdPtr, wvsrdPtr,
-      wcPtr, wvPtr, wcUPtr, wvUPtr,
-      wcDPtr, wvDPtr, wcGPtr, wvGPtr,
+      vcPtr, vvPtr, vcUPtr, vvUPtr, vcDPtr, vvDPtr, vcGPtr, vvGPtr,
+      wcsrdUPtr, wvsrdUPtr, wcsrdPtr, wvsrdPtr,
     );
 
     state.VC = readF32(f32, vcPtr, state.VC.length);
     state.VV = readF32(f32, vvPtr, state.VV.length);
-    state.WC = readF32(f32, wcPtr, state.WC.length);
-    state.WV = readF32(f32, wvPtr, state.WV.length);
-    state.WCSRD = readF32(f32, wcsrdPtr, state.WCSRD.length);
-    state.WVSRD = readF32(f32, wvsrdPtr, state.WVSRD.length);
     state.VC_U = readF32(f32, vcUPtr, state.VC_U.length);
     state.VV_U = readF32(f32, vvUPtr, state.VV_U.length);
-    state.WC_U = readF32(f32, wcUPtr, state.WC_U.length);
-    state.WV_U = readF32(f32, wvUPtr, state.WV_U.length);
     state.VC_D = readF32(f32, vcDPtr, state.VC_D.length);
     state.VV_D = readF32(f32, vvDPtr, state.VV_D.length);
     state.VC_G = readF32(f32, vcGPtr, state.VC_G.length);
     state.VV_G = readF32(f32, vvGPtr, state.VV_G.length);
-    state.WC_D = readF32(f32, wcDPtr, state.WC_D.length);
-    state.WV_D = readF32(f32, wvDPtr, state.WV_D.length);
-    state.WC_G = readF32(f32, wcGPtr, state.WC_G.length);
-    state.WV_G = readF32(f32, wvGPtr, state.WV_G.length);
-
+    state.WCSRD_U = readF32(f32, wcsrdUPtr, state.WCSRD_U.length);
+    state.WVSRD_U = readF32(f32, wvsrdUPtr, state.WVSRD_U.length);
+    state.WCSRD = readF32(f32, wcsrdPtr, state.WCSRD.length);
+    state.WVSRD = readF32(f32, wvsrdPtr, state.WVSRD.length);
     return state;
   }
 

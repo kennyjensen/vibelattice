@@ -48,5 +48,5 @@ test('trim smoke: plane.avl runs TRMSET_CORE and EXEC', async () => {
   }
 
   assert.doesNotThrow(() => TRMSET_CORE(state, 1, IR, IR, IR));
-  assert.doesNotThrow(() => EXEC(state, 1, 0, IR));
+  assert.doesNotThrow(() => EXEC(state, 20, 0, IR));
 });

@@ -27,6 +27,7 @@ const els = {
   radLoop: document.getElementById('radLoop'),
   facLoop: document.getElementById('facLoop'),
   trimBtn: document.getElementById('trimBtn'),
+  useWasmExec: document.getElementById('useWasmExec'),
   appRoot: document.getElementById('appRoot'),
   navSettings: document.getElementById('navSettings'),
   navPlots: document.getElementById('navPlots'),
@@ -36,6 +37,7 @@ const els = {
   outputsCol: document.getElementById('outputsCol'),
   viewer: document.getElementById('viewer'),
   trefftz: document.getElementById('trefftz'),
+  trefftzOverlay: document.getElementById('trefftzOverlay'),
   outAlpha: document.getElementById('outAlpha'),
   outBeta: document.getElementById('outBeta'),
   outBank: document.getElementById('outBank'),
@@ -97,6 +99,17 @@ let trefftzPlot = null;
 let execWorker = null;
 let execTimeoutId = null;
 let trimInProgress = false;
+let trimRequestId = 0;
+let execRequestId = 0;
+let autoTrimTimer = null;
+let lastTrimState = null;
+
+function updateTrefftzBusy() {
+  const stage = els.trefftz?.parentElement;
+  if (!stage) return;
+  const busy = Boolean(trimInProgress || execInProgress);
+  stage.classList.toggle('trefftz-busy', busy);
+}
 
 function initTopNav() {
   if (!els.appRoot || !els.navSettings || !els.navPlots || !els.navOutputs) return;
@@ -225,19 +238,29 @@ function ensureExecWorker() {
       logDebug(`EXEC worker error: ${msg.message}`);
       execInProgress = false;
       trimInProgress = false;
+      updateTrefftzBusy();
       if (execTimeoutId) {
         clearTimeout(execTimeoutId);
         execTimeoutId = null;
       }
     } else if (msg.type === 'trimResult') {
+      if (msg.requestId !== trimRequestId) {
+        return;
+      }
       trimInProgress = false;
+      updateTrefftzBusy();
       try {
         applyTrimResults(msg.state);
+        lastTrimState = extractTrimSeed(msg.state);
       } catch (err) {
         logDebug(`Trim apply failed: ${err?.message ?? err}`);
       }
     } else if (msg.type === 'result') {
+      if (msg.requestId !== execRequestId) {
+        return;
+      }
       execInProgress = false;
+      updateTrefftzBusy();
       if (execTimeoutId) {
         clearTimeout(execTimeoutId);
         execTimeoutId = null;
@@ -253,12 +276,26 @@ function ensureExecWorker() {
     logDebug(`EXEC worker failed: ${evt.message}`);
     execInProgress = false;
     trimInProgress = false;
+    updateTrefftzBusy();
     if (execTimeoutId) {
       clearTimeout(execTimeoutId);
       execTimeoutId = null;
     }
   };
   return execWorker;
+}
+
+function resetTrimSeed() {
+  lastTrimState = null;
+  uiState.lastConstraintRows = null;
+}
+
+function extractTrimSeed(state) {
+  return {
+    ALFA: state.ALFA,
+    BETA: state.BETA,
+    DELCON: state.DELCON ? new Float64Array(state.DELCON) : null,
+  };
 }
 
 const airfoilCache = new Map();
@@ -539,6 +576,8 @@ function rebuildConstraintUI(model) {
     row.querySelectorAll('select, input').forEach((el) => {
       el.addEventListener('change', updateConstraintDuplicates);
       el.addEventListener('input', updateConstraintDuplicates);
+      el.addEventListener('change', scheduleAutoTrim);
+      el.addEventListener('input', scheduleAutoTrim);
     });
   });
   updateConstraintDuplicates();
@@ -575,6 +614,8 @@ function handleFileLoad(file) {
     els.fileText.value = uiState.text;
     els.fileMeta.textContent = `Loaded: ${file.name} (${file.size} bytes)`;
     loadGeometryFromText(uiState.text, true);
+    resetTrimSeed();
+    applyTrim({ useSeed: false });
     logDebug(`Loaded file: ${file.name}`);
   };
   reader.readAsText(file);
@@ -623,6 +664,19 @@ els.fileInput.addEventListener('change', (evt) => {
   const file = evt.target.files?.[0];
   if (file) handleFileLoad(file);
 });
+
+els.bank?.addEventListener('input', scheduleAutoTrim);
+els.cl?.addEventListener('input', scheduleAutoTrim);
+els.vel?.addEventListener('input', scheduleAutoTrim);
+els.mass?.addEventListener('input', scheduleAutoTrim);
+els.rho?.addEventListener('input', scheduleAutoTrim);
+els.gee?.addEventListener('input', scheduleAutoTrim);
+els.flightMode?.addEventListener('change', scheduleAutoTrim);
+els.clLoop?.addEventListener('input', scheduleAutoTrim);
+els.velLoop?.addEventListener('input', scheduleAutoTrim);
+els.radLoop?.addEventListener('input', scheduleAutoTrim);
+els.facLoop?.addEventListener('input', scheduleAutoTrim);
+els.useWasmExec?.addEventListener('change', scheduleAutoTrim);
 
 els.saveBtn.addEventListener('click', () => {
   const text = els.fileText.value;
@@ -804,7 +858,7 @@ function makeTrimState(controlMap = null) {
   return state;
 }
 
-function applyTrim() {
+function applyTrim({ useSeed = true } = {}) {
   logDebug('Trim requested.');
   updateFlightConditions();
   let state;
@@ -814,26 +868,45 @@ function applyTrim() {
     logDebug(`Trim setup failed: ${err?.message ?? err}`);
     return;
   }
-  if (trimInProgress) {
-    logDebug('Trim skipped: already running.');
-    return;
+  if (execWorker && (trimInProgress || execInProgress)) {
+    execWorker.terminate();
+    execWorker = null;
+    trimInProgress = false;
+    execInProgress = false;
+    updateTrefftzBusy();
+    if (execTimeoutId) {
+      clearTimeout(execTimeoutId);
+      execTimeoutId = null;
+    }
   }
   trimInProgress = true;
+  updateTrefftzBusy();
+  trimRequestId += 1;
   uiState.lastConstraintRows = readConstraintRows();
+  if (useSeed && lastTrimState) {
+    state.ALFA = lastTrimState.ALFA ?? state.ALFA;
+    state.BETA = lastTrimState.BETA ?? state.BETA;
+    if (lastTrimState.DELCON && state.DELCON) {
+      state.DELCON.set(lastTrimState.DELCON);
+    }
+  }
   const worker = ensureExecWorker();
   if (!worker) {
     try {
       const IR = 1;
       TRMSET_CORE(state, 1, IR, IR, IR);
       trimInProgress = false;
+      updateTrefftzBusy();
       applyTrimResults(state);
+      lastTrimState = extractTrimSeed(state);
     } catch (err) {
       logDebug(`Trim setup failed: ${err?.message ?? err}`);
       trimInProgress = false;
+      updateTrefftzBusy();
     }
     return;
   }
-  worker.postMessage({ type: 'trim', state });
+  worker.postMessage({ type: 'trim', state, requestId: trimRequestId });
 }
 
 function applyTrimResults(state) {
@@ -885,18 +958,28 @@ function applyTrimResults(state) {
         return;
       }
       execInProgress = true;
+      updateTrefftzBusy();
       logDebug('EXEC scheduled.');
       try {
         runExecFromText(uiState.text);
       } catch (err) {
         logDebug(`EXEC failed: ${err?.message ?? err}`);
         execInProgress = false;
+        updateTrefftzBusy();
       }
     }, 0);
   }
 }
 
-els.trimBtn.addEventListener('click', applyTrim);
+els.trimBtn.addEventListener('click', () => applyTrim());
+
+function scheduleAutoTrim() {
+  if (autoTrimTimer) clearTimeout(autoTrimTimer);
+  autoTrimTimer = setTimeout(() => {
+    autoTrimTimer = null;
+    applyTrim();
+  }, 200);
+}
 
 if (els.downloadForcesStrip) {
   els.downloadForcesStrip.addEventListener('click', () => {
@@ -1926,8 +2009,12 @@ function buildSurfaceMesh(surface, color) {
     const controlsB = b.controls || [];
     controlsA.forEach((ctrl) => {
       const mate = controlsB.find((c) => c.name === ctrl.name) || ctrl;
-      const hx1 = a.xle + a.chord * (ctrl.xhinge ?? 0.75);
-      const hx2 = b.xle + b.chord * (mate.xhinge ?? 0.75);
+      const rawXhinge = ctrl.xhinge ?? 0.75;
+      const rawMateXhinge = mate.xhinge ?? rawXhinge;
+      const dispXhinge = rawXhinge >= 0.99 ? rawXhinge - 0.01 : (rawXhinge <= 0.01 ? rawXhinge + 0.01 : rawXhinge);
+      const dispMateXhinge = rawMateXhinge >= 0.99 ? rawMateXhinge - 0.01 : (rawMateXhinge <= 0.01 ? rawMateXhinge + 0.01 : rawMateXhinge);
+      const hx1 = a.xle + a.chord * dispXhinge;
+      const hx2 = b.xle + b.chord * dispMateXhinge;
       const h1 = applyTransforms(rotateSectionPoint(a, [hx1, a.yle, a.zle]));
       const h2 = applyTransforms(rotateSectionPoint(b, [hx2, b.yle, b.zle]));
       addControlQuad(ctrl.name, h1, h2, te2, te1);
@@ -1960,7 +2047,14 @@ function buildSurfaceMesh(surface, color) {
   const outlineMat = new THREE.LineBasicMaterial({ color, linewidth: 1 });
   const sectionMat = new THREE.LineBasicMaterial({ color, linewidth: 1, transparent: true, opacity: 0.55 });
   const controlMat = new THREE.LineBasicMaterial({ color, linewidth: 1, transparent: true, opacity: 0.7 });
-  const hingeMat = new THREE.LineDashedMaterial({ color, linewidth: 1, dashSize: 0.15, gapSize: 0.12 });
+  const hingeMat = new THREE.LineDashedMaterial({
+    color,
+    linewidth: 1,
+    dashSize: 0.15,
+    gapSize: 0.12,
+    transparent: true,
+    opacity: 0.9,
+  });
   const outlineLine = new THREE.LineSegments(outlineGeom, outlineMat);
   group.add(outlineLine);
 
@@ -2796,7 +2890,7 @@ function runExecFromText(text) {
   buildGeometry(state, model);
   const worker = ensureExecWorker();
   if (!worker) {
-    EXEC(state, 8, 0, 1);
+    EXEC(state, 20, 0, 1);
     const dt = performance.now() - t0;
     logDebug(`EXEC done (${fmt(dt, 1)} ms)`);
     const idx2 = (i, j, dim1) => i + dim1 * j;
@@ -2863,6 +2957,7 @@ function runExecFromText(text) {
       DELCON: state.DELCON,
     });
     execInProgress = false;
+    updateTrefftzBusy();
     return;
   }
 
@@ -2871,9 +2966,15 @@ function runExecFromText(text) {
     execWorker?.terminate();
     execWorker = null;
     execInProgress = false;
+    updateTrefftzBusy();
   }, 70000);
 
-  worker.postMessage({ state });
+  execRequestId += 1;
+  const useWasm = Boolean(els.useWasmExec?.checked);
+  if (useWasm) {
+    logDebug('EXEC using WASM kernels.');
+  }
+  worker.postMessage({ state, requestId: execRequestId, useWasm });
   const dt = performance.now() - t0;
   logDebug(`EXEC dispatched (${fmt(dt, 1)} ms)`);
 }
@@ -3210,7 +3311,8 @@ async function bootApp() {
     logDebug('App ready (3D viewer disabled).');
   }
   updateTrefftz(Number(els.cl.value));
-  applyTrim();
+  resetTrimSeed();
+  applyTrim({ useSeed: false });
 }
 
 bootApp().catch((err) => logDebug(`Boot failed: ${err?.message ?? err}`));

@@ -44,5 +44,6 @@ await buildOne('matrix-linpack');
 await buildOne('avl');
 await buildOne('asetup');
 await buildOne('aoper');
+await buildOne('aoper_exec_port');
 await buildOne('aoutmrf');
 await buildOne('amode');

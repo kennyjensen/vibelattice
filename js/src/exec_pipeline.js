@@ -554,6 +554,7 @@ export function buildExecState(model, options = {}) {
   const DIM_L = NLMAX + 1;
 
   const state = {
+    __modelRef: model,
     IVALFA, IVBETA, IVROTX, IVROTY, IVROTZ, IVTOT,
     ICALFA, ICBETA, ICROTX, ICROTY, ICROTZ, ICCL, ICCY, ICMOMX, ICMOMY, ICMOMZ, ICTOT,
     IPALFA, IPBETA, IPROTX, IPROTY, IPROTZ, IPCL, IPCD0, IPPHI, IPTHE, IPPSI,
@@ -920,7 +921,7 @@ export async function runExec(text, options = {}) {
   const model = await buildSolverModel(text, options);
   const state = buildExecState(model, options);
   buildGeometry(state, model);
-  EXEC(state, 8, 0, 1);
+  EXEC(state, 20, 0, 1);
   return { state, model };
 }
 

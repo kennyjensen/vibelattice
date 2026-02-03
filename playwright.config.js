@@ -1,5 +1,5 @@
 const config = {
-  testDir: './js/test',
+  testDir: './js/playwright',
   timeout: 30000,
   use: {
     browserName: 'chromium',

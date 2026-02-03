@@ -4,13 +4,18 @@
 (module
   (memory (export "memory") 2)
 
+  ;; packed vectors (x,y,z) contiguous
+  ;; idx3(r, c) = r + 3*c
   (func $idx3 (param $r i32) (param $c i32) (result i32)
-    (i32.add (local.get $r) (i32.mul (i32.const 3) (local.get $c)))
+    (i32.add (local.get $r)
+      (i32.mul (i32.const 3) (local.get $c)))
   )
   (func $idx2 (param $i i32) (param $j i32) (param $dim1 i32) (result i32)
     (i32.add (local.get $i) (i32.mul (local.get $dim1) (local.get $j)))
   )
 
+  ;; packed vectors (x,y,z) contiguous for (i,j) grids
+  ;; idx3c(r,i,j,dim1) = r + 3*(i + dim1*j)
   (func $idx3c (param $r i32) (param $i i32) (param $j i32) (param $dim1 i32) (result i32)
     (i32.add (local.get $r)
       (i32.mul (i32.const 3)

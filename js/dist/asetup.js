@@ -14,6 +14,23 @@ import {
   DOT,
   CROSS,
 } from './aic.js';
+import { loadAicWasm } from './aic_wasm.js';
+import { loadAoperLinSolveF32Wasm } from './aoper_linsolve_f32_wasm.js';
+
+let wasmAic = null;
+let wasmLu = null;
+
+export async function preloadAicWasm() {
+  if (wasmAic) return wasmAic;
+  wasmAic = await loadAicWasm();
+  return wasmAic;
+}
+
+export async function preloadAsetpLuWasm() {
+  if (wasmLu) return wasmLu;
+  wasmLu = await loadAoperLinSolveF32Wasm();
+  return wasmLu;
+}
 
 function idx2(i, j, dim1) {
   return i + dim1 * j;
@@ -119,6 +136,21 @@ function BAKSUB_COL(dim, n, A, INDX, B) {
   }
 }
 
+function solveAicColumn(state, col) {
+  if (state.USE_WASM_LU && wasmLu && state.__WASM_AICN) {
+    const solved = wasmLu.solveWithLUInPlace(
+      state.__WASM_AICN.aPtr,
+      state.__WASM_AICN.indxPtr,
+      col,
+      state.__WASM_AICN.dim,
+      state.__WASM_AICN.n,
+    );
+    col.set(solved);
+    return;
+  }
+  BAKSUB_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, col);
+}
+
 function MUNGEA(state) {
   for (let j = 1; j <= state.NSTRIP; j += 1) {
     if (!state.LSTRIPOFF[j]) continue;
@@ -133,16 +165,100 @@ function MUNGEA(state) {
   }
 }
 
+function buildSetupCacheKey(state) {
+  return [
+    state.NVOR,
+    state.NVMAX,
+    state.NLMAX,
+    state.NBODY,
+    state.NLNODE,
+    state.IYSYM,
+    state.IZSYM,
+    state.YSYM,
+    state.ZSYM,
+    state.VRCOREC,
+    state.VRCOREW,
+    state.SRCORE,
+    state.AMACH,
+  ].join('|');
+}
+
+function applySetupCache(state, cache) {
+  if (!cache || cache.key == null) return false;
+  if (state.WC_GAM.length !== cache.WC_GAM.length) return false;
+  if (state.WV_GAM.length !== cache.WV_GAM.length) return false;
+  if (state.WCSRD_U.length !== cache.WCSRD_U.length) return false;
+  if (state.WVSRD_U.length !== cache.WVSRD_U.length) return false;
+  if (state.SRC_U.length !== cache.SRC_U.length) return false;
+  if (state.DBL_U.length !== cache.DBL_U.length) return false;
+  if (state.AICN.length !== cache.AICN.length) return false;
+  if (state.LVNC.length !== cache.LVNC.length) return false;
+  if (state.IAPIV.length !== cache.IAPIV.length) return false;
+
+  state.WC_GAM.set(cache.WC_GAM);
+  state.WV_GAM.set(cache.WV_GAM);
+  state.WCSRD_U.set(cache.WCSRD_U);
+  state.WVSRD_U.set(cache.WVSRD_U);
+  state.SRC_U.set(cache.SRC_U);
+  state.DBL_U.set(cache.DBL_U);
+  state.AICN.set(cache.AICN);
+  state.LVNC.set(cache.LVNC);
+  state.IAPIV.set(cache.IAPIV);
+  state.LAIC = true;
+  state.LSRD = true;
+  state.LVEL = true;
+  return true;
+}
+
+function buildSetupCache(state, key) {
+  return {
+    key,
+    WC_GAM: Float32Array.from(state.WC_GAM),
+    WV_GAM: Float32Array.from(state.WV_GAM),
+    WCSRD_U: Float32Array.from(state.WCSRD_U),
+    WVSRD_U: Float32Array.from(state.WVSRD_U),
+    SRC_U: Float32Array.from(state.SRC_U),
+    DBL_U: Float32Array.from(state.DBL_U),
+    AICN: Float32Array.from(state.AICN),
+    LVNC: Int8Array.from(state.LVNC),
+    IAPIV: Int32Array.from(state.IAPIV),
+  };
+}
+
 export function SETUP(state) {
   state.AMACH = state.MACH;
   state.BETM = f32(Math.sqrt(f32(1.0 - f32(state.AMACH * state.AMACH))));
+  const cacheKey = buildSetupCacheKey(state);
+  const modelCache = state.__modelRef?.__setupCache;
+  if (modelCache && modelCache.key === cacheKey) {
+    const ok = applySetupCache(state, modelCache);
+    if (ok) {
+      if (state.USE_WASM_LU && wasmLu) {
+        const dim = state.NVMAX + 1;
+        const n = state.NVOR;
+        const { aPtr, indxPtr } = wasmLu.factorInPlace(state.AICN, dim, n);
+        state.__WASM_AICN = { aPtr, indxPtr, dim, n };
+      }
+      return state;
+    }
+  }
 
   if (!state.LAIC) {
-    VVOR(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM,
-      state.VRCOREC, state.VRCOREW,
-      state.NVOR, state.RV1, state.RV2, state.LVCOMP, state.CHORDV,
-      state.NVOR, state.RC, state.LVCOMP, false,
-      state.WC_GAM, state.NVMAX);
+    if (state.USE_WASM_AIC && wasmAic) {
+      state.WC_GAM = Float32Array.from(wasmAic.VVOR(
+        state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM,
+        state.VRCOREC, state.VRCOREW,
+        state.NVOR, state.RV1, state.RV2, state.LVCOMP, state.CHORDV,
+        state.NVOR, state.RC, state.LVCOMP, false,
+        state.NVMAX,
+      ));
+    } else {
+      VVOR(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM,
+        state.VRCOREC, state.VRCOREW,
+        state.NVOR, state.RV1, state.RV2, state.LVCOMP, state.CHORDV,
+        state.NVOR, state.RC, state.LVCOMP, false,
+        state.WC_GAM, state.NVMAX);
+    }
 
     for (let i = 1; i <= state.NVOR; i += 1) {
       for (let j = 1; j <= state.NVOR; j += 1) {
@@ -173,39 +289,80 @@ export function SETUP(state) {
     }
 
     MUNGEA(state);
-    LUDCMP_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, state.WORK);
+    if (state.USE_WASM_LU && wasmLu) {
+      const dim = state.NVMAX + 1;
+      const n = state.NVOR;
+      const { aPtr, indxPtr } = wasmLu.factorInPlace(state.AICN, dim, n);
+      state.__WASM_AICN = { aPtr, indxPtr, dim, n };
+    } else {
+      LUDCMP_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, state.WORK);
+    }
     state.LAIC = true;
   }
 
   if (!state.LSRD) {
-    SRDSET(state.BETM, state.XYZREF, state.IYSYM,
-      state.NBODY, state.LFRST, state.NLMAX,
-      state.NL, state.RL, state.RADL,
-      state.SRC_U, state.DBL_U);
+    if (state.USE_WASM_AIC && wasmAic) {
+      const srd = wasmAic.SRDSET(state.BETM, state.XYZREF, state.IYSYM,
+        state.NBODY, state.LFRST, state.NLMAX,
+        state.NL, state.RL, state.RADL);
+      state.SRC_U = Float32Array.from(srd.SRC_U);
+      state.DBL_U = Float32Array.from(srd.DBL_U);
+      state.WCSRD_U = Float32Array.from(wasmAic.VSRD(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM, state.SRCORE,
+        state.NBODY, state.LFRST, state.NLMAX,
+        state.NL, state.RL, state.RADL,
+        6, state.SRC_U, state.DBL_U,
+        state.NVOR, state.RC,
+        state.NVMAX));
+    } else {
+      SRDSET(state.BETM, state.XYZREF, state.IYSYM,
+        state.NBODY, state.LFRST, state.NLMAX,
+        state.NL, state.RL, state.RADL,
+        state.SRC_U, state.DBL_U);
 
-    VSRD(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM, state.SRCORE,
-      state.NBODY, state.LFRST, state.NLMAX,
-      state.NL, state.RL, state.RADL,
-      6, state.SRC_U, state.DBL_U,
-      state.NVOR, state.RC,
-      state.WCSRD_U, state.NVMAX);
+      VSRD(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM, state.SRCORE,
+        state.NBODY, state.LFRST, state.NLMAX,
+        state.NL, state.RL, state.RADL,
+        6, state.SRC_U, state.DBL_U,
+        state.NVOR, state.RC,
+        state.WCSRD_U, state.NVMAX);
+    }
     state.LSRD = true;
   }
 
   if (!state.LVEL) {
-    VVOR(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM,
-      state.VRCOREC, state.VRCOREW,
-      state.NVOR, state.RV1, state.RV2, state.LVCOMP, state.CHORDV,
-      state.NVOR, state.RV, state.LVCOMP, true,
-      state.WV_GAM, state.NVMAX);
+    if (state.USE_WASM_AIC && wasmAic) {
+      state.WV_GAM = Float32Array.from(wasmAic.VVOR(
+        state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM,
+        state.VRCOREC, state.VRCOREW,
+        state.NVOR, state.RV1, state.RV2, state.LVCOMP, state.CHORDV,
+        state.NVOR, state.RV, state.LVCOMP, true,
+        state.NVMAX,
+      ));
+      state.WVSRD_U = Float32Array.from(wasmAic.VSRD(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM, state.SRCORE,
+        state.NBODY, state.LFRST, state.NLMAX,
+        state.NL, state.RL, state.RADL,
+        6, state.SRC_U, state.DBL_U,
+        state.NVOR, state.RV,
+        state.NVMAX));
+    } else {
+      VVOR(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM,
+        state.VRCOREC, state.VRCOREW,
+        state.NVOR, state.RV1, state.RV2, state.LVCOMP, state.CHORDV,
+        state.NVOR, state.RV, state.LVCOMP, true,
+        state.WV_GAM, state.NVMAX);
 
-    VSRD(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM, state.SRCORE,
-      state.NBODY, state.LFRST, state.NLMAX,
-      state.NL, state.RL, state.RADL,
-      6, state.SRC_U, state.DBL_U,
-      state.NVOR, state.RV,
-      state.WVSRD_U, state.NVMAX);
+      VSRD(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM, state.SRCORE,
+        state.NBODY, state.LFRST, state.NLMAX,
+        state.NL, state.RL, state.RADL,
+        6, state.SRC_U, state.DBL_U,
+        state.NVOR, state.RV,
+        state.WVSRD_U, state.NVMAX);
+    }
     state.LVEL = true;
+  }
+
+  if (state.__modelRef) {
+    state.__modelRef.__setupCache = buildSetupCache(state, cacheKey);
   }
 
   return state;
@@ -256,7 +413,7 @@ export function GUCALC(state) {
       for (let i = 1; i <= state.NVOR; i += 1) {
         col[i] = state.GAM_U_0[idx2(i, iu, state.NVOR + 1)];
       }
-      BAKSUB_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, col);
+      solveAicColumn(state, col);
       for (let i = 1; i <= state.NVOR; i += 1) {
         state.GAM_U_0[idx2(i, iu, state.NVOR + 1)] = col[i];
       }
@@ -266,7 +423,7 @@ export function GUCALC(state) {
       for (let i = 1; i <= state.NVOR; i += 1) {
         col[i] = state.GAM_U_D[idx3(i, iu, n, state.NVOR + 1, state.NUMAX + 1)];
       }
-      BAKSUB_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, col);
+      solveAicColumn(state, col);
       for (let i = 1; i <= state.NVOR; i += 1) {
         state.GAM_U_D[idx3(i, iu, n, state.NVOR + 1, state.NUMAX + 1)] = col[i];
       }
@@ -276,7 +433,7 @@ export function GUCALC(state) {
       for (let i = 1; i <= state.NVOR; i += 1) {
         col[i] = state.GAM_U_G[idx3(i, iu, n, state.NVOR + 1, state.NUMAX + 1)];
       }
-      BAKSUB_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, col);
+      solveAicColumn(state, col);
       for (let i = 1; i <= state.NVOR; i += 1) {
         state.GAM_U_G[idx3(i, iu, n, state.NVOR + 1, state.NUMAX + 1)] = col[i];
       }
@@ -326,7 +483,7 @@ export function GUCALC(state) {
       for (let i = 1; i <= state.NVOR; i += 1) {
         col[i] = state.GAM_U_0[idx2(i, iu, state.NVOR + 1)];
       }
-      BAKSUB_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, col);
+      solveAicColumn(state, col);
       for (let i = 1; i <= state.NVOR; i += 1) {
         state.GAM_U_0[idx2(i, iu, state.NVOR + 1)] = col[i];
       }
@@ -336,7 +493,7 @@ export function GUCALC(state) {
       for (let i = 1; i <= state.NVOR; i += 1) {
         col[i] = state.GAM_U_D[idx3(i, iu, n, state.NVOR + 1, state.NUMAX + 1)];
       }
-      BAKSUB_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, col);
+      solveAicColumn(state, col);
       for (let i = 1; i <= state.NVOR; i += 1) {
         state.GAM_U_D[idx3(i, iu, n, state.NVOR + 1, state.NUMAX + 1)] = col[i];
       }
@@ -346,7 +503,7 @@ export function GUCALC(state) {
       for (let i = 1; i <= state.NVOR; i += 1) {
         col[i] = state.GAM_U_G[idx3(i, iu, n, state.NVOR + 1, state.NUMAX + 1)];
       }
-      BAKSUB_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, col);
+      solveAicColumn(state, col);
       for (let i = 1; i <= state.NVOR; i += 1) {
         state.GAM_U_G[idx3(i, iu, n, state.NVOR + 1, state.NUMAX + 1)] = col[i];
       }
@@ -393,7 +550,7 @@ export function GDCALC(state, NQDEF, LQDEF, ENC_Q, GAM_Q) {
         GAM_Q[idx2(i, iq, state.NVOR + 1)] = 0.0;
       }
     }
-    BAKSUB_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, GAM_Q.subarray(idx2(1, iq, state.NVOR + 1)));
+    solveAicColumn(state, GAM_Q.subarray(idx2(1, iq, state.NVOR + 1)));
   }
   return state;
 }

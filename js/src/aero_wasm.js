@@ -22,11 +22,13 @@ function readF32(view, offset, length) {
   return Float32Array.from(view.subarray(offset / 4, offset / 4 + length));
 }
 
-function makeAllocator(start = 4096) {
+function makeAllocator(start = 4096, ensure) {
   let offset = start;
   return function alloc(bytes, align = 4) {
     const aligned = (offset + (align - 1)) & ~(align - 1);
-    offset = aligned + bytes;
+    const next = aligned + bytes;
+    if (ensure) ensure(next);
+    offset = next;
     return aligned;
   };
 }
@@ -340,14 +342,45 @@ export async function loadAeroWasm(options = {}) {
 
   const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
   const { memory, AERO, VINFAB, BDFORC, set_sfforc_js } = instance.exports;
-  const f32 = new Float32Array(memory.buffer);
-  const i32 = new Int32Array(memory.buffer);
+  let f32 = new Float32Array(memory.buffer);
+  let i32 = new Int32Array(memory.buffer);
+  const refreshViews = () => {
+    f32 = new Float32Array(memory.buffer);
+    i32 = new Int32Array(memory.buffer);
+    imports.env.__mem.f32 = f32;
+    imports.env.__mem.i32 = i32;
+    syncStateToMemory.__mem = imports.env.__mem;
+  };
+  const ensureMemory = (bytes) => {
+    const minBytes = 32 * 1024 * 1024;
+    const target = Math.max(bytes, minBytes);
+    const needed = target - memory.buffer.byteLength;
+    if (needed <= 0) return;
+    const pages = Math.ceil(needed / 65536);
+    memory.grow(pages);
+    refreshViews();
+  };
   imports.env.__mem = { f32, i32 };
   syncStateToMemory.__mem = imports.env.__mem;
 
-  function allocState(state) {
-    const alloc = makeAllocator();
+  const cacheByState = new WeakMap();
+
+  function buildSignature(state) {
+    const parts = [];
+    for (const name of ARRAY_I32_FIELDS.concat(ARRAY_BOOL_FIELDS, ARRAY_F32_FIELDS)) {
+      const arr = state[name];
+      const len = arr && typeof arr.length === 'number' ? arr.length : 0;
+      parts.push(`${name}:${len}`);
+    }
+    const nl = state.NL && typeof state.NL.length === 'number' ? state.NL.length : 0;
+    parts.push(`NL:${nl}`);
+    return parts.join('|');
+  }
+
+  function allocStateCached(state) {
+    const alloc = makeAllocator(4096, ensureMemory);
     const offsets = {};
+    const ptrs = {};
 
     offsets.LAYOUT = 0;
     let structOffset = 4;
@@ -366,34 +399,21 @@ export async function loadAeroWasm(options = {}) {
 
     const base = alloc(structOffset);
 
-    function writeScalarF32(name) {
-      if (name in state) {
-        writeF32(f32, base + offsets[name], [state[name]]);
+    function allocScalarI32(name) {
+      if (name === 'NL' && state[name] && typeof state[name].length === 'number') {
+        const arr = Int32Array.from(state[name]);
+        const ptr = alloc(arr.length * 4);
+        writeI32(i32, base + offsets[name], [ptr]);
+        writeI32(i32, ptr, arr);
+        ptrs[name] = ptr;
+        return;
       }
-    }
-
-    function writeScalarI32(name) {
       if (name in state) {
-        if (name === 'NL' && state[name] && typeof state[name].length === 'number') {
-          const arr = Int32Array.from(state[name]);
-          const ptr = alloc(arr.length * 4);
-          writeI32(i32, base + offsets[name], [ptr]);
-          writeI32(i32, ptr, arr);
-          return;
-        }
         writeI32(i32, base + offsets[name], [state[name] | 0]);
       }
     }
 
-    function writeScalarBool(name) {
-      if (name in state) {
-        writeI32(i32, base + offsets[name], [state[name] ? 1 : 0]);
-      }
-    }
-
-    SCALAR_F32_FIELDS.forEach(writeScalarF32);
-    SCALAR_I32_FIELDS.forEach(writeScalarI32);
-    SCALAR_BOOL_FIELDS.forEach(writeScalarBool);
+    SCALAR_I32_FIELDS.forEach(allocScalarI32);
 
     function allocArrayField(name, kind) {
       const arr = state[name];
@@ -406,6 +426,7 @@ export async function loadAeroWasm(options = {}) {
       }
       const ptr = alloc(arr.length * 4);
       writeI32(i32, base + offsets[name], [ptr]);
+      ptrs[name] = ptr;
       if (kind === 'f32') {
         writeF32(f32, ptr, arr);
       } else if (kind === 'i32') {
@@ -453,17 +474,29 @@ export async function loadAeroWasm(options = {}) {
       CLSURF: outputBase + 128,
     };
 
-    return { base, offsets, outputOffsets };
+    return { base, offsets, outputOffsets, ptrs, signature: buildSignature(state) };
+  }
+
+  function getStateCache(state) {
+    const signature = buildSignature(state);
+    const cached = cacheByState.get(state);
+    if (cached && cached.signature === signature) {
+      return cached;
+    }
+    const next = allocStateCached(state);
+    cacheByState.set(state, next);
+    return next;
   }
 
   function VINFAB_wasm(state) {
-    const mem = allocState(state);
+    const mem = getStateCache(state);
     imports.env.__mem.state = state;
     imports.env.__mem.outputOffsets = mem.outputOffsets;
     imports.env.__mem.statePtr = mem.base;
     imports.env.__mem.offsets = mem.offsets;
     imports.env.__mem.syncState = () => syncStateToMemory(state, mem.base, mem.offsets);
     imports.env.__mem.syncStateFromMemory = () => syncStateFromMemory(state, mem.base, mem.offsets);
+    imports.env.__mem.syncState();
     VINFAB(mem.base);
     const vinfPtr = i32[(mem.base + mem.offsets.VINF) / 4];
     const vinfAPtr = i32[(mem.base + mem.offsets.VINF_A) / 4];
@@ -480,13 +513,14 @@ export async function loadAeroWasm(options = {}) {
   }
 
   function AERO_wasm(state) {
-    const mem = allocState(state);
+    const mem = getStateCache(state);
     imports.env.__mem.state = state;
     imports.env.__mem.outputOffsets = mem.outputOffsets;
     imports.env.__mem.statePtr = mem.base;
     imports.env.__mem.offsets = mem.offsets;
     imports.env.__mem.syncState = () => syncStateToMemory(state, mem.base, mem.offsets);
     imports.env.__mem.syncStateFromMemory = () => syncStateFromMemory(state, mem.base, mem.offsets);
+    imports.env.__mem.syncState();
     AERO(mem.base);
     if (options.debugSync ?? process.env.AERO_WASM_DEBUG === '1') {
       const cftotPtr = imports.env.__mem.i32[(mem.base + mem.offsets.CFTOT) / 4];
@@ -523,13 +557,14 @@ export async function loadAeroWasm(options = {}) {
   }
 
   function BDFORC_wasm(state) {
-    const mem = allocState(state);
+    const mem = getStateCache(state);
     imports.env.__mem.state = state;
     imports.env.__mem.outputOffsets = mem.outputOffsets;
     imports.env.__mem.statePtr = mem.base;
     imports.env.__mem.offsets = mem.offsets;
     imports.env.__mem.syncState = () => syncStateToMemory(state, mem.base, mem.offsets);
     imports.env.__mem.syncStateFromMemory = () => syncStateFromMemory(state, mem.base, mem.offsets);
+    imports.env.__mem.syncState();
     BDFORC(mem.base);
     imports.env.__mem.syncStateFromMemory();
     return {

@@ -9,7 +9,7 @@ import {
   buildGeometry,
   repoRootDir,
 } from '../src/exec_pipeline.js';
-import { EXEC } from '../src/aoper.js';
+import { EXEC, preloadAoperLinSolveWasm, preloadAsetupWasm, preloadAeroWasm, preloadAicWasmBridge, preloadAsetpLuWasmBridge } from '../src/aoper.js';
 import { ensureRefBuilt } from './ref_build_lock.mjs';
 
 const repoRoot = repoRootDir();
@@ -73,6 +73,14 @@ function idx2(i, j, dim1) {
   return i + dim1 * j;
 }
 
+async function preloadWasm() {
+  await preloadAoperLinSolveWasm();
+  await preloadAsetupWasm();
+  await preloadAeroWasm();
+  await preloadAicWasmBridge();
+  await preloadAsetpLuWasmBridge();
+}
+
 function applyB737Constraints(state) {
   const IR = 1;
   const idx2i = (i, j, dim1) => i + dim1 * j;
@@ -97,7 +105,17 @@ function applyB737Constraints(state) {
   }
 }
 
-async function runB737Exec(niter) {
+test('EXEC wasm path matches Fortran for b737.avl', { timeout: 180000 }, async () => {
+  await ensureRefBuilt('b737_exec_ref', refDir);
+  await preloadWasm();
+
+  const refProc = spawnSync(refBin, ['b737.avl'], { encoding: 'utf8', cwd: runsDir });
+  if (refProc.error) throw refProc.error;
+  if (refProc.status !== 0) {
+    throw new Error(refProc.stderr || refProc.stdout || `ref exited with ${refProc.status}`);
+  }
+  const ref = parseRefOutput(refProc.stdout);
+
   const model = await buildSolverModel(fs.readFileSync(b737Path, 'utf8'), { baseDir: runsDir });
   const state = buildExecState(model, {
     alpha: 2.0,
@@ -113,70 +131,17 @@ async function runB737Exec(niter) {
     zcg: 0.0,
   });
   applyB737Constraints(state);
+  state.USE_WASM_SOLVE = true;
+  state.USE_WASM_GAM = true;
+  state.USE_WASM_AERO = false;
+  state.USE_WASM_AIC = false;
+  state.USE_WASM_LU = true;
+
   buildGeometry(state, model);
-  EXEC(state, niter, 0, 1);
-  return state;
-}
-
-test('EXEC matches Fortran for b737.avl forces and trefftz', { timeout: 140000 }, async () => {
-  await ensureRefBuilt('b737_exec_ref', refDir);
-
-  const refProc = spawnSync(refBin, ['b737.avl'], { encoding: 'utf8', cwd: runsDir });
-  if (refProc.error) throw refProc.error;
-  if (refProc.status !== 0) {
-    throw new Error(refProc.stderr || refProc.stdout || `ref exited with ${refProc.status}`);
-  }
-  const ref = parseRefOutput(refProc.stdout);
-
-  const state = await runB737Exec(20);
+  EXEC(state, 20, 0, 1);
 
   const tolForce = 5e-3;
   const tolStrip = 5e-2;
-  assertClose(state.CLTOT, ref.force.CLTOT, tolForce, 'CLTOT');
-  assertClose(state.CDTOT, ref.force.CDTOT, tolForce, 'CDTOT');
-  assertClose(state.CYTOT, ref.force.CYTOT, tolForce, 'CYTOT');
-  assertCloseArray(state.CMTOT, ref.force.CMTOT, tolForce, 'CMTOT');
-  assertCloseArray(state.CFTOT, ref.force.CFTOT, tolForce, 'CFTOT');
-  assertClose(state.CDVTOT, ref.CDVTOT, tolForce, 'CDVTOT');
-
-  assert.equal(state.NSTRIP, ref.NSTRIP, 'NSTRIP mismatch');
-
-  for (let j = 1; j <= state.NSTRIP; j += 1) {
-    const r = ref.strips[j];
-    assert.ok(r, `missing ref strip ${j}`);
-    const y = state.RLE[idx2(2, j, 4)];
-    const z = state.RLE[idx2(3, j, 4)];
-    assertClose(y, r.y, tolStrip, `strip ${j} y`);
-    assertClose(z, r.z, tolStrip, `strip ${j} z`);
-
-    if (r.off) {
-      assertClose(state.CNC[j], 0.0, tolStrip, `strip ${j} cnc off`);
-      assertClose(state.CLA_LSTRP[j], 0.0, tolStrip, `strip ${j} cla off`);
-      assertClose(state.CLT_LSTRP[j], 0.0, tolStrip, `strip ${j} clt off`);
-      assertClose(state.DWWAKE[j], 0.0, tolStrip, `strip ${j} dwwake off`);
-    } else {
-      assertClose(state.CNC[j], r.cnc, tolStrip, `strip ${j} cnc`);
-      assertClose(state.CLA_LSTRP[j], r.cla, tolStrip, `strip ${j} cla`);
-      assertClose(state.CLT_LSTRP[j], r.clt, tolStrip, `strip ${j} clt`);
-      assertClose(state.DWWAKE[j], r.dwwake, tolStrip, `strip ${j} dwwake`);
-    }
-  }
-});
-
-test('EXEC matches Fortran for b737.avl with iterations', { timeout: 200000 }, async () => {
-  await ensureRefBuilt('b737_exec_ref', refDir);
-
-  const refProc = spawnSync(refBin, ['b737.avl', '20'], { encoding: 'utf8', cwd: runsDir });
-  if (refProc.error) throw refProc.error;
-  if (refProc.status !== 0) {
-    throw new Error(refProc.stderr || refProc.stdout || `ref exited with ${refProc.status}`);
-  }
-  const ref = parseRefOutput(refProc.stdout);
-
-  const state = await runB737Exec(20);
-
-  const tolForce = 1e-2;
-  const tolStrip = 7e-2;
   assertClose(state.CLTOT, ref.force.CLTOT, tolForce, 'CLTOT');
   assertClose(state.CDTOT, ref.force.CDTOT, tolForce, 'CDTOT');
   assertClose(state.CYTOT, ref.force.CYTOT, tolForce, 'CYTOT');

@@ -373,6 +373,49 @@ textarea.code {
   display: block;
 }
 
+.trefftz-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(11, 15, 23, 0.6);
+  color: #e2e8f0;
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.trefftz-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(226, 232, 240, 0.35);
+  border-top-color: #38bdf8;
+  animation: spin 900ms linear infinite;
+}
+
+.trefftz-overlay-text {
+  font-weight: 600;
+}
+
+.stage.trefftz-busy .trefftz-plot {
+  opacity: 0.35;
+  filter: grayscale(0.4);
+}
+
+.stage.trefftz-busy .trefftz-overlay {
+  display: flex;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .trefftz-legend {
   position: absolute;
   top: 6px;

@@ -4,19 +4,157 @@
 (module
   (import "env" "sin_f32" (func $sin_f32 (param f32) (result f32)))
   (import "env" "cos_f32" (func $cos_f32 (param f32) (result f32)))
-  (import "env" "sqrt_f32" (func $sqrt_f32 (param f32) (result f32)))
-  (import "env" "cross" (func $cross (param i32) (param i32) (param i32)))
-  (import "env" "dot" (func $dot (param i32) (param i32) (result f32)))
-  (import "env" "cdcl" (func $cdcl (param i32) (param f32) (param i32)))
-  (import "env" "tpforc_js" (func $tpforc_js (param i32)))
-  (import "env" "sfforc_js" (func $sfforc_js (param i32)))
-  (import "env" "bdforc_js" (func $bdforc_js (param i32)))
-
+  
   (memory (export "memory") 1)
 
-  (global $USE_SFFORC_JS (mut i32) (i32.const 1))
+  (global $USE_SFFORC_JS (mut i32) (i32.const 0))
   (func (export "set_sfforc_js") (param $flag i32)
     (global.set $USE_SFFORC_JS (local.get $flag))
+  )
+
+  (func $cross (param $u i32) (param $v i32) (param $w i32)
+    (local $u1 f32) (local $u2 f32) (local $u3 f32)
+    (local $v1 f32) (local $v2 f32) (local $v3 f32)
+    (local.set $u1 (f32.load (local.get $u)))
+    (local.set $u2 (f32.load (i32.add (local.get $u) (i32.const 4))))
+    (local.set $u3 (f32.load (i32.add (local.get $u) (i32.const 8))))
+    (local.set $v1 (f32.load (local.get $v)))
+    (local.set $v2 (f32.load (i32.add (local.get $v) (i32.const 4))))
+    (local.set $v3 (f32.load (i32.add (local.get $v) (i32.const 8))))
+    (f32.store (local.get $w) (f32.sub (f32.mul (local.get $u2) (local.get $v3)) (f32.mul (local.get $u3) (local.get $v2))))
+    (f32.store (i32.add (local.get $w) (i32.const 4)) (f32.sub (f32.mul (local.get $u3) (local.get $v1)) (f32.mul (local.get $u1) (local.get $v3))))
+    (f32.store (i32.add (local.get $w) (i32.const 8)) (f32.sub (f32.mul (local.get $u1) (local.get $v2)) (f32.mul (local.get $u2) (local.get $v1))))
+  )
+
+  (func $dot (param $u i32) (param $v i32) (result f32)
+    (local $u1 f32) (local $u2 f32) (local $u3 f32)
+    (local $v1 f32) (local $v2 f32) (local $v3 f32)
+    (local.set $u1 (f32.load (local.get $u)))
+    (local.set $u2 (f32.load (i32.add (local.get $u) (i32.const 4))))
+    (local.set $u3 (f32.load (i32.add (local.get $u) (i32.const 8))))
+    (local.set $v1 (f32.load (local.get $v)))
+    (local.set $v2 (f32.load (i32.add (local.get $v) (i32.const 4))))
+    (local.set $v3 (f32.load (i32.add (local.get $v) (i32.const 8))))
+    (f32.add
+      (f32.add (f32.mul (local.get $u1) (local.get $v1))
+               (f32.mul (local.get $u2) (local.get $v2)))
+      (f32.mul (local.get $u3) (local.get $v3)))
+  )
+
+  (func $cdcl (param $pol i32) (param $cl f32) (param $out i32)
+    (local $clmin f32) (local $cdmin f32) (local $cl0 f32) (local $cd0 f32)
+    (local $clmax f32) (local $cdmax f32) (local $clinc f32) (local $cdinc f32)
+    (local $cdx1 f32) (local $cdx2 f32) (local $clfac f32)
+    (local $clv f32) (local $cd f32) (local $cd_cl f32)
+    (local $tmp f32) (local $t1 f32) (local $t2 f32) (local $den f32)
+    (local $order_ok i32)
+
+    (local.set $clmin (f32.load (local.get $pol)))
+    (local.set $cdmin (f32.load (i32.add (local.get $pol) (i32.const 4))))
+    (local.set $cl0   (f32.load (i32.add (local.get $pol) (i32.const 8))))
+    (local.set $cd0   (f32.load (i32.add (local.get $pol) (i32.const 12))))
+    (local.set $clmax (f32.load (i32.add (local.get $pol) (i32.const 16))))
+    (local.set $cdmax (f32.load (i32.add (local.get $pol) (i32.const 20))))
+
+    (local.set $cd (f32.const 0))
+    (local.set $cd_cl (f32.const 0))
+
+    (local.set $order_ok
+      (i32.and
+        (f32.lt (local.get $cl0) (local.get $clmax))
+        (f32.lt (local.get $clmin) (local.get $cl0))))
+
+    (if (i32.eqz (local.get $order_ok))
+      (then
+        (f32.store (local.get $out) (f32.const 0))
+        (f32.store (i32.add (local.get $out) (i32.const 4)) (f32.const 0))
+        (return)
+      )
+    )
+
+    (local.set $clinc (f32.const 0.2))
+    (local.set $cdinc (f32.const 0.05))
+
+    (local.set $tmp (f32.sub (local.get $clmin) (local.get $cl0)))
+    (local.set $cdx1
+      (f32.div
+        (f32.mul (f32.const 2)
+                 (f32.mul (f32.sub (local.get $cdmin) (local.get $cd0))
+                          (f32.sub (local.get $clmin) (local.get $cl0))))
+        (f32.mul (local.get $tmp) (local.get $tmp))))
+
+    (local.set $tmp (f32.sub (local.get $clmax) (local.get $cl0)))
+    (local.set $cdx2
+      (f32.div
+        (f32.mul (f32.const 2)
+                 (f32.mul (f32.sub (local.get $cdmax) (local.get $cd0))
+                          (f32.sub (local.get $clmax) (local.get $cl0))))
+        (f32.mul (local.get $tmp) (local.get $tmp))))
+
+    (local.set $clfac (f32.div (f32.const 1) (local.get $clinc)))
+    (local.set $clv (local.get $cl))
+
+    (block $done
+      (if (f32.lt (local.get $clv) (local.get $clmin))
+        (then
+          (local.set $tmp (f32.sub (local.get $clv) (local.get $clmin)))
+          (local.set $t1 (f32.mul (local.get $clfac) (local.get $clfac)))
+          (local.set $t1 (f32.mul (local.get $cdinc) (local.get $t1)))
+          (local.set $t2 (f32.mul (local.get $tmp) (local.get $tmp)))
+          (local.set $cd (f32.add (local.get $cdmin) (f32.mul (local.get $t1) (local.get $t2))))
+          (local.set $den (f32.sub (local.get $clmin) (local.get $cl0)))
+          (local.set $t2 (f32.div (f32.sub (local.get $clv) (local.get $cl0)) (local.get $den)))
+          (local.set $cd (f32.add (local.get $cd) (f32.mul (local.get $cdx1) (f32.sub (f32.const 1) (local.get $t2)))))
+          (local.set $cd_cl (f32.mul (local.get $t1) (f32.mul (local.get $tmp) (f32.const 2))))
+          (local.set $cd_cl (f32.sub (local.get $cd_cl) (f32.div (local.get $cdx1) (local.get $den))))
+          (br $done)
+        )
+      )
+
+      (if (f32.lt (local.get $clv) (local.get $cl0))
+        (then
+          (local.set $tmp (f32.sub (local.get $clv) (local.get $cl0)))
+          (local.set $den (f32.sub (local.get $clmin) (local.get $cl0)))
+          (local.set $t1 (f32.mul (local.get $tmp) (local.get $tmp)))
+          (local.set $t2 (f32.mul (local.get $den) (local.get $den)))
+          (local.set $cd (f32.add (local.get $cd0)
+            (f32.div (f32.mul (f32.sub (local.get $cdmin) (local.get $cd0)) (local.get $t1)) (local.get $t2))))
+          (local.set $cd_cl (f32.div
+            (f32.mul (f32.sub (local.get $cdmin) (local.get $cd0)) (f32.mul (local.get $tmp) (f32.const 2)))
+            (local.get $t2)))
+          (br $done)
+        )
+      )
+
+      (if (f32.lt (local.get $clv) (local.get $clmax))
+        (then
+          (local.set $tmp (f32.sub (local.get $clv) (local.get $cl0)))
+          (local.set $den (f32.sub (local.get $clmax) (local.get $cl0)))
+          (local.set $t1 (f32.mul (local.get $tmp) (local.get $tmp)))
+          (local.set $t2 (f32.mul (local.get $den) (local.get $den)))
+          (local.set $cd (f32.add (local.get $cd0)
+            (f32.div (f32.mul (f32.sub (local.get $cdmax) (local.get $cd0)) (local.get $t1)) (local.get $t2))))
+          (local.set $cd_cl (f32.div
+            (f32.mul (f32.sub (local.get $cdmax) (local.get $cd0)) (f32.mul (local.get $tmp) (f32.const 2)))
+            (local.get $t2)))
+          (br $done)
+        )
+      )
+
+      (local.set $tmp (f32.sub (local.get $clv) (local.get $clmax)))
+      (local.set $t1 (f32.mul (local.get $clfac) (local.get $clfac)))
+      (local.set $t1 (f32.mul (local.get $cdinc) (local.get $t1)))
+      (local.set $t2 (f32.mul (local.get $tmp) (local.get $tmp)))
+      (local.set $cd (f32.add (local.get $cdmax) (f32.mul (local.get $t1) (local.get $t2))))
+      (local.set $den (f32.sub (local.get $clmax) (local.get $cl0)))
+      (local.set $t2 (f32.div (f32.sub (local.get $clv) (local.get $cl0)) (local.get $den)))
+      (local.set $cd (f32.sub (local.get $cd) (f32.mul (local.get $cdx2) (f32.sub (f32.const 1) (local.get $t2)))))
+      (local.set $cd_cl (f32.mul (local.get $t1) (f32.mul (local.get $tmp) (f32.const 2))))
+      (local.set $cd_cl (f32.add (local.get $cd_cl) (f32.div (local.get $cdx2) (local.get $den))))
+    )
+
+    (f32.store (local.get $out) (local.get $cd))
+    (f32.store (i32.add (local.get $out) (i32.const 4)) (local.get $cd_cl))
   )
 
   ;; Index helpers (row-major for 3xN arrays)
@@ -490,7 +628,7 @@
         (local.set $ul1 (f32.sub (f32.mul (local.get $ud2) (local.get $spn0)) (f32.mul (local.get $ud0) (local.get $spn2))))
         (local.set $ul2 (f32.sub (f32.mul (local.get $ud0) (local.get $spn1)) (f32.mul (local.get $ud1) (local.get $spn0))))
         (local.set $ulmag
-          (call $sqrt_f32 (f32.add (f32.add (f32.mul (local.get $ul0) (local.get $ul0))
+          (f32.sqrt (f32.add (f32.add (f32.mul (local.get $ul0) (local.get $ul0))
                                           (f32.mul (local.get $ul1) (local.get $ul1)))
                                    (f32.mul (local.get $ul2) (local.get $ul2))))
         )
@@ -1184,7 +1322,7 @@
             (local.set $ve1 (f32.add (local.get $ud1) (local.get $vr1)))
             (local.set $ve2 (f32.add (local.get $ud2) (local.get $vr2)))
             (local.set $veffmag
-              (call $sqrt_f32 (f32.add (f32.add (f32.mul (local.get $ve0) (local.get $ve0))
+              (f32.sqrt (f32.add (f32.add (f32.mul (local.get $ve0) (local.get $ve0))
                                               (f32.mul (local.get $ve1) (local.get $ve1)))
                                        (f32.mul (local.get $ve2) (local.get $ve2)))))
 
@@ -1609,7 +1747,7 @@
             (local.set $delz (f32.neg (local.get $delz)))
           )
         )
-        (local.set $dmag (call $sqrt_f32 (f32.add (f32.add (f32.mul (local.get $delx) (local.get $delx)) (f32.mul (local.get $dely) (local.get $dely))) (f32.mul (local.get $delz) (local.get $delz)))))
+        (local.set $dmag (f32.sqrt (f32.add (f32.add (f32.mul (local.get $delx) (local.get $delx)) (f32.mul (local.get $dely) (local.get $dely))) (f32.mul (local.get $delz) (local.get $delz)))))
         (local.set $cmle (f32.const 0))
         (if (f32.ne (local.get $dmag) (f32.const 0))
           (then
@@ -2167,7 +2305,7 @@
         (local.set $ul0 (f32.sub (f32.mul (local.get $ud1) (f32.neg (local.get $en1))) (f32.mul (local.get $ud2) (local.get $en2))))
         (local.set $ul1 (f32.sub (f32.mul (local.get $ud2) (local.get $en0)) (f32.mul (local.get $ud0) (f32.neg (local.get $en1)))))
         (local.set $ul2 (f32.sub (f32.mul (local.get $ud0) (local.get $en2)) (f32.mul (local.get $ud1) (local.get $en0))))
-        (local.set $ulmag (call $sqrt_f32 (f32.add (f32.add (f32.mul (local.get $ul0) (local.get $ul0)) (f32.mul (local.get $ul1) (local.get $ul1))) (f32.mul (local.get $ul2) (local.get $ul2)))))
+        (local.set $ulmag (f32.sqrt (f32.add (f32.add (f32.mul (local.get $ul0) (local.get $ul0)) (f32.mul (local.get $ul1) (local.get $ul1))) (f32.mul (local.get $ul2) (local.get $ul2)))))
         (if (f32.eq (local.get $ulmag) (f32.const 0))
           (then (local.set $ul2 (f32.const 1)))
           (else
@@ -2955,7 +3093,7 @@
     (local.set $two_over_sref (f32.div (f32.const 2) (local.get $sref)))
 
     (local.set $tmp (call $load_f32 (local.get $state) (global.get $IDX_MACH)))
-    (local.set $betm (call $sqrt_f32 (f32.sub (f32.const 1) (f32.mul (local.get $tmp) (local.get $tmp)))))
+    (local.set $betm (f32.sqrt (f32.sub (f32.const 1) (f32.mul (local.get $tmp) (local.get $tmp)))))
     (local.set $tmp (call $load_f32 (local.get $state) (global.get $IDX_ALFA)))
     (local.set $sina (call $sin_f32 (local.get $tmp)))
     (local.set $cosa (call $cos_f32 (local.get $tmp)))
@@ -3001,7 +3139,7 @@
                                       (call $load_f32_at (local.get $rl_ptr) (call $idx3 (i32.const 1) (local.get $l1)))))
             (local.set $drl2 (f32.sub (call $load_f32_at (local.get $rl_ptr) (call $idx3 (i32.const 2) (local.get $l2)))
                                       (call $load_f32_at (local.get $rl_ptr) (call $idx3 (i32.const 2) (local.get $l1)))))
-            (local.set $drlmag (call $sqrt_f32 (f32.add (f32.add (f32.mul (local.get $drl0) (local.get $drl0))
+            (local.set $drlmag (f32.sqrt (f32.add (f32.add (f32.mul (local.get $drl0) (local.get $drl0))
                                                                   (f32.mul (local.get $drl1) (local.get $drl1)))
                                                          (f32.mul (local.get $drl2) (local.get $drl2)))))
             (local.set $drlmi (select (f32.div (f32.const 1) (local.get $drlmag)) (f32.const 0)
@@ -3520,7 +3658,7 @@
       (f32.mul (f32.load (i32.add (local.get $vinf_ptr) (i32.const 8)))
                (f32.load (i32.add (local.get $vinf_ptr) (i32.const 8))))
     ))
-    (local.set $vmag (call $sqrt_f32 (local.get $vsq)))
+    (local.set $vmag (f32.sqrt (local.get $vsq)))
     (local.set $cdref (call $load_f32 (local.get $state) (global.get $IDX_CDREF)))
 
     (f32.store (call $field_addr (local.get $state) (global.get $IDX_CDVTOT))
@@ -3662,10 +3800,7 @@
   )
 
 (func (export "SFFORC") (param $state i32)
-    (if (i32.eq (global.get $USE_SFFORC_JS) (i32.const 0))
-      (then (call $SFFORC_WAT (local.get $state)))
-      (else (call $sfforc_js (local.get $state)))
-    )
+    (call $SFFORC_WAT (local.get $state))
   )
   (func (export "BDFORC") (param $state i32)
     (call $BDFORC_WAT (local.get $state))

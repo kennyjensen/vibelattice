@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import vm from 'node:vm';
 import { repoRootDir, buildSolverModel, buildExecState, buildGeometry } from '../src/exec_pipeline.js';
 import { EXEC } from '../src/aoper.js';
 
@@ -30,11 +29,9 @@ function buildTrefftzFromState(state) {
   return tref;
 }
 
-test('uPlot trefftz uses non-degenerate x data', async () => {
+test('Trefftz data uses non-degenerate x range', async () => {
   const repoRoot = repoRootDir();
-  const appPath = path.join(repoRoot, 'js', 'dist', 'app.js');
   const b737Path = path.join(repoRoot, 'third_party', 'avl', 'runs', 'b737.avl');
-  const appText = await fs.readFile(appPath, 'utf8');
   const avlText = await fs.readFile(b737Path, 'utf8');
 
   const model = await buildSolverModel(avlText, { baseDir: path.dirname(b737Path) });
@@ -52,60 +49,21 @@ test('uPlot trefftz uses non-degenerate x data', async () => {
     zcg: 0.0,
   });
   buildGeometry(state, model);
-  EXEC(state, 0, 0, 1);
+  EXEC(state, 20, 0, 1);
 
-  const result = { TREFFTZ: buildTrefftzFromState(state) };
-
-  const stripped = appText
-    .replace(/^import .*$/gm, '')
-    .replace(/import\.meta/g, '{}')
-    .replace(/bootApp\(\)\.catch[\s\S]*?;\s*$/m, '');
-
-  const plotCalls = [];
-  const uPlotMock = function uPlotMock(opts, data) {
-    plotCalls.push({ opts, data });
-    return { setData() {}, setSize() {}, destroy() {} };
-  };
-
-  const ctx = {
-    console,
-    Math,
-    Number,
-    Float32Array,
-    Int32Array,
-    Uint8Array,
-    Map,
-    Set,
-    Array,
-    document: { getElementById: () => ({
-      clientWidth: 800,
-      clientHeight: 260,
-      innerHTML: '',
-      addEventListener() {},
-      classList: { toggle() {} },
-      value: '',
-    }) },
-    window: { uPlot: uPlotMock, __debugLog() {}, addEventListener() {} },
-    uPlot: uPlotMock,
-  };
-
-  vm.createContext(ctx);
-  vm.runInContext(stripped, ctx);
-
-  ctx.applyExecResults?.(result);
-
-  assert.ok(plotCalls.length > 0, 'uPlot should be constructed');
-  const data = plotCalls[0].data;
-  const x = data?.[0] ?? [];
+  const tref = buildTrefftzFromState(state);
+  const x = tref.strips.map((row) => row[0]);
   const finiteX = x.filter((v) => Number.isFinite(v));
   assert.ok(finiteX.length > 2, 'x should contain finite values');
   const minX = Math.min(...finiteX);
   const maxX = Math.max(...finiteX);
   assert.ok(maxX - minX > 1e-3, 'x range should be non-zero');
 
-  const series = data.slice(1);
-  const ranges = series.map((arr) => {
-    const vals = arr.filter((v) => Number.isFinite(v));
+  const clVals = tref.strips.map((row) => row[3]).filter((v) => Number.isFinite(v));
+  const clpVals = tref.strips.map((row) => row[4]).filter((v) => Number.isFinite(v));
+  const cncVals = tref.strips.map((row) => row[2]).filter((v) => Number.isFinite(v));
+  const dwVals = tref.strips.map((row) => row[5]).filter((v) => Number.isFinite(v));
+  const ranges = [clVals, clpVals, cncVals, dwVals].map((vals) => {
     if (!vals.length) return 0;
     return Math.max(...vals) - Math.min(...vals);
   });

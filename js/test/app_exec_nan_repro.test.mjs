@@ -125,7 +125,7 @@ test('app build pipeline should not yield NaN for b737 EXEC', async () => {
   context.applyConstraintRowsToState(state, model.controlMap);
   context.buildGeometry(state, model);
 
-  context.EXEC(state, 8, 0, 1);
+  context.EXEC(state, 20, 0, 1);
 
   assert.ok(Number.isFinite(state.ALFA), 'ALFA should be finite');
   assert.ok(Number.isFinite(state.BETA), 'BETA should be finite');

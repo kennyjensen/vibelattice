@@ -5,10 +5,42 @@
  */
 // Port of AVL aoper.f (EXEC) with float32 math for numerical fidelity.
 
-import { SETUP, GUCALC, GDCALC, GAMSUM, VELSUM } from './asetup.js';
+import { SETUP, GUCALC, GDCALC, GAMSUM, VELSUM, preloadAicWasm, preloadAsetpLuWasm } from './asetup.js';
+import { loadAsetupWasm } from './asetup_wasm.js';
 import { AERO, VINFAB } from './aero.js';
+import { loadAeroWasm } from './aero_wasm.js';
+import { loadAoperLinSolveWasm } from './aoper_linsolve_wasm.js';
 
 const f32 = Math.fround;
+let wasmLinSolve = null;
+let wasmAsetup = null;
+let wasmAero = null;
+
+export async function preloadAoperLinSolveWasm() {
+  if (wasmLinSolve) return wasmLinSolve;
+  wasmLinSolve = await loadAoperLinSolveWasm();
+  return wasmLinSolve;
+}
+
+export async function preloadAsetupWasm() {
+  if (wasmAsetup) return wasmAsetup;
+  wasmAsetup = await loadAsetupWasm();
+  return wasmAsetup;
+}
+
+export async function preloadAeroWasm() {
+  if (wasmAero) return wasmAero;
+  wasmAero = await loadAeroWasm();
+  return wasmAero;
+}
+
+export async function preloadAicWasmBridge() {
+  return preloadAicWasm();
+}
+
+export async function preloadAsetpLuWasmBridge() {
+  return preloadAsetpLuWasm();
+}
 
 function idx2(i, j, dim1) {
   return i + dim1 * j;
@@ -209,6 +241,24 @@ function withAsetpVinfWrot(state, vinf1, wrot1, fn) {
   return res;
 }
 
+function runAsetupSums(state, vinf1, wrot1) {
+  if (state.USE_WASM_GAM && wasmAsetup) {
+    const prevV = state.VINF;
+    const prevW = state.WROT;
+    state.VINF = vinf1;
+    state.WROT = wrot1;
+    wasmAsetup.GAMSUM_wasm(state);
+    wasmAsetup.VELSUM_wasm(state);
+    state.VINF = prevV;
+    state.WROT = prevW;
+    return;
+  }
+  withAsetpVinfWrot(state, vinf1, wrot1, () => {
+    GAMSUM(state);
+    VELSUM(state);
+  });
+}
+
 export function EXEC(state, NITER, INFO, IR) {
   const niter = NITER ?? 0;
   const info = INFO ?? 0;
@@ -260,15 +310,33 @@ export function EXEC(state, NITER, INFO, IR) {
 
   GUCALC(state);
 
-  VINFAB(state);
+  if (state.USE_WASM_AERO && wasmAero) {
+    try {
+      const vinf = wasmAero.VINFAB(state);
+      if (vinf?.VINF) state.VINF = Float32Array.from(vinf.VINF);
+      if (vinf?.VINF_A) state.VINF_A = Float32Array.from(vinf.VINF_A);
+      if (vinf?.VINF_B) state.VINF_B = Float32Array.from(vinf.VINF_B);
+    } catch {
+      state.USE_WASM_AERO = false;
+      VINFAB(state);
+    }
+  } else {
+    VINFAB(state);
+  }
   syncVinfWrot1(state, vinf1, wrot1);
 
-  withAsetpVinfWrot(state, vinf1, wrot1, () => {
-    GAMSUM(state);
-    VELSUM(state);
-  });
+  runAsetupSums(state, vinf1, wrot1);
 
-  AERO(state);
+  if (state.USE_WASM_AERO && wasmAero) {
+    try {
+      wasmAero.AERO(state);
+    } catch {
+      state.USE_WASM_AERO = false;
+      AERO(state);
+    }
+  } else {
+    AERO(state);
+  }
 
   if (niter > 0) {
     const ivmax = state.IVMAX;
@@ -498,8 +566,13 @@ export function EXEC(state, NITER, INFO, IR) {
         }
       }
 
-      LUDCMP_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, work);
-      BAKSUB_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, vres);
+      if (state.USE_WASM_SOLVE && wasmLinSolve) {
+        const solved = wasmLinSolve.solveLinearSystem(vsys, vres, ivmax + 1, state.NVTOT);
+        vres.set(solved);
+      } else {
+        LUDCMP_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, work);
+        BAKSUB_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, vres);
+      }
 
       let badSolve = false;
       for (let iv = 1; iv <= state.NVTOT; iv += 1) {
@@ -564,12 +637,18 @@ export function EXEC(state, NITER, INFO, IR) {
         });
       }
 
-      withAsetpVinfWrot(state, vinf1, wrot1, () => {
-        GAMSUM(state);
-        VELSUM(state);
-      });
+      runAsetupSums(state, vinf1, wrot1);
 
-      AERO(state);
+      if (state.USE_WASM_AERO && wasmAero) {
+        try {
+          wasmAero.AERO(state);
+        } catch {
+          state.USE_WASM_AERO = false;
+          AERO(state);
+        }
+      } else {
+        AERO(state);
+      }
 
       let delmax = Math.max(
         Math.abs(dal),

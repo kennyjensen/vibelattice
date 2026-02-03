@@ -23,6 +23,9 @@ if (parentPort) {
   globalThis.EXEC = EXEC;
   const raw = fs.readFileSync(workerPath, 'utf8');
   const withoutImports = raw.replace(/^import .*$/gm, '');
-  const patched = `const EXEC = globalThis.EXEC;\n${withoutImports.replace(/\\bonmessage\\s*=\\s*/g, 'globalThis.onmessage = ')}`;
+  const withoutMeta = withoutImports
+    .replace(/import\.meta\.url/g, JSON.stringify(`file://${workerPath}`))
+    .replace(/import\.meta/g, '{}');
+  const patched = `const EXEC = globalThis.EXEC;\n${withoutMeta.replace(/\\bonmessage\\s*=\\s*/g, 'globalThis.onmessage = ')}`;
   vm.runInThisContext(patched, { filename: workerPath });
 }
