@@ -68,6 +68,7 @@ const els = {
   viewerView: document.getElementById('viewerView'),
   viewerGrid: document.getElementById('viewerGrid'),
   viewerCoord: document.getElementById('viewerCoord'),
+  viewerLoad: document.getElementById('viewerLoad'),
   constraintRows: [],
   constraintTable: document.getElementById('constraintTable'),
 };
@@ -81,6 +82,7 @@ const uiState = {
   levelDriver: 'cl',
   loopDriver: 'cl',
   lastExecResult: null,
+  showLoading: false,
 };
 
 const viewerState = {
@@ -103,6 +105,7 @@ let trimRequestId = 0;
 let execRequestId = 0;
 let autoTrimTimer = null;
 let lastTrimState = null;
+let loadingGroup = null;
 
 function updateTrefftzBusy() {
   const stage = els.trefftz?.parentElement;
@@ -732,6 +735,11 @@ els.viewerCoord?.addEventListener('click', () => {
   viewerState.coordMode = viewerState.coordMode === 'world' ? 'body' : 'world';
   updateBank(Number(els.bank.value));
   updateViewerButtons();
+});
+els.viewerLoad?.addEventListener('click', () => {
+  uiState.showLoading = !uiState.showLoading;
+  els.viewerLoad.classList.toggle('active', uiState.showLoading);
+  updateLoadingVisualization();
 });
 
 els.flightMode?.addEventListener('change', () => {
@@ -2168,6 +2176,9 @@ function updateViewerButtons() {
     els.viewerCoord.classList.toggle('active', viewerState.coordMode === 'world');
     els.viewerCoord.title = viewerState.coordMode === 'world' ? 'World frame' : 'Body frame';
   }
+  if (els.viewerLoad) {
+    els.viewerLoad.classList.toggle('active', uiState.showLoading);
+  }
 }
 
 function setControlMode(mode) {
@@ -2367,6 +2378,98 @@ function updateBank(phiDeg) {
   }
 }
 
+function updateLoadingVisualization() {
+  if (!scene || !aircraft || !THREE) return;
+  if (loadingGroup) {
+    aircraft.remove(loadingGroup);
+    loadingGroup = null;
+  }
+  if (!uiState.showLoading) return;
+  const result = uiState.lastExecResult;
+  if (!result || !result.RV || !result.DCP || !result.ENSY || !result.ENSZ || !result.IJFRST || !result.NVSTRP) return;
+
+  const idx2 = (i, j, dim1) => i + dim1 * j;
+  const rv = result.RV;
+  const dcp = result.DCP;
+  const ensy = result.ENSY;
+  const ensz = result.ENSZ;
+  const ijfrst = result.IJFRST;
+  const nvstrp = result.NVSTRP;
+  const jfrst = result.JFRST || null;
+  const nj = result.NJ || null;
+  const lfload = result.LFLOAD || null;
+
+  const nstr = Math.min(ijfrst.length - 1, nvstrp.length - 1);
+  if (nstr <= 0) return;
+
+  const cref = Number.isFinite(result.CREF) ? result.CREF : 1.0;
+  const bref = Number.isFinite(result.BREF) ? result.BREF : 1.0;
+  const cpscl = Math.min(0.4 * cref, 0.1 * bref);
+
+  const getSurfaceForStrip = (stripIdx) => {
+    if (!jfrst || !nj) return 1;
+    const nsurf = Math.min(jfrst.length - 1, nj.length - 1);
+    for (let n = 1; n <= nsurf; n += 1) {
+      const j1 = jfrst[n];
+      const count = nj[n];
+      if (!j1 || !count) continue;
+      if (stripIdx >= j1 && stripIdx < j1 + count) return n;
+    }
+    return 1;
+  };
+
+  const loadVerts = [];
+  const loadLines = [];
+  for (let j = 1; j <= nstr; j += 1) {
+    const surfId = getSurfaceForStrip(j);
+    if (lfload && lfload[surfId] === 0) continue;
+    const i1 = ijfrst[j];
+    const nv = nvstrp[j];
+    if (!i1 || !nv) continue;
+    let prev = null;
+    for (let ii = 1; ii <= nv; ii += 1) {
+      const iv = i1 + ii - 1;
+      const xave = rv[idx2(1, iv, 4)];
+      const yave = rv[idx2(2, iv, 4)];
+      const zave = rv[idx2(3, iv, 4)];
+      const delyz = (dcp[iv] ?? 0) * cpscl;
+      const xload = xave;
+      const yload = yave + delyz * ensy[j];
+      const zload = zave + delyz * ensz[j];
+      loadVerts.push(xave, yave, zave, xload, yload, zload);
+      if (prev) {
+        loadLines.push(prev[0], prev[1], prev[2], xload, yload, zload);
+      }
+      prev = [xload, yload, zload];
+    }
+  }
+
+  if (!loadVerts.length && !loadLines.length) return;
+  loadingGroup = new THREE.Group();
+  loadingGroup.name = 'loading';
+  loadingGroup.renderOrder = 2;
+
+  if (loadVerts.length) {
+    const vecGeom = new THREE.BufferGeometry();
+    vecGeom.setAttribute('position', new THREE.Float32BufferAttribute(loadVerts, 3));
+    const vecMat = new THREE.LineBasicMaterial({ color: 0x22c55e, linewidth: 1, transparent: true, opacity: 0.85 });
+    const vecLines = new THREE.LineSegments(vecGeom, vecMat);
+    vecLines.name = 'loading-vectors';
+    loadingGroup.add(vecLines);
+  }
+
+  if (loadLines.length) {
+    const lineGeom = new THREE.BufferGeometry();
+    lineGeom.setAttribute('position', new THREE.Float32BufferAttribute(loadLines, 3));
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xef4444, linewidth: 1, transparent: true, opacity: 0.85 });
+    const lineStrip = new THREE.LineSegments(lineGeom, lineMat);
+    lineStrip.name = 'loading-lines';
+    loadingGroup.add(lineStrip);
+  }
+
+  aircraft.add(loadingGroup);
+}
+
 function loadGeometryFromText(text, shouldFit = true) {
   if (!scene) return;
   const parsed = parseAVL(text || '');
@@ -2413,6 +2516,7 @@ function loadGeometryFromText(text, shouldFit = true) {
   if (shouldFit) fitCameraToObject(aircraft);
   updateFlightConditions();
   logDebug(`Geometry rebuilt: surfaces=${model.surfaces.length}`);
+  updateLoadingVisualization();
 }
 
 function buildExecState(model) {
@@ -2911,6 +3015,8 @@ function runExecFromText(text) {
       return out;
     })() : null;
     applyExecResults({
+      CREF: state.CREF,
+      BREF: state.BREF,
       ALFA: state.ALFA,
       BETA: state.BETA,
       CLTOT: state.CLTOT,
@@ -2946,6 +3052,14 @@ function runExecFromText(text) {
       DWWAKE: state.DWWAKE ? Array.from(state.DWWAKE) : null,
       RLE: state.RLE ? Array.from(state.RLE) : null,
       DCP: state.DCP ? Array.from(state.DCP) : null,
+      RV: state.RV ? Array.from(state.RV) : null,
+      ENSY: state.ENSY ? Array.from(state.ENSY) : null,
+      ENSZ: state.ENSZ ? Array.from(state.ENSZ) : null,
+      IJFRST: state.IJFRST ? Array.from(state.IJFRST) : null,
+      NVSTRP: state.NVSTRP ? Array.from(state.NVSTRP) : null,
+      JFRST: state.JFRST ? Array.from(state.JFRST) : null,
+      NJ: state.NJ ? Array.from(state.NJ) : null,
+      LFLOAD: state.LFLOAD ? Array.from(state.LFLOAD) : null,
       CDBDY: state.CDBDY ? Array.from(state.CDBDY) : null,
       CYBDY: state.CYBDY ? Array.from(state.CYBDY) : null,
       CLBDY: state.CLBDY ? Array.from(state.CLBDY) : null,
@@ -3020,6 +3134,7 @@ function buildForcesElementLines(result) {
 
 function applyExecResults(result) {
   uiState.lastExecResult = result;
+  updateLoadingVisualization();
   const schedule = (fn) => {
     if (typeof requestIdleCallback === 'function') {
       requestIdleCallback(fn, { timeout: 200 });
