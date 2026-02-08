@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>VibeLattice</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./js/dist/styles.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
   <script type="importmap">
   {
@@ -363,7 +363,7 @@ rudder  1.0  0.0  0. 0. 0.  1
     })();
   </script>
   <script type="module">
-    import('./app.js')
+    import('./js/dist/app.js')
       .then(() => window.__debugLog?.('App module loaded.'))
       .catch((err) => window.__debugLog?.(`App module failed: ${err?.message ?? err}`));
   </script>

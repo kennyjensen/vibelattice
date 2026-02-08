@@ -15,6 +15,8 @@ const els = {
   fileEditor: document.getElementById('fileEditor'),
   fileText: document.getElementById('fileText'),
   fileHighlight: document.getElementById('fileHighlight'),
+  airfoilFilesPanel: document.getElementById('airfoilFilesPanel'),
+  airfoilFilesList: document.getElementById('airfoilFilesList'),
   bank: document.getElementById('bank'),
   cl: document.getElementById('cl'),
   vel: document.getElementById('vel'),
@@ -185,7 +187,9 @@ function renderFileHighlight() {
 function fitFileEditorFontSize() {
   if (!els.fileEditor || !els.fileText) return;
   if (!fileMeasureCtx) {
-    fileMeasureCtx = document.createElement('canvas').getContext('2d');
+    const measureCanvas = document.createElement('canvas');
+    if (!measureCanvas || typeof measureCanvas.getContext !== 'function') return;
+    fileMeasureCtx = measureCanvas.getContext('2d');
     if (!fileMeasureCtx) return;
   }
   const available = Math.max(0, els.fileText.clientWidth - 20);
@@ -200,7 +204,7 @@ function fitFileEditorFontSize() {
     els.fileEditor.style.setProperty('--file-font-size', `${FILE_EDITOR_FONT.maxPx}px`);
     return;
   }
-  fileMeasureCtx.font = `${FILE_EDITOR_FONT.maxPx}px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace`;
+  fileMeasureCtx.font = `${FILE_EDITOR_FONT.maxPx}px Consolas, "Courier New", monospace`;
   const measured = fileMeasureCtx.measureText(sample).width;
   if (!measured) return;
   const fitted = FILE_EDITOR_FONT.maxPx * (available / measured);
@@ -236,42 +240,50 @@ function initTopNav() {
     { btn: els.navPlots, col: els.plotsCol },
     { btn: els.navOutputs, col: els.outputsCol },
   ];
-
-  const setActive = (btn) => {
-    navItems.forEach(({ btn: b }) => b?.classList?.toggle('active', b === btn));
+  const setActiveIndex = (index) => {
+    const clamped = Math.max(0, Math.min(index, navItems.length - 1));
+    navItems.forEach(({ btn }, idx) => btn?.classList?.toggle('active', idx === clamped));
   };
 
-  navItems.forEach(({ btn, col }) => {
-    if (!btn || !col) return;
+  const updateActiveFromScroll = () => {
+    const pageWidth = els.appRoot.clientWidth;
+    if (!pageWidth) return;
+    const index = Math.round(els.appRoot.scrollLeft / pageWidth);
+    setActiveIndex(index);
+  };
+
+  navItems.forEach(({ btn }, idx) => {
+    if (!btn) return;
+    if (btn.dataset) btn.dataset.index = String(idx);
     btn.addEventListener('click', () => {
-      const left = col.offsetLeft - els.appRoot.offsetLeft;
-      els.appRoot.scrollTo({ left, behavior: 'smooth' });
-      setActive(btn);
+      const pageWidth = els.appRoot.clientWidth;
+      els.appRoot.scrollTo({ left: pageWidth * idx, behavior: 'smooth' });
+      setActiveIndex(idx);
     });
   });
 
   let raf = 0;
-  const onScroll = () => {
+  els.appRoot.addEventListener('scroll', () => {
     if (raf) return;
     raf = requestAnimationFrame(() => {
       raf = 0;
-      const scrollLeft = els.appRoot.scrollLeft;
-      let best = navItems[0];
-      let bestDist = Infinity;
-      navItems.forEach((item) => {
-        if (!item.col) return;
-        const dist = Math.abs(item.col.offsetLeft - scrollLeft);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = item;
-        }
-      });
-      if (best?.btn) setActive(best.btn);
+      updateActiveFromScroll();
     });
-  };
+  }, { passive: true });
 
-  els.appRoot.addEventListener('scroll', onScroll, { passive: true });
-  setActive(els.navSettings);
+  requestAnimationFrame(() => {
+    const hasMatchMedia = typeof window.matchMedia === 'function';
+    if (hasMatchMedia && window.matchMedia('(max-width: 900px)').matches) {
+      const defaultIndex = 1;
+      const pageWidth = els.appRoot.clientWidth;
+      if (pageWidth) {
+        els.appRoot.scrollLeft = pageWidth * defaultIndex;
+        setActiveIndex(defaultIndex);
+        return;
+      }
+    }
+    setActiveIndex(0);
+  });
 }
 
 function applyYSymmetry(model) {
@@ -419,6 +431,10 @@ function extractTrimSeed(state) {
 const airfoilCache = new Map();
 const airfoilPending = new Map();
 const airfoilFailed = new Set();
+const airfoilUploadInvalid = new Set();
+const providedAirfoilFiles = new Set();
+const airfoilDisplayNames = new Map();
+let requiredAirfoilFiles = [];
 
 function fmt(value, digits = 3) {
   if (!Number.isFinite(value)) return '-';
@@ -450,8 +466,8 @@ function updateFlightConditions(driverHint = null) {
 
   if (mode === 'looping') {
     if (driverHint) uiState.loopDriver = driverHint;
-    const cl = Number(els.clLoop?.value || 0);
-    const vee = Number(els.velLoop?.value || 0);
+    const cl = Number(els.cl?.value || 0);
+    const vee = Number(els.vel?.value || 0);
     const rad = Number(els.radLoop?.value || 0);
 
     if (uiState.loopDriver === 'cl' && cl > 0 && rho > 0 && mass > 0) {
@@ -459,10 +475,10 @@ function updateFlightConditions(driverHint = null) {
       if (Number.isFinite(radNew)) setNumericInput(els.radLoop, radNew, 3);
     } else if (uiState.loopDriver === 'rad' && rad > 0 && rho > 0 && mass > 0) {
       const clNew = mass / (0.5 * rho * srefD * rad);
-      if (Number.isFinite(clNew)) setNumericInput(els.clLoop, clNew, 3);
+      if (Number.isFinite(clNew)) setNumericInput(els.cl, clNew, 3);
     }
 
-    const clUse = Number(els.clLoop?.value || 0);
+    const clUse = Number(els.cl?.value || 0);
     if (clUse > 0 && rho > 0 && mass > 0 && gee > 0 && vee > 0) {
       const fac = (0.5 * rho * vee * vee * srefD * clUse) / (mass * gee);
       if (Number.isFinite(fac)) setNumericInput(els.facLoop, fac, 3);
@@ -487,10 +503,7 @@ function updateFlightConditions(driverHint = null) {
 }
 
 function getActiveCLValue() {
-  const mode = els.flightMode?.value || 'level';
-  const value = mode === 'looping'
-    ? Number(els.clLoop?.value || els.cl?.value || 0)
-    : Number(els.cl?.value || 0);
+  const value = Number(els.cl?.value || 0);
   return Number.isFinite(value) ? value : 0;
 }
 
@@ -636,15 +649,6 @@ function rebuildConstraintUI(model) {
   });
 
   els.constraintTable.innerHTML = '';
-  const headerRow = document.createElement('div');
-  headerRow.className = 'constraint-row';
-  ['Variable', 'Constraint', 'Value'].forEach((text) => {
-    const div = document.createElement('div');
-    div.className = 'constraint-head';
-    div.textContent = text;
-    headerRow.appendChild(div);
-  });
-  els.constraintTable.appendChild(headerRow);
 
   rows.forEach((row) => {
     const rowEl = document.createElement('div');
@@ -687,6 +691,13 @@ function rebuildConstraintUI(model) {
     rowEl.appendChild(cellConstraint);
     rowEl.appendChild(cellValue);
     els.constraintTable.appendChild(rowEl);
+  });
+
+  // Defensive cleanup: remove any legacy header row if present.
+  Array.from(els.constraintTable.querySelectorAll('.constraint-row')).forEach((row) => {
+    if (row.querySelectorAll('.constraint-head').length === 3) {
+      row.remove();
+    }
   });
 
   els.constraintRows = Array.from(document.querySelectorAll('.constraint-row'));
@@ -958,7 +969,7 @@ function makeTrimState(controlMap = null) {
   if (mode === 'looping') {
     state.PARVAL[idx2(IPPHI, IR, state.IPTOT)] = 0.0;
     state.PARVAL[idx2(IPTHE, IR, state.IPTOT)] = 0.0;
-    state.PARVAL[idx2(IPVEE, IR, state.IPTOT)] = Number(els.velLoop?.value || els.vel.value);
+    state.PARVAL[idx2(IPVEE, IR, state.IPTOT)] = Number(els.vel.value);
   } else {
     state.PARVAL[idx2(IPPHI, IR, state.IPTOT)] = Number(els.bank.value);
     state.PARVAL[idx2(IPTHE, IR, state.IPTOT)] = 0.0;
@@ -967,9 +978,7 @@ function makeTrimState(controlMap = null) {
   state.PARVAL[idx2(IPRHO, IR, state.IPTOT)] = Number(els.rho.value);
   state.PARVAL[idx2(IPGEE, IR, state.IPTOT)] = Number(els.gee.value);
   state.PARVAL[idx2(IPMASS, IR, state.IPTOT)] = Number(els.mass.value);
-  state.PARVAL[idx2(IPCL, IR, state.IPTOT)] = mode === 'looping'
-    ? Number(els.clLoop?.value || els.cl.value)
-    : Number(els.cl.value);
+  state.PARVAL[idx2(IPCL, IR, state.IPTOT)] = Number(els.cl.value);
   state.PARVAL[idx2(IPRAD, IR, state.IPTOT)] = mode === 'looping'
     ? Number(els.radLoop?.value || 0)
     : 0.0;
@@ -1356,7 +1365,7 @@ function updateTrefftz(cl) {
     const labelRectRight = yRight?.getBoundingClientRect();
     const labelRectBottom = xLabel?.getBoundingClientRect();
 
-    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.font = '10px Consolas, "Courier New", monospace';
     const leftTickVals = [];
     const leftTickNums = [];
     const rightTickVals = [];
@@ -1826,8 +1835,9 @@ function parseAVL(text) {
           const parts = trimmed.split(/\s+/);
           let apath = parts.length > 1 ? parts.slice(1).join(' ') : '';
           if (!apath) apath = nextLine() || '';
-          currentSection.airfoilFile = apath || null;
-          if (apath) inlineAirfoils.push(apath);
+          const normalizedPath = normalizeAirfoilPath(apath);
+          currentSection.airfoilFile = normalizedPath || null;
+          if (normalizedPath) inlineAirfoils.push(normalizedPath);
         }
       } else if (subkey === 'AIRF') {
         if (currentSection) {
@@ -1862,16 +1872,137 @@ function parseAVL(text) {
 }
 
 function parseAirfoilText(text) {
+  return parseAirfoilFileDetails(text).coords;
+}
+
+function parseAirfoilFileDetails(text) {
   const lines = text.split(/\r?\n/);
   const coords = [];
+  let displayName = null;
+  let seenData = false;
   for (const raw of lines) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
     if (trimmed.startsWith('#') || trimmed.startsWith('!') || trimmed.startsWith('%')) continue;
     const nums = trimmed.split(/\s+/).map((v) => Number(v)).filter((v) => Number.isFinite(v));
-    if (nums.length >= 2) coords.push([nums[0], nums[1]]);
+    if (nums.length >= 2) {
+      coords.push([nums[0], nums[1]]);
+      seenData = true;
+      continue;
+    }
+    if (!seenData && !displayName) {
+      displayName = trimmed;
+    }
   }
-  return coords;
+  return { coords, displayName };
+}
+
+function normalizeAirfoilPath(path) {
+  const raw = String(path || '').trim();
+  if (!raw) return '';
+  return raw.replace(/^["']+|["']+$/g, '').trim();
+}
+
+function setRequiredAirfoilFiles(paths) {
+  const seen = new Set();
+  requiredAirfoilFiles = [];
+  (paths || []).forEach((entry) => {
+    const p = normalizeAirfoilPath(entry);
+    if (!p || seen.has(p)) return;
+    seen.add(p);
+    requiredAirfoilFiles.push(p);
+  });
+}
+
+function getAirfoilRequirementStatus(path) {
+  if (airfoilUploadInvalid.has(path)) return { state: 'invalid', text: 'Parse error' };
+  if (providedAirfoilFiles.has(path) && airfoilCache.has(path)) return { state: 'ok', text: 'Ready' };
+  if (airfoilPending.has(path)) return { state: 'loading', text: 'Loading…' };
+  return { state: 'missing', text: 'Missing' };
+}
+
+function handleAirfoilUpload(path, file) {
+  if (!file || !path) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const text = String(reader.result || '');
+      const { coords, displayName } = parseAirfoilFileDetails(text);
+      if (!coords.length) {
+        airfoilUploadInvalid.add(path);
+        providedAirfoilFiles.delete(path);
+        airfoilCache.delete(path);
+        airfoilDisplayNames.delete(path);
+      } else {
+        airfoilUploadInvalid.delete(path);
+        airfoilFailed.delete(path);
+        providedAirfoilFiles.add(path);
+        airfoilCache.set(path, coords);
+        if (displayName) airfoilDisplayNames.set(path, displayName);
+        else airfoilDisplayNames.delete(path);
+      }
+      renderRequiredAirfoilFiles();
+      if (uiState.text) {
+        loadGeometryFromText(uiState.text, false);
+      }
+      scheduleAutoTrim();
+    } catch {
+      airfoilUploadInvalid.add(path);
+      providedAirfoilFiles.delete(path);
+      airfoilCache.delete(path);
+      airfoilDisplayNames.delete(path);
+      renderRequiredAirfoilFiles();
+    }
+  };
+  reader.readAsText(file);
+}
+
+function renderRequiredAirfoilFiles() {
+  if (!els.airfoilFilesPanel || !els.airfoilFilesList) return;
+  if (!requiredAirfoilFiles.length) {
+    if (els.airfoilFilesPanel.classList?.add) els.airfoilFilesPanel.classList.add('hidden');
+    els.airfoilFilesList.innerHTML = '';
+    return;
+  }
+  if (els.airfoilFilesPanel.classList?.remove) els.airfoilFilesPanel.classList.remove('hidden');
+  els.airfoilFilesList.innerHTML = '';
+  requiredAirfoilFiles.forEach((path) => {
+    const status = getAirfoilRequirementStatus(path);
+    const row = document.createElement('div');
+    row.className = `airfoil-file-row ${status.state}`;
+
+    const name = document.createElement('div');
+    name.className = 'airfoil-file-name';
+    const displayName = airfoilDisplayNames.get(path);
+    name.textContent = displayName ? `${path} — ${displayName}` : path;
+
+    const statusEl = document.createElement('div');
+    statusEl.className = 'airfoil-file-status';
+    statusEl.textContent = status.text;
+
+    const uploadBtn = document.createElement('button');
+    uploadBtn.type = 'button';
+    uploadBtn.className = 'btn ghost';
+    uploadBtn.textContent = 'Upload';
+
+    const uploadInput = document.createElement('input');
+    uploadInput.type = 'file';
+    uploadInput.accept = '.dat,.txt,text/plain';
+    uploadInput.hidden = true;
+
+    uploadBtn.addEventListener('click', () => uploadInput.click());
+    uploadInput.addEventListener('change', () => {
+      const file = uploadInput.files?.[0];
+      if (file) handleAirfoilUpload(path, file);
+      uploadInput.value = '';
+    });
+
+    row.appendChild(name);
+    row.appendChild(statusEl);
+    row.appendChild(uploadBtn);
+    row.appendChild(uploadInput);
+    els.airfoilFilesList.appendChild(row);
+  });
 }
 
 function splitAirfoilSurfaces(coords) {
@@ -1956,11 +2087,12 @@ function buildNacaSlope(code, samples = 60) {
 }
 
 function fetchAirfoil(path) {
-  if (!path || airfoilCache.has(path) || airfoilPending.has(path) || airfoilFailed.has(path)) return;
+  const cleanPath = normalizeAirfoilPath(path);
+  if (!cleanPath || airfoilCache.has(cleanPath) || airfoilPending.has(cleanPath) || airfoilFailed.has(cleanPath)) return;
   const candidates = [
-    new URL(path, window.location.href).toString(),
-    new URL(`../third_party/avl/runs/${path}`, window.location.href).toString(),
-    new URL(`../../third_party/avl/runs/${path}`, window.location.href).toString(),
+    new URL(cleanPath, window.location.href).toString(),
+    new URL(`../third_party/avl/runs/${cleanPath}`, window.location.href).toString(),
+    new URL(`../../third_party/avl/runs/${cleanPath}`, window.location.href).toString(),
   ];
   const promise = (async () => {
     for (const url of candidates) {
@@ -1968,22 +2100,28 @@ function fetchAirfoil(path) {
         const res = await fetch(url);
         if (!res.ok) continue;
         const text = await res.text();
-        const coords = parseAirfoilText(text);
+        const { coords, displayName } = parseAirfoilFileDetails(text);
         if (coords.length) {
-          airfoilCache.set(path, coords);
+          providedAirfoilFiles.add(cleanPath);
+          airfoilCache.set(cleanPath, coords);
+          if (displayName) airfoilDisplayNames.set(cleanPath, displayName);
+          airfoilUploadInvalid.delete(cleanPath);
+          airfoilFailed.delete(cleanPath);
           return;
         }
       } catch {
         // try next
       }
     }
-    airfoilFailed.add(path);
+    airfoilFailed.add(cleanPath);
   })()
     .finally(() => {
-      airfoilPending.delete(path);
+      airfoilPending.delete(cleanPath);
       loadGeometryFromText(uiState.text, false);
+      renderRequiredAirfoilFiles();
     });
-  airfoilPending.set(path, promise);
+  airfoilPending.set(cleanPath, promise);
+  renderRequiredAirfoilFiles();
 }
 
 function nacaCamber(naca, x) {
@@ -2018,7 +2156,9 @@ function buildSolverModel(text) {
         ctrl.index = controlMap.get(ctrl.name);
       });
       let coords = sec.airfoilCoords;
-      if (!coords && sec.airfoilFile) coords = airfoilCache.get(sec.airfoilFile) || null;
+      if (!coords && sec.airfoilFile && providedAirfoilFiles.has(sec.airfoilFile)) {
+        coords = airfoilCache.get(sec.airfoilFile) || null;
+      }
       if (coords && coords.length) {
         sec.airfoilCamber = buildCamberSlope(coords);
       } else if (sec.naca) {
@@ -2161,9 +2301,8 @@ function buildSurfaceMesh(surface, color) {
 
   surface.sections.forEach((section) => {
     let coords = section.airfoilCoords;
-    if (!coords && section.airfoilFile) {
+    if (!coords && section.airfoilFile && providedAirfoilFiles.has(section.airfoilFile)) {
       coords = airfoilCache.get(section.airfoilFile) || null;
-      if (!coords) fetchAirfoil(section.airfoilFile);
     }
     if (coords && coords.length) {
       addAirfoilOutline(section, coords, surface.yduplicate);
@@ -2239,7 +2378,7 @@ function buildSurfaceMesh(surface, color) {
   labelCanvas.height = 128;
   ctx.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
   ctx.fillStyle = '#e2e8f0';
-  ctx.font = '28px JetBrains Mono, monospace';
+  ctx.font = '28px Consolas, "Courier New", monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(surface.name || 'Surface', 128, 64);
@@ -2617,7 +2756,9 @@ function loadGeometryFromText(text, shouldFit = true) {
     dbg.push(`  tip  LE: x=${fmt(right.xle, 3)} y=${fmt(right.yle, 3)} z=${fmt(right.zle, 3)} chord=${fmt(right.chord, 3)} ainc=${fmt(right.ainc, 3)}`);
   });
   logDebug(dbg.join('\n'));
-  model.airfoilFiles.forEach((path) => fetchAirfoil(path));
+  setRequiredAirfoilFiles(model.airfoilFiles);
+  renderRequiredAirfoilFiles();
+  // AFILE dependencies are user-supplied via the File panel.
   const newAircraft = buildAircraftFromAVL(model);
   if (aircraft) scene.remove(aircraft);
   aircraft = newAircraft;
