@@ -44,7 +44,10 @@
             <button id="saveBtn" class="btn ghost" type="button">Save AVL</button>
           </div>
           <div class="file-meta" id="fileMeta">No file loaded.</div>
-          <textarea id="fileText" class="code" rows="8" placeholder="AVL file text appears here..."></textarea>
+          <div class="file-editor" id="fileEditor">
+            <pre id="fileHighlight" class="file-highlight" aria-hidden="true"></pre>
+            <textarea id="fileText" class="code" rows="8" wrap="off" placeholder="AVL file text appears here..." spellcheck="false"></textarea>
+          </div>
         </div>
       </div>
 

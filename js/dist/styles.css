@@ -204,6 +204,64 @@ textarea.code {
   min-height: 120px;
 }
 
+.file-editor {
+  position: relative;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  background: #272822;
+  overflow: hidden;
+  --file-font-size: 13px;
+}
+
+.file-highlight,
+.file-editor textarea.code {
+  margin: 0;
+  width: 100%;
+  min-height: 120px;
+  padding: 8px 10px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--file-font-size);
+  line-height: 1.45;
+  white-space: pre;
+  overflow-wrap: normal;
+  tab-size: 2;
+}
+
+.file-highlight {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: #f8f8f2;
+  min-height: 0;
+}
+
+.file-editor textarea.code {
+  position: relative;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: #f8f8f2;
+  z-index: 1;
+  overflow: auto;
+}
+
+.file-editor textarea.code:focus {
+  outline: none;
+}
+
+.file-editor:focus-within {
+  box-shadow: 0 0 0 2px rgba(102, 217, 239, 0.28);
+  border-color: #66d9ef;
+}
+
+.avl-token-comment { color: #75715e; }
+.avl-token-keyword { color: #f92672; font-weight: 600; }
+.avl-token-number { color: #ae81ff; }
+.avl-token-string { color: #e6db74; }
+.avl-token-operator { color: #f8f8f2; }
+
 .btn {
   background: var(--panel-2);
   border: 1px solid var(--edge);

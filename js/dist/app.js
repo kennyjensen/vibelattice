@@ -12,7 +12,9 @@ const els = {
   fileInput: document.getElementById('fileInput'),
   saveBtn: document.getElementById('saveBtn'),
   fileMeta: document.getElementById('fileMeta'),
+  fileEditor: document.getElementById('fileEditor'),
   fileText: document.getElementById('fileText'),
+  fileHighlight: document.getElementById('fileHighlight'),
   bank: document.getElementById('bank'),
   cl: document.getElementById('cl'),
   vel: document.getElementById('vel'),
@@ -106,6 +108,119 @@ let execRequestId = 0;
 let autoTrimTimer = null;
 let lastTrimState = null;
 let loadingGroup = null;
+const AVL_KEYWORDS = new Set([
+  'SURFACE', 'SECTION', 'BODY', 'PATCH', 'COMPONENT', 'INDEX', 'YDUPLICATE', 'NOWAKE',
+  'NOALBE', 'NOLOAD', 'NOSTALL', 'SCALE', 'TRANSLATE', 'ANGLE', 'NACA', 'AIRFOIL',
+  'AFILE', 'BFILE', 'CONTROL', 'DESIGN', 'CLAF', 'CDCL', 'MACH', 'SREF', 'CREF',
+  'BREF', 'XREF', 'YREF', 'ZREF',
+]);
+const FILE_EDITOR_FONT = {
+  minPx: 8,
+  maxPx: 13,
+};
+let fileMeasureCtx = null;
+
+function escapeHtml(text) {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function highlightAvlCode(code) {
+  if (!code) return '';
+  const tokenRe = /"(?:[^"\\]|\\.)*"|[-+]?(?:\d*\.\d+|\d+)(?:[Ee][-+]?\d+)?|[A-Za-z_][A-Za-z0-9_]*|[,:()]/g;
+  let html = '';
+  let last = 0;
+  let match = tokenRe.exec(code);
+  while (match) {
+    const [token] = match;
+    const start = match.index;
+    html += escapeHtml(code.slice(last, start));
+    if (token.startsWith('"')) {
+      html += `<span class="avl-token-string">${escapeHtml(token)}</span>`;
+    } else if (/^[-+]?(?:\d*\.\d+|\d+)(?:[Ee][-+]?\d+)?$/.test(token)) {
+      html += `<span class="avl-token-number">${token}</span>`;
+    } else if (/^[A-Za-z_]/.test(token)) {
+      const upper = token.toUpperCase();
+      if (AVL_KEYWORDS.has(upper)) {
+        html += `<span class="avl-token-keyword">${escapeHtml(token)}</span>`;
+      } else {
+        html += escapeHtml(token);
+      }
+    } else {
+      html += `<span class="avl-token-operator">${escapeHtml(token)}</span>`;
+    }
+    last = start + token.length;
+    match = tokenRe.exec(code);
+  }
+  html += escapeHtml(code.slice(last));
+  return html;
+}
+
+function highlightAvlText(text) {
+  if (!text) return ' ';
+  const lines = text.split('\n');
+  const rendered = lines.map((line) => {
+    const bang = line.indexOf('!');
+    const hash = line.indexOf('#');
+    let commentIndex = -1;
+    if (bang >= 0 && hash >= 0) commentIndex = Math.min(bang, hash);
+    else commentIndex = Math.max(bang, hash);
+    if (commentIndex < 0) return highlightAvlCode(line);
+    const code = line.slice(0, commentIndex);
+    const comment = line.slice(commentIndex);
+    return `${highlightAvlCode(code)}<span class="avl-token-comment">${escapeHtml(comment)}</span>`;
+  });
+  return rendered.join('\n');
+}
+
+function renderFileHighlight() {
+  if (!els.fileHighlight || !els.fileText) return;
+  els.fileHighlight.innerHTML = highlightAvlText(els.fileText.value);
+}
+
+function fitFileEditorFontSize() {
+  if (!els.fileEditor || !els.fileText) return;
+  if (!fileMeasureCtx) {
+    fileMeasureCtx = document.createElement('canvas').getContext('2d');
+    if (!fileMeasureCtx) return;
+  }
+  const available = Math.max(0, els.fileText.clientWidth - 20);
+  if (!available) return;
+  const lines = (els.fileText.value || '').split('\n');
+  let longest = '';
+  for (const line of lines) {
+    if (line.length > longest.length) longest = line;
+  }
+  const sample = longest.replaceAll('\t', '  ');
+  if (!sample) {
+    els.fileEditor.style.setProperty('--file-font-size', `${FILE_EDITOR_FONT.maxPx}px`);
+    return;
+  }
+  fileMeasureCtx.font = `${FILE_EDITOR_FONT.maxPx}px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace`;
+  const measured = fileMeasureCtx.measureText(sample).width;
+  if (!measured) return;
+  const fitted = FILE_EDITOR_FONT.maxPx * (available / measured);
+  const px = Math.max(FILE_EDITOR_FONT.minPx, Math.min(FILE_EDITOR_FONT.maxPx, fitted));
+  els.fileEditor.style.setProperty('--file-font-size', `${px.toFixed(2)}px`);
+}
+
+function syncFileEditorScroll() {
+  if (!els.fileHighlight || !els.fileText) return;
+  els.fileHighlight.scrollTop = els.fileText.scrollTop;
+  els.fileHighlight.scrollLeft = els.fileText.scrollLeft;
+}
+
+function setFileTextValue(text) {
+  if (!els.fileText) return;
+  els.fileText.value = text;
+  fitFileEditorFontSize();
+  renderFileHighlight();
+  syncFileEditorScroll();
+}
 
 function updateTrefftzBusy() {
   const stage = els.trefftz?.parentElement;
@@ -614,7 +729,7 @@ function handleFileLoad(file) {
   reader.onload = () => {
     uiState.text = String(reader.result || '');
     uiState.filename = file.name;
-    els.fileText.value = uiState.text;
+    setFileTextValue(uiState.text);
     els.fileMeta.textContent = `Loaded: ${file.name} (${file.size} bytes)`;
     loadGeometryFromText(uiState.text, true);
     resetTrimSeed();
@@ -628,6 +743,8 @@ async function loadDefaultAVL() {
   const existing = els.fileText.value?.trim();
   if (existing) {
     uiState.text = existing;
+    renderFileHighlight();
+    syncFileEditorScroll();
     return;
   }
   const candidates = [
@@ -643,7 +760,7 @@ async function loadDefaultAVL() {
       if (!text.trim()) continue;
       uiState.text = text;
       uiState.filename = 'plane.avl';
-      els.fileText.value = text;
+      setFileTextValue(text);
       if (els.fileMeta) els.fileMeta.textContent = 'Loaded: plane.avl (default)';
       logDebug('Loaded default file: plane.avl');
       return;
@@ -655,7 +772,7 @@ async function loadDefaultAVL() {
   if (embedded.trim()) {
     uiState.text = embedded;
     uiState.filename = 'plane.avl';
-    els.fileText.value = embedded;
+    setFileTextValue(embedded);
     if (els.fileMeta) els.fileMeta.textContent = 'Loaded: plane.avl (embedded)';
     logDebug('Loaded embedded default file: plane.avl');
     return;
@@ -770,12 +887,17 @@ els.facLoop?.addEventListener('input', () => updateFlightConditions());
 
 let fileUpdateTimer = null;
 els.fileText.addEventListener('input', () => {
+  fitFileEditorFontSize();
+  renderFileHighlight();
+  syncFileEditorScroll();
   clearTimeout(fileUpdateTimer);
   fileUpdateTimer = setTimeout(() => {
     uiState.text = els.fileText.value;
     loadGeometryFromText(uiState.text, true);
   }, 250);
 });
+els.fileText.addEventListener('scroll', syncFileEditorScroll);
+window.addEventListener('resize', fitFileEditorFontSize);
 
 function makeTrimState(controlMap = null) {
   const state = {
