@@ -735,19 +735,101 @@ async function ensureThree() {
   }
 }
 
-function handleFileLoad(file) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    uiState.text = String(reader.result || '');
-    uiState.filename = file.name;
-    setFileTextValue(uiState.text);
-    els.fileMeta.textContent = `Loaded: ${file.name} (${file.size} bytes)`;
-    loadGeometryFromText(uiState.text, true);
-    resetTrimSeed();
-    applyTrim({ useSeed: false });
-    logDebug(`Loaded file: ${file.name}`);
-  };
-  reader.readAsText(file);
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error(`Failed to read ${file?.name || 'file'}`));
+    reader.readAsText(file);
+  });
+}
+
+function basenamePath(path) {
+  return String(path || '').split(/[\\/]/).pop() || String(path || '');
+}
+
+function resolveProvidedAirfoilKey(path) {
+  const cleanPath = normalizeAirfoilPath(path);
+  if (!cleanPath) return null;
+  if (providedAirfoilFiles.has(cleanPath) && airfoilCache.has(cleanPath)) return cleanPath;
+  const base = basenamePath(cleanPath).toLowerCase();
+  for (const key of providedAirfoilFiles) {
+    if (!airfoilCache.has(key)) continue;
+    if (basenamePath(key).toLowerCase() === base) return key;
+  }
+  return null;
+}
+
+function applyAirfoilTextForKey(path, text) {
+  const key = normalizeAirfoilPath(path);
+  if (!key) return false;
+  const { coords, displayName } = parseAirfoilFileDetails(text);
+  if (!coords.length) {
+    airfoilUploadInvalid.add(key);
+    providedAirfoilFiles.delete(key);
+    airfoilCache.delete(key);
+    airfoilDisplayNames.delete(key);
+    return false;
+  }
+  airfoilUploadInvalid.delete(key);
+  airfoilFailed.delete(key);
+  providedAirfoilFiles.add(key);
+  airfoilCache.set(key, coords);
+  if (displayName) airfoilDisplayNames.set(key, displayName);
+  else airfoilDisplayNames.delete(key);
+  return true;
+}
+
+async function handleFileLoad(file) {
+  const text = await readFileAsText(file);
+  uiState.text = text;
+  uiState.filename = file.name;
+  setFileTextValue(uiState.text);
+  els.fileMeta.textContent = `Loaded: ${file.name} (${file.size} bytes)`;
+  loadGeometryFromText(uiState.text, true);
+  resetTrimSeed();
+  applyTrim({ useSeed: false });
+  logDebug(`Loaded file: ${file.name}`);
+}
+
+async function handleFileSelection(files) {
+  const all = Array.from(files || []);
+  if (!all.length) return;
+
+  const textFiles = [];
+  for (const file of all) {
+    const lower = String(file.name || '').toLowerCase();
+    if (lower.endsWith('.dat')) {
+      try {
+        const text = await readFileAsText(file);
+        const ok = applyAirfoilTextForKey(file.name, text);
+        if (ok) logDebug(`Loaded airfoil dependency: ${file.name}`);
+        else logDebug(`Failed to parse airfoil dependency: ${file.name}`);
+      } catch {
+        logDebug(`Failed to read airfoil dependency: ${file.name}`);
+      }
+      continue;
+    }
+    if (lower.endsWith('.avl') || lower.endsWith('.run') || lower.endsWith('.txt')) {
+      textFiles.push(file);
+    }
+  }
+
+  const primary = textFiles.find((f) => String(f.name || '').toLowerCase().endsWith('.avl'))
+    || textFiles.find((f) => String(f.name || '').toLowerCase().endsWith('.run'))
+    || textFiles[0]
+    || null;
+
+  if (primary) {
+    await handleFileLoad(primary);
+  } else {
+    renderRequiredAirfoilFiles();
+    scheduleAutoTrim();
+    els.fileMeta.textContent = `Loaded dependencies: ${all.length} file(s)`;
+  }
+
+  // Repaint dependency status after model parse.
+  renderRequiredAirfoilFiles();
 }
 
 async function loadDefaultAVL() {
@@ -791,9 +873,10 @@ async function loadDefaultAVL() {
   logDebug('Default file plane.avl not found.');
 }
 
-els.fileInput.addEventListener('change', (evt) => {
-  const file = evt.target.files?.[0];
-  if (file) handleFileLoad(file);
+els.fileInput.addEventListener('change', async (evt) => {
+  const files = evt.target.files;
+  if (files?.length) await handleFileSelection(files);
+  evt.target.value = '';
 });
 
 els.bank?.addEventListener('input', scheduleAutoTrim);
@@ -1916,7 +1999,7 @@ function setRequiredAirfoilFiles(paths) {
 
 function getAirfoilRequirementStatus(path) {
   if (airfoilUploadInvalid.has(path)) return { state: 'invalid', text: 'Parse error' };
-  if (providedAirfoilFiles.has(path) && airfoilCache.has(path)) return { state: 'ok', text: 'Ready' };
+  if (resolveProvidedAirfoilKey(path)) return { state: 'ok', text: 'Ready' };
   if (airfoilPending.has(path)) return { state: 'loading', text: 'Loading…' };
   return { state: 'missing', text: 'Missing' };
 }
@@ -1927,30 +2010,20 @@ function handleAirfoilUpload(path, file) {
   reader.onload = () => {
     try {
       const text = String(reader.result || '');
-      const { coords, displayName } = parseAirfoilFileDetails(text);
-      if (!coords.length) {
-        airfoilUploadInvalid.add(path);
-        providedAirfoilFiles.delete(path);
-        airfoilCache.delete(path);
-        airfoilDisplayNames.delete(path);
-      } else {
-        airfoilUploadInvalid.delete(path);
-        airfoilFailed.delete(path);
-        providedAirfoilFiles.add(path);
-        airfoilCache.set(path, coords);
-        if (displayName) airfoilDisplayNames.set(path, displayName);
-        else airfoilDisplayNames.delete(path);
-      }
+      applyAirfoilTextForKey(path, text);
       renderRequiredAirfoilFiles();
       if (uiState.text) {
         loadGeometryFromText(uiState.text, false);
       }
       scheduleAutoTrim();
     } catch {
-      airfoilUploadInvalid.add(path);
-      providedAirfoilFiles.delete(path);
-      airfoilCache.delete(path);
-      airfoilDisplayNames.delete(path);
+      const key = normalizeAirfoilPath(path);
+      if (key) {
+        airfoilUploadInvalid.add(key);
+        providedAirfoilFiles.delete(key);
+        airfoilCache.delete(key);
+        airfoilDisplayNames.delete(key);
+      }
       renderRequiredAirfoilFiles();
     }
   };
@@ -2156,8 +2229,9 @@ function buildSolverModel(text) {
         ctrl.index = controlMap.get(ctrl.name);
       });
       let coords = sec.airfoilCoords;
-      if (!coords && sec.airfoilFile && providedAirfoilFiles.has(sec.airfoilFile)) {
-        coords = airfoilCache.get(sec.airfoilFile) || null;
+      if (!coords && sec.airfoilFile) {
+        const resolved = resolveProvidedAirfoilKey(sec.airfoilFile);
+        if (resolved) coords = airfoilCache.get(resolved) || null;
       }
       if (coords && coords.length) {
         sec.airfoilCamber = buildCamberSlope(coords);
@@ -2301,8 +2375,9 @@ function buildSurfaceMesh(surface, color) {
 
   surface.sections.forEach((section) => {
     let coords = section.airfoilCoords;
-    if (!coords && section.airfoilFile && providedAirfoilFiles.has(section.airfoilFile)) {
-      coords = airfoilCache.get(section.airfoilFile) || null;
+    if (!coords && section.airfoilFile) {
+      const resolved = resolveProvidedAirfoilKey(section.airfoilFile);
+      if (resolved) coords = airfoilCache.get(resolved) || null;
     }
     if (coords && coords.length) {
       addAirfoilOutline(section, coords, surface.yduplicate);
