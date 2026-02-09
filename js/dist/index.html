@@ -36,6 +36,16 @@
       <div class="panel">
         <div class="panel-title">Aircraft</div>
         <div class="panel-body">
+          <div class="row aircraft-actions">
+            <div class="aircraft-buttons">
+              <label class="btn">
+                Load AVL
+                <input id="fileInput" type="file" accept=".avl,.run,.dat,.txt,text/plain,application/octet-stream,*/*" multiple hidden />
+              </label>
+              <button id="saveBtn" class="btn" type="button">Save AVL</button>
+            </div>
+          </div>
+          <div class="file-meta" id="fileMeta">No file loaded.</div>
           <div id="fileSummary" class="file-summary hidden">
             <input id="fileAircraftName" class="file-aircraft-name" type="text" />
             <div class="file-summary-lines">
@@ -43,26 +53,29 @@
               <div># Strips   = <strong id="fileNStrip">-</strong></div>
               <div># Vortices = <strong id="fileNVort">-</strong></div>
             </div>
-            <div class="file-summary-line">
-              Sref= <strong id="fileSref">-</strong>
-              Cref= <strong id="fileCref">-</strong>
-              Bref= <strong id="fileBref">-</strong>
+            <div class="file-ref-grid">
+              <div class="file-ref-row"><span class="label-text">IYSym</span>
+                <select id="fileIysym">
+                  <option value="0">0 - Off (No Y symmetry)</option>
+                  <option value="1">1 - On (Mirror in X-Z plane)</option>
+                  <option value="-1">-1 - Antisymmetric (Y)</option>
+                </select>
+              </div>
+              <div class="file-ref-row"><span class="label-text">IZSym</span>
+                <select id="fileIzsym">
+                  <option value="0">0 - Off (No Z symmetry)</option>
+                  <option value="1">1 - On (Mirror in X-Y plane)</option>
+                  <option value="-1">-1 - Antisymmetric (Z)</option>
+                </select>
+              </div>
+              <div class="file-ref-row"><span class="label-text">ZSym</span><input id="fileZsym" type="number" step="0.01" /></div>
+              <div class="file-ref-row"><span class="label-text">Sref</span><input id="fileSref" type="number" step="0.01" /></div>
+              <div class="file-ref-row"><span class="label-text">Cref</span><input id="fileCref" type="number" step="0.01" /></div>
+              <div class="file-ref-row"><span class="label-text">Bref</span><input id="fileBref" type="number" step="0.01" /></div>
+              <div class="file-ref-row"><span class="label-text">Xref</span><input id="fileXref" type="number" step="0.01" /></div>
+              <div class="file-ref-row"><span class="label-text">Yref</span><input id="fileYref" type="number" step="0.01" /></div>
+              <div class="file-ref-row"><span class="label-text">Zref</span><input id="fileZref" type="number" step="0.01" /></div>
             </div>
-            <div class="file-summary-line">
-              Xref= <strong id="fileXref">-</strong>
-              Yref= <strong id="fileYref">-</strong>
-              Zref= <strong id="fileZref">-</strong>
-            </div>
-          </div>
-          <div class="row aircraft-actions">
-            <div class="aircraft-buttons">
-              <label class="btn">
-                Load AVL
-                <input id="fileInput" type="file" accept=".avl,.run,.dat,.txt,text/plain,application/octet-stream,*/*" multiple hidden />
-              </label>
-              <button id="saveBtn" class="btn ghost" type="button">Save AVL</button>
-            </div>
-            <div class="file-meta" id="fileMeta">No file loaded.</div>
           </div>
           <div id="airfoilFilesPanel" class="airfoil-files hidden">
             <div class="airfoil-files-title">AFILE Dependencies</div>
@@ -119,6 +132,24 @@
           <div id="constraintTable" class="constraint-table"></div>
         </div>
       </div>
+
+      <div class="panel">
+        <div class="panel-title">Run Cases</div>
+        <div class="panel-body run-cases-panel">
+          <div class="row run-cases-actions">
+            <label class="btn">
+              Load Runs
+              <input id="runCasesInput" type="file" accept=".run,text/plain,application/octet-stream" hidden />
+            </label>
+            <button id="runCasesSaveBtn" class="btn" type="button">Save Runs</button>
+          </div>
+          <div class="file-meta" id="runCasesMeta">No run cases loaded.</div>
+          <div id="runCaseList" class="run-cases-list"></div>
+          <div class="row run-case-edit-actions">
+            <button id="runCaseAddBtn" class="btn" type="button">Add case</button>
+          </div>
+        </div>
+      </div>
       </aside>
     </section>
 
@@ -126,6 +157,7 @@
       <main class="main-col">
       <div class="stage stage-geo">
         <div id="viewer" class="viewer">
+          <div id="viewerAircraftName" class="viewer-aircraft-name"></div>
           <div class="viewer-overlay">
             <button class="viewer-btn icon-btn" id="viewerPan" type="button" title="Pan mode">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -205,28 +237,28 @@
 
     <section class="col outputs-col" id="outputsCol">
       <aside class="output-col">
-      <div class="panel output">
+      <div class="panel output total-forces-panel">
         <div class="panel-title">Total Forces</div>
         <div class="panel-body">
           <div class="total-forces-grid" id="trimOutput">
-            <div class="force-cell r1 c1">α = <strong id="outAlpha">-</strong></div>
-            <div class="force-cell r1 c2">pb/2v = <strong id="outPb2v">-</strong></div>
-            <div class="force-cell r1 c3">&nbsp;CL = <strong id="outCL">-</strong></div>
-            <div class="force-cell r1 c4">cl = <strong id="outCltot">-</strong></div>
+            <div class="force-cell r1 c1">α=<strong id="outAlpha">-</strong></div>
+            <div class="force-cell r1 c2">pb/2v=<strong id="outPb2v">-</strong></div>
+            <div class="force-cell r1 c3">&nbsp;CL=<strong id="outCL">-</strong></div>
+            <div class="force-cell r1 c4">cl=<strong id="outCltot">-</strong></div>
 
-            <div class="force-cell r2 c1">β = <strong id="outBeta">-</strong></div>
-            <div class="force-cell r2 c2">qc/2v = <strong id="outQc2v">-</strong></div>
-            <div class="force-cell r2 c3">&nbsp;CY = <strong id="outCYtot">-</strong></div>
-            <div class="force-cell r2 c4">cm = <strong id="outCmtot">-</strong></div>
+            <div class="force-cell r2 c1">β=<strong id="outBeta">-</strong></div>
+            <div class="force-cell r2 c2">qc/2v=<strong id="outQc2v">-</strong></div>
+            <div class="force-cell r2 c3">&nbsp;CY=<strong id="outCYtot">-</strong></div>
+            <div class="force-cell r2 c4">cm=<strong id="outCmtot">-</strong></div>
 
-            <div class="force-cell r3 c1">M = <strong id="outMach">-</strong></div>
-            <div class="force-cell r3 c2">rb/2v = <strong id="outRb2v">-</strong></div>
-            <div class="force-cell r3 c3">&nbsp;CD = <strong id="outCD">-</strong></div>
-            <div class="force-cell r3 c4">cn = <strong id="outCntot">-</strong></div>
+            <div class="force-cell r3 c1">M=<strong id="outMach">-</strong></div>
+            <div class="force-cell r3 c2">rb/2v=<strong id="outRb2v">-</strong></div>
+            <div class="force-cell r3 c3">&nbsp;CD=<strong id="outCD">-</strong></div>
+            <div class="force-cell r3 c4">cn=<strong id="outCntot">-</strong></div>
 
-            <div class="force-cell r4 c3">CDi = <strong id="outCDind">-</strong></div>
-            <div class="force-cell r4 c4">&nbsp;e = <strong id="outEff">-</strong></div>
-            <div class="force-cell r5 c3">CDp = <strong id="outCDvis">-</strong></div>
+            <div class="force-cell r4 c3">CDi=<strong id="outCDind">-</strong></div>
+            <div class="force-cell r4 c4">&nbsp;e=<strong id="outEff">-</strong></div>
+            <div class="force-cell r5 c3">CDp=<strong id="outCDvis">-</strong></div>
 
             <div id="outControlRows"></div>
 

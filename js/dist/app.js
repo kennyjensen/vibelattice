@@ -23,6 +23,9 @@ const els = {
   fileXref: document.getElementById('fileXref'),
   fileYref: document.getElementById('fileYref'),
   fileZref: document.getElementById('fileZref'),
+  fileIysym: document.getElementById('fileIysym'),
+  fileIzsym: document.getElementById('fileIzsym'),
+  fileZsym: document.getElementById('fileZsym'),
   fileEditor: document.getElementById('fileEditor'),
   fileText: document.getElementById('fileText'),
   fileHighlight: document.getElementById('fileHighlight'),
@@ -51,6 +54,7 @@ const els = {
   plotsCol: document.getElementById('plotsCol'),
   outputsCol: document.getElementById('outputsCol'),
   viewer: document.getElementById('viewer'),
+  viewerAircraftName: document.getElementById('viewerAircraftName'),
   trefftz: document.getElementById('trefftz'),
   trefftzOverlay: document.getElementById('trefftzOverlay'),
   outAlpha: document.getElementById('outAlpha'),
@@ -79,6 +83,7 @@ const els = {
   outRates: document.getElementById('outRates'),
   outDef: document.getElementById('outDef'),
   outControlRows: document.getElementById('outControlRows'),
+  outTotalForces: document.getElementById('trimOutput'),
   outStability: document.getElementById('outStability'),
   outStabilityNeutral: document.getElementById('outStabilityNeutral'),
   outBodyDeriv: document.getElementById('outBodyDeriv'),
@@ -99,6 +104,11 @@ const els = {
   viewerLoad: document.getElementById('viewerLoad'),
   constraintRows: [],
   constraintTable: document.getElementById('constraintTable'),
+  runCasesInput: document.getElementById('runCasesInput'),
+  runCasesSaveBtn: document.getElementById('runCasesSaveBtn'),
+  runCasesMeta: document.getElementById('runCasesMeta'),
+  runCaseList: document.getElementById('runCaseList'),
+  runCaseAddBtn: document.getElementById('runCaseAddBtn'),
 };
 
 const uiState = {
@@ -111,6 +121,9 @@ const uiState = {
   loopDriver: 'cl',
   lastExecResult: null,
   showLoading: false,
+  runCases: [],
+  runCasesFilename: null,
+  selectedRunCaseIndex: -1,
 };
 
 const viewerState = {
@@ -140,6 +153,7 @@ let execRequestId = 0;
 let autoTrimTimer = null;
 let lastTrimState = null;
 let loadingGroup = null;
+let outputFontFitRaf = 0;
 let fileSummarySyncing = false;
 const AVL_KEYWORDS = new Set([
   'SURFACE', 'SECTION', 'BODY', 'PATCH', 'COMPONENT', 'INDEX', 'YDUPLICATE', 'NOWAKE',
@@ -267,6 +281,102 @@ function setFileTextValue(text) {
   syncFileEditorScroll();
 }
 
+function hasHorizontalOverflow(container, itemSelector) {
+  if (!container) return false;
+  const nodes = container.querySelectorAll(itemSelector);
+  for (const node of nodes) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.offsetParent === null) continue;
+    if (node.scrollWidth - node.clientWidth > 1) return true;
+  }
+  return false;
+}
+
+function fitGridFontVar({
+  grid,
+  cssVar,
+  maxPx,
+  minPx,
+  stepPx,
+  itemSelector,
+  extraOverflowCheck = null,
+}) {
+  if (!grid) return;
+  let size = maxPx;
+  grid.style.setProperty(cssVar, `${size.toFixed(2)}px`);
+  let overflow = hasHorizontalOverflow(grid, itemSelector) || (typeof extraOverflowCheck === 'function' && extraOverflowCheck());
+  while (overflow && size > minPx) {
+    size = Math.max(minPx, size - stepPx);
+    grid.style.setProperty(cssVar, `${size.toFixed(2)}px`);
+    overflow = hasHorizontalOverflow(grid, itemSelector) || (typeof extraOverflowCheck === 'function' && extraOverflowCheck());
+  }
+}
+
+function fitOutputGridFontsNow() {
+  fitGridFontVar({
+    grid: els.outTotalForces,
+    cssVar: '--forces-font-size',
+    maxPx: 16,
+    minPx: 8,
+    stepPx: 0.25,
+    itemSelector: '.force-cell:not(.control-row)',
+  });
+
+  fitGridFontVar({
+    grid: els.outStability,
+    cssVar: '--deriv-font-size',
+    maxPx: 14,
+    minPx: 7.5,
+    stepPx: 0.25,
+    itemSelector: '.stability-cell',
+    extraOverflowCheck: () => {
+      const n = els.outStabilityNeutral;
+      if (!(n instanceof HTMLElement) || n.offsetParent === null) return false;
+      return n.scrollWidth - n.clientWidth > 1;
+    },
+  });
+
+  fitGridFontVar({
+    grid: els.outBodyDeriv,
+    cssVar: '--deriv-font-size',
+    maxPx: 14,
+    minPx: 7,
+    stepPx: 0.25,
+    itemSelector: '.stability-cell',
+  });
+
+  fitGridFontVar({
+    grid: els.outForcesSurface,
+    cssVar: '--surface-font-size',
+    maxPx: 14,
+    minPx: 7,
+    stepPx: 0.25,
+    itemSelector: '.stability-cell',
+  });
+}
+
+function updateSurfaceNameColumnWidth() {
+  if (!els.outForcesSurface) return;
+  const names = [...els.outForcesSurface.querySelectorAll('.surface-name-text')]
+    .map((el) => String(el.textContent || '').trim())
+    .filter(Boolean);
+  if (!names.length) {
+    els.outForcesSurface.style.removeProperty('--surface-name-col');
+    return;
+  }
+  const maxChars = names.reduce((m, s) => Math.max(m, s.length), 0);
+  const widthCh = Math.max(8, Math.min(32, maxChars + 1));
+  els.outForcesSurface.style.setProperty('--surface-name-col', `${widthCh}ch`);
+}
+
+function scheduleOutputGridFontFit() {
+  if (outputFontFitRaf) return;
+  outputFontFitRaf = requestAnimationFrame(() => {
+    outputFontFitRaf = 0;
+    fitOutputGridFontsNow();
+  });
+}
+
 function isAvlCommentLine(line) {
   const t = String(line || '').trim();
   return !t || t.startsWith('#') || t.startsWith('!') || t.startsWith('%');
@@ -281,6 +391,51 @@ function replaceAvlTitleLine(text, title) {
     return lines.join(lineBreak);
   }
   return title;
+}
+
+function replaceAvlHeaderReferenceLines(text, refs) {
+  const formatByToken = (value, token, options = {}) => {
+    const { minDecimals = 1, integer = false } = options;
+    const v = Number(value);
+    if (!Number.isFinite(v)) return integer ? '0' : '0.0';
+    if (integer) return String(Math.trunc(v));
+    const tokenText = String(token || '');
+    const frac = tokenText.match(/\.(\d+)/);
+    const decimals = Math.max(minDecimals, frac ? frac[1].length : 0);
+    return v.toFixed(decimals);
+  };
+
+  const rewriteTriple = (line, values, options = [{}, {}, {}]) => {
+    const m = String(line).match(/^(\s*)(\S+)(\s+)(\S+)(\s+)(\S+)(\s*)$/);
+    if (!m) {
+      return `${formatByToken(values[0], '', options[0])}  ${formatByToken(values[1], '', options[1])}  ${formatByToken(values[2], '', options[2])}`;
+    }
+    const [, lead, t1, s1, t2, s2, t3, trail] = m;
+    const n1 = formatByToken(values[0], t1, options[0]);
+    const n2 = formatByToken(values[1], t2, options[1]);
+    const n3 = formatByToken(values[2], t3, options[2]);
+    return `${lead}${n1}${s1}${n2}${s2}${n3}${trail}`;
+  };
+
+  const lineBreak = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = String(text || '').split(/\r?\n/);
+  const dataLineIdx = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!isAvlCommentLine(lines[i])) dataLineIdx.push(i);
+    if (dataLineIdx.length >= 5) break;
+  }
+  if (dataLineIdx.length < 5) return text;
+  const symIdx = dataLineIdx[2];
+  const srefIdx = dataLineIdx[3];
+  const xrefIdx = dataLineIdx[4];
+  lines[symIdx] = rewriteTriple(
+    lines[symIdx],
+    [refs.iysym, refs.izsym, refs.zsym],
+    [{ integer: true, minDecimals: 0 }, { integer: true, minDecimals: 0 }, { minDecimals: 1 }],
+  );
+  lines[srefIdx] = rewriteTriple(lines[srefIdx], [refs.sref, refs.cref, refs.bref]);
+  lines[xrefIdx] = rewriteTriple(lines[xrefIdx], [refs.xref, refs.yref, refs.zref]);
+  return lines.join(lineBreak);
 }
 
 function computeModelCounts(model) {
@@ -306,11 +461,26 @@ function renderFileHeaderSummary(header, model = null) {
   if (!els.fileSummary) return;
   const hasHeader = Boolean(header && typeof header === 'object');
   els.fileSummary.classList.toggle('hidden', !hasHeader);
+  if (els.viewerAircraftName) {
+    const title = hasHeader ? String(header.title || '').trim() : '';
+    els.viewerAircraftName.textContent = title;
+    els.viewerAircraftName.style.display = title ? '' : 'none';
+  }
   if (!hasHeader) return;
 
   const show = (el, value, digits = 4) => {
     if (!el) return;
-    el.textContent = Number.isFinite(Number(value)) ? fmt(Number(value), digits) : '-';
+    el.value = Number.isFinite(Number(value)) ? fmt(Number(value), digits) : '';
+  };
+  const showSym = (el, value) => {
+    if (!el) return;
+    const v = Number(value);
+    const next = Number.isFinite(v) ? String(Math.trunc(v)) : '0';
+    if ([...el.options].some((opt) => opt.value === next)) {
+      el.value = next;
+    } else {
+      el.value = '0';
+    }
   };
 
   fileSummarySyncing = true;
@@ -323,6 +493,9 @@ function renderFileHeaderSummary(header, model = null) {
   if (els.fileNSurf) els.fileNSurf.textContent = String(counts.surfaces);
   if (els.fileNStrip) els.fileNStrip.textContent = String(counts.strips);
   if (els.fileNVort) els.fileNVort.textContent = String(counts.vortices);
+  showSym(els.fileIysym, header.iysym);
+  showSym(els.fileIzsym, header.izsym);
+  show(els.fileZsym, header.zsym, 2);
   show(els.fileSref, header.sref, 2);
   show(els.fileCref, header.cref, 2);
   show(els.fileBref, header.bref, 2);
@@ -340,6 +513,34 @@ function applyAircraftNameRename() {
     return;
   }
   const updated = replaceAvlTitleLine(els.fileText.value, nextName);
+  if (!updated || updated === els.fileText.value) return;
+  uiState.text = updated;
+  setFileTextValue(updated);
+  loadGeometryFromText(uiState.text, false);
+  resetTrimSeed();
+  applyTrim({ useSeed: false });
+}
+
+function applyAircraftRefRename() {
+  if (!els.fileText) return;
+  if (fileSummarySyncing) return;
+  const refs = {
+    iysym: Number(els.fileIysym?.value),
+    izsym: Number(els.fileIzsym?.value),
+    zsym: Number(els.fileZsym?.value),
+    sref: Number(els.fileSref?.value),
+    cref: Number(els.fileCref?.value),
+    bref: Number(els.fileBref?.value),
+    xref: Number(els.fileXref?.value),
+    yref: Number(els.fileYref?.value),
+    zref: Number(els.fileZref?.value),
+  };
+  const allFinite = Object.values(refs).every((v) => Number.isFinite(v));
+  if (!allFinite) {
+    renderFileHeaderSummary(uiState.modelHeader, uiState.modelCache);
+    return;
+  }
+  const updated = replaceAvlHeaderReferenceLines(els.fileText.value, refs);
   if (!updated || updated === els.fileText.value) return;
   uiState.text = updated;
   setFileTextValue(updated);
@@ -638,6 +839,13 @@ function fmtSignedNoPad(value, digits = 6) {
   return `${value < 0 ? '-' : ''}${abs}`;
 }
 
+function fmtSignedAligned(value, digits = 4, maxDigits = 4) {
+  if (!Number.isFinite(value)) return '-';
+  const d = Math.max(0, Math.min(digits, maxDigits));
+  const abs = Math.abs(Number(value)).toFixed(d);
+  return `${value < 0 ? '-' : '\u00a0'}${abs}`;
+}
+
 function formatSurfaceDisplayName(rawName, index = 1) {
   const name = String(rawName || `Surf ${index}`);
   if (name.endsWith('-ydup')) return `${name.slice(0, -5)} (YDUP)`;
@@ -660,17 +868,18 @@ function renderControlRows(entries) {
   if (!els.outControlRows) return;
   if (!entries?.length) {
     els.outControlRows.innerHTML = '';
+    scheduleOutputGridFontFit();
     return;
   }
   const maxName = entries.reduce((m, e) => Math.max(m, String(e?.name ?? '').length), 0);
   const html = entries.map((entry, i) => {
     const rawName = String(entry?.name ?? 'control');
-    const paddedName = rawName.padStart(maxName, ' ');
-    const name = escapeHtml(paddedName);
+    const name = escapeHtml(rawName);
     const value = escapeHtml(String(entry?.value ?? '-'));
-    return `<div class="force-cell control-row" style="grid-row:${4 + i};"><span class="force-control-name">${name}</span> = <strong>${value}</strong></div>`;
+    return `<div class="force-cell control-row" style="grid-row:${4 + i};"><span class="force-control-name" style="--control-name-width:${maxName}ch">${name}</span>&nbsp;=<strong>${value}</strong>&nbsp;deg</div>`;
   }).join('');
   els.outControlRows.innerHTML = html;
+  scheduleOutputGridFontFit();
 }
 
 function renderStabilityGrid(result) {
@@ -686,6 +895,7 @@ function renderStabilityGrid(result) {
   if (!clU || !cyU || !cmU || !vinfA || !vinfB) {
     els.outStability.textContent = '-';
     if (els.outStabilityNeutral) els.outStabilityNeutral.textContent = 'Xnp = -';
+    scheduleOutputGridFontFit();
     return;
   }
 
@@ -750,6 +960,7 @@ function renderStabilityGrid(result) {
     }
     els.outStabilityNeutral.textContent = `Xnp = ${Number.isFinite(xnp) ? fmtSignedNoPad(xnp, 6) : '-'}`;
   }
+  scheduleOutputGridFontFit();
 }
 
 function renderBodyDerivGrid(result) {
@@ -762,6 +973,7 @@ function renderBodyDerivGrid(result) {
   const vinfB = result?.VINF_B;
   if (!cfU || !cmU || !vinfA || !vinfB) {
     els.outBodyDeriv.textContent = '-';
+    scheduleOutputGridFontFit();
     return;
   }
 
@@ -821,6 +1033,7 @@ function renderBodyDerivGrid(result) {
     return `<div class="stability-cell stability-val" title="${escapeHtml(deriv)}"><strong class="stability-num">${fmtSignedFixed(Number(cell), 6)}</strong></div>`;
   }).join('')).join('');
   els.outBodyDeriv.innerHTML = html;
+  scheduleOutputGridFontFit();
 }
 
 function renderSurfaceForcesGrid(result) {
@@ -830,6 +1043,8 @@ function renderSurfaceForcesGrid(result) {
   const cySurf = result?.CYSURF;
   if (!clSurf || !cdSurf || !cySurf || clSurf.length <= 1) {
     els.outForcesSurface.textContent = '-';
+    updateSurfaceNameColumnWidth();
+    scheduleOutputGridFontFit();
     return;
   }
   const model = uiState.modelCache;
@@ -862,6 +1077,8 @@ function renderSurfaceForcesGrid(result) {
     return `<div class="stability-cell stability-val"><strong class="stability-num">${fmtSignedFixed(Number(cell), 4)}</strong></div>`;
   }).join('')).join('');
   els.outForcesSurface.innerHTML = html;
+  updateSurfaceNameColumnWidth();
+  scheduleOutputGridFontFit();
 }
 
 function buildExecSurfaceNames(model) {
@@ -963,6 +1180,391 @@ function readConstraintRows() {
     });
   });
   return rows;
+}
+
+function caseNameOrFallback(entry, index) {
+  const name = String(entry?.name || '').trim();
+  if (name) return name;
+  return `Case ${index + 1}`;
+}
+
+function caseColorOrFallback(entry, index) {
+  const palette = ['#ff4a3d', '#ff9f1a', '#ffd166', '#6dd36f', '#2f7bff', '#9b5de5', '#f472b6', '#22d3ee'];
+  const raw = String(entry?.color || '').trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw.toLowerCase();
+  return palette[index % palette.length];
+}
+
+function ensureRunFileExtension(name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return 'cases.run';
+  if (/\.[Rr][Uu][Nn]$/.test(trimmed)) return trimmed;
+  return `${trimmed}.run`;
+}
+
+function updateRunCasesMeta(message = '') {
+  if (!els.runCasesMeta) return;
+  const count = uiState.runCases.length;
+  if (message) {
+    els.runCasesMeta.textContent = message;
+    return;
+  }
+  if (!count) {
+    els.runCasesMeta.textContent = 'No run cases loaded.';
+    return;
+  }
+  const label = ensureRunFileExtension(uiState.runCasesFilename || 'unsaved.run');
+  els.runCasesMeta.textContent = `${count} run case(s) • ${label}`;
+}
+
+function persistSelectedRunCaseFromUI() {
+  const idx = uiState.selectedRunCaseIndex;
+  if (idx < 0 || idx >= uiState.runCases.length) return;
+  const existing = uiState.runCases[idx] || {};
+  const captured = captureRunCaseFromUI(caseNameOrFallback(existing, idx));
+  captured.color = caseColorOrFallback(existing, idx);
+  uiState.runCases[idx] = captured;
+}
+
+function selectRunCase(index, { apply = true } = {}) {
+  if (!Number.isInteger(index) || index < 0 || index >= uiState.runCases.length) return;
+  const previous = uiState.selectedRunCaseIndex;
+  if (previous !== index) persistSelectedRunCaseFromUI();
+  uiState.selectedRunCaseIndex = index;
+  if (apply) applyRunCaseToUI(uiState.runCases[index]);
+  renderRunCasesList();
+  updateRunCasesMeta();
+}
+
+function renderRunCasesList() {
+  if (!els.runCaseList) return;
+  els.runCaseList.innerHTML = '';
+  if (!uiState.runCases.length) {
+    uiState.selectedRunCaseIndex = -1;
+    return;
+  }
+  if (uiState.selectedRunCaseIndex < 0 || uiState.selectedRunCaseIndex >= uiState.runCases.length) {
+    uiState.selectedRunCaseIndex = 0;
+  }
+  uiState.runCases.forEach((entry, idx) => {
+    const row = document.createElement('div');
+    row.className = `run-case-item${idx === uiState.selectedRunCaseIndex ? ' active' : ''}`;
+    row.dataset.index = String(idx);
+
+    const title = document.createElement('input');
+    title.type = 'text';
+    title.className = 'run-case-title';
+    title.value = caseNameOrFallback(entry, idx);
+    title.addEventListener('mousedown', (evt) => {
+      if (idx !== uiState.selectedRunCaseIndex) {
+        evt.preventDefault();
+        selectRunCase(idx, { apply: true });
+      }
+    });
+    title.addEventListener('click', (evt) => {
+      evt.stopPropagation();
+      if (idx !== uiState.selectedRunCaseIndex) {
+        selectRunCase(idx, { apply: true });
+      }
+    });
+    title.addEventListener('keydown', (evt) => evt.stopPropagation());
+    title.addEventListener('input', () => {
+      entry.name = title.value;
+    });
+    title.addEventListener('change', () => {
+      entry.name = String(title.value || '').trim() || `Case ${idx + 1}`;
+      title.value = entry.name;
+      updateRunCasesMeta();
+    });
+
+    const color = document.createElement('input');
+    color.type = 'color';
+    color.className = 'run-case-color';
+    color.value = caseColorOrFallback(entry, idx);
+    color.addEventListener('click', (evt) => evt.stopPropagation());
+    color.addEventListener('input', () => {
+      entry.color = color.value;
+    });
+
+    const trash = document.createElement('button');
+    trash.type = 'button';
+    trash.className = 'btn ghost run-case-delete';
+    trash.title = 'Delete case';
+    trash.setAttribute('aria-label', 'Delete case');
+    trash.innerHTML = `
+      <svg class="run-case-delete-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 7h16" />
+        <path d="M10 11v6" />
+        <path d="M14 11v6" />
+        <path d="M6 7l1 13h10l1-13" />
+        <path d="M9 7V4h6v3" />
+      </svg>
+    `;
+    trash.addEventListener('click', (evt) => {
+      evt.stopPropagation();
+      const removedSelected = idx === uiState.selectedRunCaseIndex;
+      uiState.runCases.splice(idx, 1);
+      if (!uiState.runCases.length) {
+        uiState.selectedRunCaseIndex = -1;
+      } else if (removedSelected) {
+        uiState.selectedRunCaseIndex = Math.max(0, Math.min(idx, uiState.runCases.length - 1));
+        applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
+      } else if (idx < uiState.selectedRunCaseIndex) {
+        uiState.selectedRunCaseIndex -= 1;
+      }
+      renderRunCasesList();
+      updateRunCasesMeta();
+    });
+
+    row.addEventListener('click', () => {
+      selectRunCase(idx, { apply: true });
+    });
+
+    row.appendChild(title);
+    row.appendChild(color);
+    row.appendChild(trash);
+    els.runCaseList.appendChild(row);
+  });
+}
+
+function captureRunCaseFromUI(nameHint = '') {
+  const rows = readConstraintRows().map((row) => ({
+    variable: String(row.variable || ''),
+    constraint: String(row.constraint || 'none'),
+    numeric: Number.isFinite(row.numeric) ? row.numeric : 0,
+  }));
+  return {
+    name: String(nameHint || '').trim(),
+    color: caseColorOrFallback(null, uiState.runCases.length),
+    inputs: {
+      flightMode: String(els.flightMode?.value || 'level'),
+      bank: Number(els.bank?.value || 0),
+      cl: Number(els.cl?.value || 0),
+      vel: Number(els.vel?.value || 0),
+      mass: Number(els.mass?.value || 0),
+      rho: Number(els.rho?.value || 0),
+      gee: Number(els.gee?.value || 0),
+      clLoop: Number(els.clLoop?.value || 0),
+      velLoop: Number(els.velLoop?.value || 0),
+      radLoop: Number(els.radLoop?.value || 0),
+      facLoop: Number(els.facLoop?.value || 0),
+    },
+    constraints: rows,
+  };
+}
+
+function syncFlightModePanels() {
+  const isLoop = (els.flightMode?.value || 'level') === 'looping';
+  els.levelInputs?.classList.toggle('hidden', isLoop);
+  els.loopInputs?.classList.toggle('hidden', !isLoop);
+}
+
+function applyRunCaseToUI(entry) {
+  if (!entry || typeof entry !== 'object') return;
+  const inputs = entry.inputs || {};
+  const setIfFinite = (el, value, digits = 3) => {
+    const num = Number(value);
+    if (!el || !Number.isFinite(num)) return;
+    setNumericInput(el, num, digits);
+  };
+  if (els.flightMode) {
+    const mode = String(inputs.flightMode || 'level');
+    if (mode === 'level' || mode === 'looping') {
+      els.flightMode.value = mode;
+    }
+  }
+  syncFlightModePanels();
+  setIfFinite(els.bank, inputs.bank, 2);
+  setIfFinite(els.cl, inputs.cl, 3);
+  setIfFinite(els.vel, inputs.vel, 2);
+  setIfFinite(els.mass, inputs.mass, 3);
+  setIfFinite(els.rho, inputs.rho, 4);
+  setIfFinite(els.gee, inputs.gee, 3);
+  setIfFinite(els.clLoop, inputs.clLoop, 3);
+  setIfFinite(els.velLoop, inputs.velLoop, 2);
+  setIfFinite(els.radLoop, inputs.radLoop, 2);
+  setIfFinite(els.facLoop, inputs.facLoop, 3);
+
+  const byVar = new Map();
+  (entry.constraints || []).forEach((row) => {
+    const key = String(row?.variable || '');
+    if (!key) return;
+    byVar.set(key, row);
+  });
+  readConstraintRows().forEach((row) => {
+    const saved = byVar.get(row.variable);
+    if (!saved) return;
+    if (row.select) {
+      const nextConstraint = String(saved.constraint || 'none');
+      if ([...row.select.options].some((opt) => opt.value === nextConstraint)) {
+        row.select.value = nextConstraint;
+      }
+    }
+    if (row.value) {
+      const num = Number(saved.numeric);
+      row.value.value = Number.isFinite(num) ? String(num) : row.value.value;
+    }
+  });
+
+  updateConstraintDuplicates();
+  updateFlightConditions();
+  scheduleAutoTrim();
+}
+
+function normalizeRunCase(raw, index) {
+  const name = String(raw?.name || `Case ${index + 1}`).trim() || `Case ${index + 1}`;
+  const color = caseColorOrFallback(raw, index);
+  const inputs = raw?.inputs && typeof raw.inputs === 'object' ? raw.inputs : {};
+  const constraints = Array.isArray(raw?.constraints)
+    ? raw.constraints.map((row) => ({
+      variable: String(row?.variable || ''),
+      constraint: String(row?.constraint || 'none'),
+      numeric: Number(row?.numeric || 0),
+    })).filter((row) => row.variable)
+    : [];
+  return { name, color, inputs, constraints };
+}
+
+function normalizeRunKey(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replaceAll('.', '')
+    .replaceAll('_', '')
+    .replaceAll('-', '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseAvlRunCasesText(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const cases = [];
+  let current = null;
+  const startCase = (nameRaw) => {
+    if (current) cases.push(current);
+    current = {
+      name: String(nameRaw || '').trim().replace(/^[-\s]+|[-\s]+$/g, ''),
+      inputs: {},
+      constraints: [],
+    };
+  };
+
+  const varMap = {
+    alpha: 'alpha',
+    beta: 'beta',
+    'pb/2v': 'p',
+    'qc/2v': 'q',
+    'rb/2v': 'r',
+  };
+  const constraintMap = {
+    alpha: 'alpha',
+    beta: 'beta',
+    'pb/2v': 'p',
+    'qc/2v': 'q',
+    'rb/2v': 'r',
+    cl: 'cl',
+    cy: 'cy',
+    'cl roll mom': 'cmx',
+    'cm pitchmom': 'cmy',
+    'cn yaw mom': 'cmz',
+  };
+
+  const toSI = (value, unitText, key) => {
+    const unit = normalizeRunKey(unitText);
+    if (!Number.isFinite(value)) return value;
+    if (unit.includes('ft/s^2')) return value * 0.3048;
+    if (unit.includes('ft/s')) return value * 0.3048;
+    if (unit.includes('slug/ft^3')) return value * 515.378818;
+    if (unit === 'ft') return value * 0.3048;
+    if (unit === 'slug') return value * 14.59390294;
+    if (key === 'velocity') return value * 0.3048;
+    if (key === 'density') return value * 515.378818;
+    if (key === 'gravacc') return value * 0.3048;
+    if (key === 'turnrad') return value * 0.3048;
+    if (key === 'mass') return value * 14.59390294;
+    return value;
+  };
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || '');
+    const caseMatch = line.match(/^\s*Run case\s+\d+\s*:\s*(.*?)\s*$/i);
+    if (caseMatch) {
+      startCase(caseMatch[1]);
+      continue;
+    }
+    if (!current) continue;
+
+    const arrowMatch = line.match(/^\s*([A-Za-z0-9_./+\- ]+?)\s*->\s*([A-Za-z0-9_./+\- ]+?)\s*=\s*([+\-]?(?:\d*\.\d+|\d+)(?:[Ee][+\-]?\d+)?)\s*$/);
+    if (arrowMatch) {
+      const leftRaw = arrowMatch[1].trim();
+      const rightRaw = arrowMatch[2].trim();
+      const num = Number(arrowMatch[3]);
+      const leftKeyNorm = normalizeRunKey(leftRaw);
+      const rightKeyNorm = normalizeRunKey(rightRaw);
+      const variable = varMap[leftKeyNorm] || `ctrl:${leftRaw}`;
+      const constraint = constraintMap[rightKeyNorm] || (rightRaw ? `ctrl:${rightRaw}` : 'none');
+      if (Number.isFinite(num)) {
+        current.constraints.push({ variable, constraint, numeric: num });
+      }
+      continue;
+    }
+
+    const valueMatch = line.match(/^\s*([A-Za-z0-9_./+\- ]+?)\s*=\s*([+\-]?(?:\d*\.\d+|\d+)(?:[Ee][+\-]?\d+)?)\s*(.*?)\s*$/);
+    if (!valueMatch) continue;
+    const keyRaw = valueMatch[1].trim();
+    const value = Number(valueMatch[2]);
+    const unitRaw = valueMatch[3] || '';
+    const keyNorm = normalizeRunKey(keyRaw);
+    const siValue = toSI(value, unitRaw, keyNorm);
+    if (!Number.isFinite(siValue)) continue;
+
+    if (keyNorm === 'bank') current.inputs.bank = siValue;
+    else if (keyNorm === 'velocity') current.inputs.vel = siValue;
+    else if (keyNorm === 'density') current.inputs.rho = siValue;
+    else if (keyNorm === 'gravacc') current.inputs.gee = siValue;
+    else if (keyNorm === 'turnrad') current.inputs.radLoop = siValue;
+    else if (keyNorm === 'loadfac') current.inputs.facLoop = siValue;
+    else if (keyNorm === 'cl') current.inputs.cl = siValue;
+    else if (keyNorm === 'mass') current.inputs.mass = siValue;
+    else if (keyNorm === 'alpha') current.constraints.push({ variable: 'alpha', constraint: 'alpha', numeric: siValue });
+    else if (keyNorm === 'beta') current.constraints.push({ variable: 'beta', constraint: 'beta', numeric: siValue });
+    else if (keyNorm === 'pb/2v') current.constraints.push({ variable: 'p', constraint: 'p', numeric: siValue });
+    else if (keyNorm === 'qc/2v') current.constraints.push({ variable: 'q', constraint: 'q', numeric: siValue });
+    else if (keyNorm === 'rb/2v') current.constraints.push({ variable: 'r', constraint: 'r', numeric: siValue });
+  }
+  if (current) cases.push(current);
+
+  const normalized = cases.map((entry, idx) => normalizeRunCase(entry, idx));
+  return normalized.filter((entry) => entry && (entry.name || entry.constraints.length || Object.keys(entry.inputs || {}).length));
+}
+
+function parseRunsPayload(text) {
+  let cases = [];
+  let selectedIndex = 0;
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      cases = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      if (Array.isArray(parsed.cases)) cases = parsed.cases;
+      if (Number.isInteger(parsed.selectedIndex)) selectedIndex = parsed.selectedIndex;
+    }
+  } catch {
+    const parsedCases = parseAvlRunCasesText(text);
+    if (parsedCases.length) return { cases: parsedCases, selectedIndex: 0 };
+    throw new Error('Unsupported run-case file format.');
+  }
+  const normalized = cases.map((entry, idx) => normalizeRunCase(entry, idx));
+  if (!normalized.length) throw new Error('No run cases found in file.');
+  if (selectedIndex < 0 || selectedIndex >= normalized.length) selectedIndex = 0;
+  return { cases: normalized, selectedIndex };
+}
+
+function buildRunsPayload() {
+  return JSON.stringify({
+    format: 'vibelattice-runs-v1',
+    selectedIndex: uiState.selectedRunCaseIndex >= 0 ? uiState.selectedRunCaseIndex : 0,
+    cases: uiState.runCases.map((entry, idx) => normalizeRunCase(entry, idx)),
+  }, null, 2);
 }
 
 function focusConstraintCell(rowIndex, column, selectValue = false) {
@@ -1412,6 +2014,53 @@ els.saveBtn.addEventListener('click', () => {
   URL.revokeObjectURL(a.href);
 });
 
+els.runCasesInput?.addEventListener('change', async (evt) => {
+  const file = evt.target?.files?.[0];
+  evt.target.value = '';
+  if (!file) return;
+  try {
+    const text = await readFileAsText(file);
+    const parsed = parseRunsPayload(text);
+    uiState.runCases = parsed.cases;
+    uiState.selectedRunCaseIndex = parsed.selectedIndex;
+    uiState.runCasesFilename = file.name;
+    renderRunCasesList();
+    updateRunCasesMeta(`Loaded ${parsed.cases.length} run case(s) from ${file.name}`);
+    applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
+    logDebug(`Loaded run cases: ${file.name}`);
+  } catch (err) {
+    updateRunCasesMeta(`Failed to load ${file.name}`);
+    logDebug(`Run cases load failed: ${err?.message ?? err}`);
+  }
+});
+
+els.runCasesSaveBtn?.addEventListener('click', () => {
+  if (!uiState.runCases.length) {
+    const created = captureRunCaseFromUI('Case 1');
+    created.color = caseColorOrFallback(created, 0);
+    uiState.runCases = [created];
+    uiState.selectedRunCaseIndex = 0;
+    renderRunCasesList();
+  }
+  persistSelectedRunCaseFromUI();
+  const filename = ensureRunFileExtension(uiState.runCasesFilename || 'cases.run');
+  uiState.runCasesFilename = filename;
+  downloadText(filename, buildRunsPayload());
+  updateRunCasesMeta(`Saved ${uiState.runCases.length} run case(s) to ${filename}`);
+});
+
+els.runCaseAddBtn?.addEventListener('click', () => {
+  persistSelectedRunCaseFromUI();
+  const name = `Case ${uiState.runCases.length + 1}`;
+  const created = captureRunCaseFromUI(name);
+  created.color = caseColorOrFallback(created, uiState.runCases.length);
+  uiState.runCases.push(created);
+  uiState.selectedRunCaseIndex = uiState.runCases.length - 1;
+  applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
+  renderRunCasesList();
+  updateRunCasesMeta();
+});
+
 els.clearDebug?.addEventListener('click', () => {
   if (els.debugLog) els.debugLog.textContent = '';
 });
@@ -1463,17 +2112,12 @@ els.viewerLoad?.addEventListener('click', () => {
 });
 
 els.flightMode?.addEventListener('change', () => {
-  const mode = els.flightMode.value;
-  const isLoop = mode === 'looping';
-  els.levelInputs?.classList.toggle('hidden', isLoop);
-  els.loopInputs?.classList.toggle('hidden', !isLoop);
+  syncFlightModePanels();
   updateFlightConditions();
 });
 
 if (els.flightMode) {
-  const isLoop = els.flightMode.value === 'looping';
-  els.levelInputs?.classList.toggle('hidden', isLoop);
-  els.loopInputs?.classList.toggle('hidden', !isLoop);
+  syncFlightModePanels();
 }
 
 els.cl?.addEventListener('input', () => updateFlightConditions('cl'));
@@ -1501,11 +2145,25 @@ els.fileText.addEventListener('input', () => {
 });
 els.fileText.addEventListener('scroll', syncFileEditorScroll);
 window.addEventListener('resize', fitFileEditorFontSize);
+window.addEventListener('resize', scheduleOutputGridFontFit);
 els.fileAircraftName?.addEventListener('change', applyAircraftNameRename);
 els.fileAircraftName?.addEventListener('keydown', (evt) => {
   if (evt.key !== 'Enter') return;
   evt.preventDefault();
   applyAircraftNameRename();
+});
+[
+  els.fileIysym, els.fileIzsym, els.fileZsym,
+  els.fileSref, els.fileCref, els.fileBref,
+  els.fileXref, els.fileYref, els.fileZref,
+].forEach((el) => {
+  if (!el) return;
+  el.addEventListener('change', applyAircraftRefRename);
+  el.addEventListener('keydown', (evt) => {
+    if (evt.key !== 'Enter') return;
+    evt.preventDefault();
+    applyAircraftRefRename();
+  });
 });
 
 function makeTrimState(controlMap = null) {
@@ -1668,23 +2326,23 @@ function applyTrimResults(state) {
   const fac = state.PARVAL[idx2(IPFAC, IR, state.IPTOT)];
   const cl = state.PARVAL[idx2(IPCL, IR, state.IPTOT)];
 
-  if (els.outAlpha) els.outAlpha.textContent = `${fmt(findVar('alpha'), 2)} deg`;
-  if (els.outBeta) els.outBeta.textContent = `${fmt(findVar('beta'), 2)} deg`;
+  if (els.outAlpha) els.outAlpha.textContent = `${fmtSignedAligned(findVar('alpha'), 2)} deg`;
+  if (els.outBeta) els.outBeta.textContent = `${fmtSignedAligned(findVar('beta'), 2)} deg`;
   if (els.outBank) els.outBank.textContent = `${fmt(phi, 2)} deg`;
-  if (els.outCL) els.outCL.textContent = fmt(cl, 5);
+  if (els.outCL) els.outCL.textContent = fmtSignedAligned(cl, 5);
   if (els.outV) els.outV.textContent = `${fmt(vee, 2)} m/s`;
   if (els.outRad) els.outRad.textContent = rad > 0 ? `${fmt(rad, 2)} m` : 'level';
   if (els.outFac) els.outFac.textContent = fmt(fac, 3);
   if (els.outThe) els.outThe.textContent = `${fmt(the, 2)} deg`;
-  if (els.outPb2v) els.outPb2v.textContent = fmt(findVar('p'), 5);
-  if (els.outQc2v) els.outQc2v.textContent = fmt(findVar('q'), 5);
-  if (els.outRb2v) els.outRb2v.textContent = fmt(findVar('r'), 5);
+  if (els.outPb2v) els.outPb2v.textContent = fmtSignedAligned(findVar('p'), 3);
+  if (els.outQc2v) els.outQc2v.textContent = fmtSignedAligned(findVar('q'), 3);
+  if (els.outRb2v) els.outRb2v.textContent = fmtSignedAligned(findVar('r'), 3);
   if (els.outRates) els.outRates.textContent = `${fmt(findVar('p'), 2)}, ${fmt(findVar('q'), 2)}, ${fmt(findVar('r'), 2)}`;
   if (els.outDef) els.outDef.textContent = '-';
   renderControlRows([]);
   if (els.outMach) {
     const mach = Number(uiState.modelHeader?.mach);
-    els.outMach.textContent = Number.isFinite(mach) ? fmt(mach, 3) : '-';
+    els.outMach.textContent = Number.isFinite(mach) ? fmtSignedAligned(mach, 3) : '-';
   }
 
   try {
@@ -4189,10 +4847,10 @@ function applyExecResults(result) {
   const rad = parval ? parval[idx2(IPRAD, IR, 30)] : null;
   const fac = parval ? parval[idx2(IPFAC, IR, 30)] : null;
 
-  if (Number.isFinite(result.ALFA) && els.outAlpha) els.outAlpha.textContent = `${fmt(result.ALFA / (Math.PI / 180), 2)} deg`;
-  if (Number.isFinite(result.BETA) && els.outBeta) els.outBeta.textContent = `${fmt(result.BETA / (Math.PI / 180), 2)} deg`;
-  if (Number.isFinite(result.CLTOT) && els.outCL) els.outCL.textContent = fmt(result.CLTOT, 5);
-  if (Number.isFinite(result.CDTOT) && els.outCD) els.outCD.textContent = fmt(result.CDTOT, 5);
+  if (Number.isFinite(result.ALFA) && els.outAlpha) els.outAlpha.textContent = `${fmtSignedAligned(result.ALFA / (Math.PI / 180), 2)} deg`;
+  if (Number.isFinite(result.BETA) && els.outBeta) els.outBeta.textContent = `${fmtSignedAligned(result.BETA / (Math.PI / 180), 2)} deg`;
+  if (Number.isFinite(result.CLTOT) && els.outCL) els.outCL.textContent = fmtSignedAligned(result.CLTOT, 5);
+  if (Number.isFinite(result.CDTOT) && els.outCD) els.outCD.textContent = fmtSignedAligned(result.CDTOT, 5);
   if (Number.isFinite(vee) && els.outV) els.outV.textContent = `${fmt(vee, 2)} m/s`;
   if (Number.isFinite(phi) && els.outBank) els.outBank.textContent = `${fmt(phi, 2)} deg`;
   if (Number.isFinite(rad) && els.outRad) els.outRad.textContent = rad > 0 ? `${fmt(rad, 2)} m` : 'level';
@@ -4200,38 +4858,38 @@ function applyExecResults(result) {
   if (Number.isFinite(the) && els.outThe) els.outThe.textContent = `${fmt(the, 2)} deg`;
   if (els.outMach) {
     const mach = Number(uiState.modelHeader?.mach);
-    els.outMach.textContent = Number.isFinite(mach) ? fmt(mach, 3) : '-';
+    els.outMach.textContent = Number.isFinite(mach) ? fmtSignedAligned(mach, 3) : '-';
   }
   if (result.WROT) {
-    if (els.outPb2v) els.outPb2v.textContent = fmt(result.WROT[0], 5);
-    if (els.outQc2v) els.outQc2v.textContent = fmt(result.WROT[1], 5);
-    if (els.outRb2v) els.outRb2v.textContent = fmt(result.WROT[2], 5);
+    if (els.outPb2v) els.outPb2v.textContent = fmtSignedAligned(result.WROT[0], 3);
+    if (els.outQc2v) els.outQc2v.textContent = fmtSignedAligned(result.WROT[1], 3);
+    if (els.outRb2v) els.outRb2v.textContent = fmtSignedAligned(result.WROT[2], 3);
   }
   if (result.CFTOT) {
-    if (els.outCXtot) els.outCXtot.textContent = fmt(result.CFTOT[0], 5);
-    if (els.outCYtot) els.outCYtot.textContent = fmt(result.CFTOT[1], 5);
-    if (els.outCZtot) els.outCZtot.textContent = fmt(result.CFTOT[2], 5);
+    if (els.outCXtot) els.outCXtot.textContent = fmtSignedAligned(result.CFTOT[0], 5);
+    if (els.outCYtot) els.outCYtot.textContent = fmtSignedAligned(result.CFTOT[1], 5);
+    if (els.outCZtot) els.outCZtot.textContent = fmtSignedAligned(result.CFTOT[2], 5);
   }
   if (result.CMTOT) {
-    if (els.outCltot) els.outCltot.textContent = fmt(result.CMTOT[0], 5);
-    if (els.outCmtot) els.outCmtot.textContent = fmt(result.CMTOT[1], 5);
-    if (els.outCntot) els.outCntot.textContent = fmt(result.CMTOT[2], 5);
+    if (els.outCltot) els.outCltot.textContent = fmtSignedAligned(result.CMTOT[0], 5);
+    if (els.outCmtot) els.outCmtot.textContent = fmtSignedAligned(result.CMTOT[1], 5);
+    if (els.outCntot) els.outCntot.textContent = fmtSignedAligned(result.CMTOT[2], 5);
   }
   if (Number.isFinite(result.CDVTOT)) {
-    if (els.outCDvis) els.outCDvis.textContent = fmt(result.CDVTOT, 5);
-    if (Number.isFinite(result.CDTOT) && els.outCDind) els.outCDind.textContent = fmt(result.CDTOT - result.CDVTOT, 5);
+    if (els.outCDvis) els.outCDvis.textContent = fmtSignedAligned(result.CDVTOT, 5);
+    if (Number.isFinite(result.CDTOT) && els.outCDind) els.outCDind.textContent = fmtSignedAligned(result.CDTOT - result.CDVTOT, 5);
   }
   if (els.outEff) {
     els.outEff.textContent = '-';
     if (Number.isFinite(result.SPANEF)) {
-      els.outEff.textContent = fmt(result.SPANEF, 4);
+      els.outEff.textContent = fmtSignedAligned(result.SPANEF, 4);
     } else if (Number.isFinite(result.CLTOT) && Number.isFinite(result.CDTOT) && Number.isFinite(result.CDVTOT)) {
       const sref = Number.isFinite(result.SREF) ? result.SREF : Number(uiState.modelHeader?.sref);
       const bref = Number.isFinite(result.BREF) ? result.BREF : Number(uiState.modelHeader?.bref);
       const cdi = result.CDTOT - result.CDVTOT;
       const ar = (Number.isFinite(sref) && Number.isFinite(bref) && sref > 0) ? ((bref * bref) / sref) : null;
       if (ar && cdi > 1e-8) {
-        els.outEff.textContent = fmt((result.CLTOT * result.CLTOT) / (Math.PI * ar * cdi), 4);
+        els.outEff.textContent = fmtSignedAligned((result.CLTOT * result.CLTOT) / (Math.PI * ar * cdi), 4);
       }
     }
   }
@@ -4247,7 +4905,7 @@ function applyExecResults(result) {
     if (model?.controlMap && model.controlMap.size) {
       for (const [name, idx] of model.controlMap.entries()) {
         const val = result.DELCON[idx] ?? 0.0;
-        deflections.push({ name, value: fmt(val, 2) });
+        deflections.push({ name, value: fmtSignedAligned(val, 2) });
       }
     }
     renderControlRows(deflections);
@@ -4255,6 +4913,7 @@ function applyExecResults(result) {
       els.outDef.textContent = deflections.map((d) => `${d.name} = ${d.value}`).join('\n');
     }
   }
+  scheduleOutputGridFontFit();
 
   renderStabilityGrid(result);
   schedule(() => {
@@ -4399,6 +5058,8 @@ window.addEventListener('resize', handleResize);
 async function bootApp() {
   initTopNav();
   initPanelCollapse();
+  renderRunCasesList();
+  updateRunCasesMeta();
   await loadDefaultAVL();
   try {
     const model = buildSolverModel(els.fileText.value || '');

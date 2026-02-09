@@ -361,7 +361,7 @@ textarea.code {
 .file-editor textarea.code {
   margin: 0;
   width: 100%;
-  min-height: 120px;
+  min-height: 240px;
   padding: 8px 10px;
   font-family: Consolas, "Courier New", monospace;
   font-size: var(--file-font-size);
@@ -413,7 +413,12 @@ textarea.code {
   padding: 8px 12px;
   border-radius: 10px;
   cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
   font-weight: 600;
+  line-height: 1.25;
+  appearance: none;
+  -webkit-appearance: none;
   transition: transform 120ms ease, border 120ms ease;
 }
 
@@ -424,12 +429,14 @@ textarea.code {
 .file-meta {
   color: var(--muted);
   font-size: 0.82rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .aircraft-actions {
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .aircraft-buttons {
@@ -437,12 +444,6 @@ textarea.code {
   gap: 10px;
   align-items: center;
   flex-shrink: 0;
-}
-
-.aircraft-actions .file-meta {
-  margin-left: auto;
-  text-align: right;
-  white-space: nowrap;
 }
 
 .file-summary {
@@ -464,7 +465,6 @@ textarea.code {
   font-size: 14px;
   font-weight: 700;
   font-family: Consolas, "Courier New", monospace;
-  text-transform: uppercase;
 }
 
 .file-aircraft-name:focus {
@@ -484,6 +484,34 @@ textarea.code {
   gap: 18px;
   white-space: nowrap;
   flex-wrap: wrap;
+}
+
+.file-ref-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: center;
+}
+
+.file-ref-row {
+  display: contents;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.file-ref-row .label-text {
+  justify-self: end;
+  text-align: right;
+}
+
+.file-ref-row > input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 14px;
 }
 
 .file-summary strong {
@@ -635,6 +663,24 @@ textarea.code {
   position: relative;
   height: clamp(240px, 44vh, 460px);
   touch-action: none;
+}
+
+.viewer-aircraft-name {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  max-width: calc(100% - 72px);
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: rgba(8, 10, 12, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--ink);
+  font: 600 12px/1.2 Consolas, "Courier New", monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 .viewer canvas {
@@ -901,6 +947,11 @@ textarea.code {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
+  --forces-font-size: clamp(11px, 3.9cqi, 15px);
+}
+
+.total-forces-grid .force-cell {
+  gap: 0;
 }
 
 .force-cell {
@@ -912,19 +963,26 @@ textarea.code {
   padding: 0;
   color: var(--muted);
   font-size: 14px;
+  font-size: var(--forces-font-size);
   line-height: 1.25;
+  white-space: nowrap;
 }
 
 .force-cell strong {
   color: var(--ink);
   font-size: 14px;
+  font-size: var(--forces-font-size);
   font-weight: 600;
   font-family: Consolas, "Courier New", monospace;
   text-align: left;
+  white-space: nowrap;
 }
 
 .force-control-name {
-  white-space: pre;
+  display: inline-block;
+  width: var(--control-name-width, auto);
+  text-align: right;
+  white-space: nowrap;
 }
 
 .force-kv-hidden {
@@ -946,33 +1004,41 @@ textarea.code {
 }
 
 .force-cell.control-row {
-  grid-column: 1;
+  grid-column: 1 / span 2;
+  overflow: visible;
+  z-index: 1;
 }
 
 .stability-grid {
   display: grid;
-  grid-template-columns: minmax(30px, 0.36fr) repeat(5, minmax(0, 1fr));
+  grid-template-columns: 0.25fr repeat(5, minmax(0, 1fr));
   gap: 4px 12px;
   color: var(--muted);
+  --deriv-font-size: clamp(9px, 3.2cqi, 14px);
   font-size: 14px;
+  font-size: var(--deriv-font-size);
   line-height: 1.25;
 }
 
 .body-deriv-grid {
   display: grid;
-  grid-template-columns: minmax(30px, 0.36fr) repeat(6, minmax(0, 1fr));
+  grid-template-columns: 0.25fr repeat(6, minmax(0, 1fr));
   gap: 4px 8px;
   color: var(--muted);
+  --deriv-font-size: clamp(8.5px, 2.9cqi, 14px);
   font-size: 14px;
+  font-size: var(--deriv-font-size);
   line-height: 1.25;
 }
 
 .surface-forces-grid {
   display: grid;
-  grid-template-columns: minmax(90px, 1.0fr) repeat(6, minmax(0, 1fr));
+  grid-template-columns: var(--surface-name-col, minmax(90px, 1.0fr)) repeat(6, minmax(0, 1fr));
   gap: 4px 10px;
   color: var(--muted);
+  --surface-font-size: clamp(8px, 2.8cqi, 14px);
   font-size: 14px;
+  font-size: var(--surface-font-size);
   line-height: 1.25;
 }
 
@@ -1003,7 +1069,7 @@ textarea.code {
 }
 
 .body-deriv-grid .stability-num {
-  min-width: 8ch;
+  min-width: 0;
 }
 
 .surface-name-cell {
@@ -1018,7 +1084,12 @@ textarea.code {
 }
 
 .surface-forces-grid .stability-num {
-  min-width: 7ch;
+  min-width: 0;
+}
+
+.surface-forces-grid .stability-cell strong {
+  font-size: 14px;
+  font-size: var(--surface-font-size, 14px);
 }
 
 .stability-cell {
@@ -1027,6 +1098,7 @@ textarea.code {
   gap: 6px;
   min-height: 0;
   padding: 0;
+  white-space: nowrap;
 }
 
 .stability-head {
@@ -1046,13 +1118,16 @@ textarea.code {
 .stability-cell strong {
   color: var(--ink);
   font-size: 14px;
+  font-size: var(--deriv-font-size, 14px);
   font-weight: 600;
   font-family: Consolas, "Courier New", monospace;
+  white-space: nowrap;
 }
 
 .stability-num {
   display: inline-block;
-  min-width: 10ch;
+  min-width: 0;
+  width: 100%;
   text-align: right;
   white-space: pre;
   font-variant-numeric: tabular-nums;
@@ -1062,13 +1137,21 @@ textarea.code {
   margin-top: 8px;
   color: var(--ink);
   font-size: 14px;
+  font-size: var(--deriv-font-size, 14px);
   font-weight: 600;
   font-family: Consolas, "Courier New", monospace;
+  white-space: nowrap;
 }
 
 .output .panel-body {
   max-height: 55vh;
   overflow: auto;
+  container-type: inline-size;
+}
+
+.total-forces-panel > .panel-body {
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .kv {
@@ -1194,6 +1277,93 @@ textarea.code {
   color: #fecaca;
 }
 
+.run-cases-panel {
+  gap: 10px;
+}
+
+.run-cases-actions {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 10px;
+}
+
+.run-cases-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.run-case-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(8, 10, 12, 0.35);
+  cursor: pointer;
+}
+
+.run-case-item.active {
+  border-color: rgba(127, 179, 255, 0.8);
+  box-shadow: 0 0 0 1px rgba(127, 179, 255, 0.35);
+}
+
+.run-case-title {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.run-case-title:focus {
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.run-case-color {
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.run-case-delete {
+  min-width: 32px;
+  padding: 4px 6px;
+  line-height: 1;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.run-case-delete-icon {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.run-case-edit-actions {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+}
+
 @keyframes rise {
   from { transform: translateY(12px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
@@ -1211,25 +1381,37 @@ textarea.code {
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 14px 16px 8px;
+    padding: 14px 16px 0;
   }
 
   .title-text {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+    flex-wrap: nowrap;
     gap: 4px;
+    min-width: 0;
   }
 
   .title-sub {
     margin-top: 0;
-    max-width: 220px;
+    max-width: none;
     padding: 6px 8px;
     border-radius: 10px;
     background: rgba(8, 10, 12, 0.55);
     font-size: 11px;
     line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .page-indicator {
     display: flex;
+    top: 0;
+    margin-top: 0;
+    padding: 0 16px 12px 16px;
   }
 
   .app {
