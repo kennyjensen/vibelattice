@@ -12,6 +12,17 @@ const els = {
   fileInput: document.getElementById('fileInput'),
   saveBtn: document.getElementById('saveBtn'),
   fileMeta: document.getElementById('fileMeta'),
+  fileSummary: document.getElementById('fileSummary'),
+  fileAircraftName: document.getElementById('fileAircraftName'),
+  fileNSurf: document.getElementById('fileNSurf'),
+  fileNStrip: document.getElementById('fileNStrip'),
+  fileNVort: document.getElementById('fileNVort'),
+  fileSref: document.getElementById('fileSref'),
+  fileCref: document.getElementById('fileCref'),
+  fileBref: document.getElementById('fileBref'),
+  fileXref: document.getElementById('fileXref'),
+  fileYref: document.getElementById('fileYref'),
+  fileZref: document.getElementById('fileZref'),
   fileEditor: document.getElementById('fileEditor'),
   fileText: document.getElementById('fileText'),
   fileHighlight: document.getElementById('fileHighlight'),
@@ -44,10 +55,22 @@ const els = {
   trefftzOverlay: document.getElementById('trefftzOverlay'),
   outAlpha: document.getElementById('outAlpha'),
   outBeta: document.getElementById('outBeta'),
+  outMach: document.getElementById('outMach'),
+  outPb2v: document.getElementById('outPb2v'),
+  outQc2v: document.getElementById('outQc2v'),
+  outRb2v: document.getElementById('outRb2v'),
   outBank: document.getElementById('outBank'),
+  outCXtot: document.getElementById('outCXtot'),
+  outCYtot: document.getElementById('outCYtot'),
+  outCZtot: document.getElementById('outCZtot'),
+  outCltot: document.getElementById('outCltot'),
+  outCmtot: document.getElementById('outCmtot'),
+  outCntot: document.getElementById('outCntot'),
   outCL: document.getElementById('outCL'),
   outCD: document.getElementById('outCD'),
-  outCY: document.getElementById('outCY'),
+  outCDvis: document.getElementById('outCDvis'),
+  outCDind: document.getElementById('outCDind'),
+  outEff: document.getElementById('outEff'),
   outV: document.getElementById('outV'),
   outRad: document.getElementById('outRad'),
   outFac: document.getElementById('outFac'),
@@ -55,9 +78,10 @@ const els = {
   outCM: document.getElementById('outCM'),
   outRates: document.getElementById('outRates'),
   outDef: document.getElementById('outDef'),
+  outControlRows: document.getElementById('outControlRows'),
   outStability: document.getElementById('outStability'),
+  outStabilityNeutral: document.getElementById('outStabilityNeutral'),
   outBodyDeriv: document.getElementById('outBodyDeriv'),
-  outForcesTotal: document.getElementById('outForcesTotal'),
   outForcesSurface: document.getElementById('outForcesSurface'),
   outForcesBody: document.getElementById('outForcesBody'),
   outHinge: document.getElementById('outHinge'),
@@ -105,11 +129,18 @@ let trefftzPlot = null;
 let execWorker = null;
 let execTimeoutId = null;
 let trimInProgress = false;
+const TREFFTZ_BUSY_SHOW_DELAY_MS = 120;
+const TREFFTZ_BUSY_MIN_VISIBLE_MS = 220;
+let trefftzBusyVisible = false;
+let trefftzBusyShownAt = 0;
+let trefftzBusyShowTimer = null;
+let trefftzBusyHideTimer = null;
 let trimRequestId = 0;
 let execRequestId = 0;
 let autoTrimTimer = null;
 let lastTrimState = null;
 let loadingGroup = null;
+let fileSummarySyncing = false;
 const AVL_KEYWORDS = new Set([
   'SURFACE', 'SECTION', 'BODY', 'PATCH', 'COMPONENT', 'INDEX', 'YDUPLICATE', 'NOWAKE',
   'NOALBE', 'NOLOAD', 'NOSTALL', 'SCALE', 'TRANSLATE', 'ANGLE', 'NACA', 'AIRFOIL',
@@ -179,6 +210,16 @@ function highlightAvlText(text) {
   return rendered.join('\n');
 }
 
+function getCssVarColor(name, fallback) {
+  try {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+
 function renderFileHighlight() {
   if (!els.fileHighlight || !els.fileText) return;
   els.fileHighlight.innerHTML = highlightAvlText(els.fileText.value);
@@ -226,11 +267,123 @@ function setFileTextValue(text) {
   syncFileEditorScroll();
 }
 
+function isAvlCommentLine(line) {
+  const t = String(line || '').trim();
+  return !t || t.startsWith('#') || t.startsWith('!') || t.startsWith('%');
+}
+
+function replaceAvlTitleLine(text, title) {
+  const lineBreak = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = String(text || '').split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    if (isAvlCommentLine(lines[i])) continue;
+    lines[i] = title;
+    return lines.join(lineBreak);
+  }
+  return title;
+}
+
+function computeModelCounts(model) {
+  if (!model?.surfaces?.length) return { surfaces: 0, strips: 0, vortices: 0 };
+  let strips = 0;
+  let vortices = 0;
+  let surfaces = 0;
+  model.surfaces.forEach((surf) => {
+    const nvc = Number(surf.nChord || 1);
+    let nvs = Number(surf.nSpan || 0);
+    if (nvs === 0) {
+      nvs = surf.sections.slice(0, -1).reduce((sum, sec) => sum + Number(sec.nSpan ?? 0), 0);
+    }
+    const copies = typeof surf.yduplicate === 'number' ? 2 : 1;
+    strips += nvs * copies;
+    vortices += nvs * nvc * copies;
+    surfaces += copies;
+  });
+  return { surfaces, strips, vortices };
+}
+
+function renderFileHeaderSummary(header, model = null) {
+  if (!els.fileSummary) return;
+  const hasHeader = Boolean(header && typeof header === 'object');
+  els.fileSummary.classList.toggle('hidden', !hasHeader);
+  if (!hasHeader) return;
+
+  const show = (el, value, digits = 4) => {
+    if (!el) return;
+    el.textContent = Number.isFinite(Number(value)) ? fmt(Number(value), digits) : '-';
+  };
+
+  fileSummarySyncing = true;
+  if (els.fileAircraftName) {
+    els.fileAircraftName.value = String(header.title || '').trim();
+  }
+  fileSummarySyncing = false;
+
+  const counts = computeModelCounts(model);
+  if (els.fileNSurf) els.fileNSurf.textContent = String(counts.surfaces);
+  if (els.fileNStrip) els.fileNStrip.textContent = String(counts.strips);
+  if (els.fileNVort) els.fileNVort.textContent = String(counts.vortices);
+  show(els.fileSref, header.sref, 2);
+  show(els.fileCref, header.cref, 2);
+  show(els.fileBref, header.bref, 2);
+  show(els.fileXref, header.xref, 2);
+  show(els.fileYref, header.yref, 2);
+  show(els.fileZref, header.zref, 2);
+}
+
+function applyAircraftNameRename() {
+  if (!els.fileAircraftName || !els.fileText) return;
+  if (fileSummarySyncing) return;
+  const nextName = String(els.fileAircraftName.value || '').trim();
+  if (!nextName) {
+    renderFileHeaderSummary(uiState.modelHeader);
+    return;
+  }
+  const updated = replaceAvlTitleLine(els.fileText.value, nextName);
+  if (!updated || updated === els.fileText.value) return;
+  uiState.text = updated;
+  setFileTextValue(updated);
+  loadGeometryFromText(uiState.text, false);
+  resetTrimSeed();
+  applyTrim({ useSeed: false });
+}
+
 function updateTrefftzBusy() {
   const stage = els.trefftz?.parentElement;
   if (!stage) return;
   const busy = Boolean(trimInProgress || execInProgress);
-  stage.classList.toggle('trefftz-busy', busy);
+  const setBusyVisible = (visible) => {
+    if (trefftzBusyVisible === visible) return;
+    trefftzBusyVisible = visible;
+    if (visible) trefftzBusyShownAt = Date.now();
+    stage.classList.toggle('trefftz-busy', visible);
+  };
+
+  if (busy) {
+    if (trefftzBusyHideTimer) {
+      clearTimeout(trefftzBusyHideTimer);
+      trefftzBusyHideTimer = null;
+    }
+    if (trefftzBusyVisible || trefftzBusyShowTimer) return;
+    trefftzBusyShowTimer = setTimeout(() => {
+      trefftzBusyShowTimer = null;
+      if (trimInProgress || execInProgress) setBusyVisible(true);
+    }, TREFFTZ_BUSY_SHOW_DELAY_MS);
+    return;
+  }
+
+  if (trefftzBusyShowTimer) {
+    clearTimeout(trefftzBusyShowTimer);
+    trefftzBusyShowTimer = null;
+  }
+  if (!trefftzBusyVisible) return;
+  if (trefftzBusyHideTimer) clearTimeout(trefftzBusyHideTimer);
+  const elapsed = Date.now() - trefftzBusyShownAt;
+  const remaining = Math.max(0, TREFFTZ_BUSY_MIN_VISIBLE_MS - elapsed);
+  trefftzBusyHideTimer = setTimeout(() => {
+    trefftzBusyHideTimer = null;
+    if (!trimInProgress && !execInProgress) setBusyVisible(false);
+  }, remaining);
 }
 
 function initTopNav() {
@@ -283,6 +436,38 @@ function initTopNav() {
       }
     }
     setActiveIndex(0);
+  });
+}
+
+function initPanelCollapse() {
+  const panels = document.querySelectorAll('.panel');
+  panels.forEach((panel, idx) => {
+    const title = panel.querySelector('.panel-title');
+    if (!title || title.querySelector('.panel-toggle')) return;
+    const rawText = title.textContent?.trim() || `Panel ${idx + 1}`;
+    title.textContent = '';
+    const textEl = document.createElement('span');
+    textEl.className = 'panel-title-text';
+    textEl.textContent = rawText;
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'panel-toggle';
+
+    const applyState = (collapsed) => {
+      panel.classList.toggle('collapsed', collapsed);
+      toggle.textContent = collapsed ? '▾' : '▴';
+      toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      toggle.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} ${rawText}`);
+      toggle.title = collapsed ? 'Expand panel' : 'Collapse panel';
+    };
+
+    toggle.addEventListener('click', () => {
+      applyState(!panel.classList.contains('collapsed'));
+    });
+
+    title.appendChild(textEl);
+    title.appendChild(toggle);
+    applyState(false);
   });
 }
 
@@ -441,6 +626,26 @@ function fmt(value, digits = 3) {
   return Number(value).toFixed(digits);
 }
 
+function fmtSignedFixed(value, digits = 6) {
+  if (!Number.isFinite(value)) return ' -';
+  const abs = Math.abs(Number(value)).toFixed(digits);
+  return `${value < 0 ? '-' : ' '}${abs}`;
+}
+
+function fmtSignedNoPad(value, digits = 6) {
+  if (!Number.isFinite(value)) return '-';
+  const abs = Math.abs(Number(value)).toFixed(digits);
+  return `${value < 0 ? '-' : ''}${abs}`;
+}
+
+function formatSurfaceDisplayName(rawName, index = 1) {
+  const name = String(rawName || `Surf ${index}`);
+  if (name.endsWith('-ydup')) return `${name.slice(0, -5)} (YDUP)`;
+  if (name.endsWith('-ysym')) return `${name.slice(0, -5)} (YSYM)`;
+  if (name.endsWith('-zsym')) return `${name.slice(0, -5)} (ZSYM)`;
+  return name;
+}
+
 function getHeaderRefs() {
   const header = uiState.modelHeader || {};
   return {
@@ -449,6 +654,227 @@ function getHeaderRefs() {
     bref: Number(header.bref ?? 1.0),
     unitl: Number(header.unitl ?? 1.0),
   };
+}
+
+function renderControlRows(entries) {
+  if (!els.outControlRows) return;
+  if (!entries?.length) {
+    els.outControlRows.innerHTML = '';
+    return;
+  }
+  const maxName = entries.reduce((m, e) => Math.max(m, String(e?.name ?? '').length), 0);
+  const html = entries.map((entry, i) => {
+    const rawName = String(entry?.name ?? 'control');
+    const paddedName = rawName.padStart(maxName, ' ');
+    const name = escapeHtml(paddedName);
+    const value = escapeHtml(String(entry?.value ?? '-'));
+    return `<div class="force-cell control-row" style="grid-row:${4 + i};"><span class="force-control-name">${name}</span> = <strong>${value}</strong></div>`;
+  }).join('');
+  els.outControlRows.innerHTML = html;
+}
+
+function renderStabilityGrid(result) {
+  if (!els.outStability) return;
+  const clU = result?.CLTOT_U;
+  const cyU = result?.CYTOT_U;
+  const cmU = result?.CMTOT_U;
+  const clD = result?.CLTOT_D;
+  const cyD = result?.CYTOT_D;
+  const cmD = result?.CMTOT_D;
+  const vinfA = result?.VINF_A;
+  const vinfB = result?.VINF_B;
+  if (!clU || !cyU || !cmU || !vinfA || !vinfB) {
+    els.outStability.textContent = '-';
+    if (els.outStabilityNeutral) els.outStabilityNeutral.textContent = 'Xnp = -';
+    return;
+  }
+
+  const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const dA = (arr, add = 0) => dot3(arr, vinfA) + add;
+  const dB = (arr) => dot3(arr, vinfB);
+  const clxU = cmU[0] || [];
+  const cmyU = cmU[1] || [];
+  const cnzU = cmU[2] || [];
+
+  const rows = [];
+  rows.push(['', 'CL', 'CY', 'Cl', 'Cm', 'Cn']);
+  rows.push(['α', dA(clU, result?.CLTOT_A ?? 0), dA(cyU, 0), dA(clxU, 0), dA(cmyU, 0), dA(cnzU, 0)]);
+  rows.push(['β', dB(clU), dB(cyU), dB(clxU), dB(cmyU), dB(cnzU)]);
+  rows.push(['p', clU[3] ?? 0, cyU[3] ?? 0, clxU[3] ?? 0, cmyU[3] ?? 0, cnzU[3] ?? 0]);
+  rows.push(['q', clU[4] ?? 0, cyU[4] ?? 0, clxU[4] ?? 0, cmyU[4] ?? 0, cnzU[4] ?? 0]);
+  rows.push(['r', clU[5] ?? 0, cyU[5] ?? 0, clxU[5] ?? 0, cmyU[5] ?? 0, cnzU[5] ?? 0]);
+
+  const nControl = uiState.modelCache?.controlMap?.size
+    || Math.max((clD?.length ?? 1) - 1, (cyD?.length ?? 1) - 1, ((cmD?.[0]?.length ?? 1) - 1));
+  const momentX = cmD?.[0] || [];
+  const momentY = cmD?.[1] || [];
+  const momentZ = cmD?.[2] || [];
+  for (let i = 1; i <= nControl; i += 1) {
+    rows.push([
+      `d${i}`,
+      clD?.[i] ?? 0,
+      cyD?.[i] ?? 0,
+      momentX[i] ?? 0,
+      momentY[i] ?? 0,
+      momentZ[i] ?? 0,
+    ]);
+  }
+
+  const derivSuffix = (rowHead) => {
+    if (rowHead === 'alpha' || rowHead === 'α') return 'a';
+    if (rowHead === 'beta' || rowHead === 'β') return 'b';
+    return rowHead;
+  };
+
+  const html = rows.map((row, rIdx) => row.map((cell, cIdx) => {
+    if (rIdx === 0 || cIdx === 0) {
+      const cls = (rIdx === 0 && cIdx > 0) ? 'stability-cell stability-head stability-colhead' : 'stability-cell stability-head';
+      return `<div class="${cls}">${escapeHtml(String(cell))}</div>`;
+    }
+    const rowHead = String(rows[rIdx][0]);
+    const colHead = String(rows[0][cIdx]);
+    const deriv = `${colHead}${derivSuffix(rowHead)}`;
+    return `<div class="stability-cell stability-val" title="${escapeHtml(deriv)}"><strong class="stability-num">${fmtSignedFixed(Number(cell), 6)}</strong></div>`;
+  }).join('')).join('');
+  els.outStability.innerHTML = html;
+
+  if (els.outStabilityNeutral) {
+    const cla = dA(clU, result?.CLTOT_A ?? 0);
+    const cma = dA(cmyU, 0);
+    const xrefRaw = Number.isFinite(result?.XREF) ? Number(result.XREF) : Number(uiState.modelHeader?.xref);
+    const crefRaw = Number.isFinite(result?.CREF) ? Number(result.CREF) : Number(uiState.modelHeader?.cref);
+    let xnp = Number.NaN;
+    if (Number.isFinite(cla) && Math.abs(cla) > 1e-9 && Number.isFinite(cma)
+        && Number.isFinite(xrefRaw) && Number.isFinite(crefRaw) && Math.abs(crefRaw) > 1e-9) {
+      xnp = (xrefRaw / crefRaw) - (cma / cla);
+    }
+    els.outStabilityNeutral.textContent = `Xnp = ${Number.isFinite(xnp) ? fmtSignedNoPad(xnp, 6) : '-'}`;
+  }
+}
+
+function renderBodyDerivGrid(result) {
+  if (!els.outBodyDeriv) return;
+  const cfU = result?.CFTOT_U;
+  const cmU = result?.CMTOT_U;
+  const cfD = result?.CFTOT_D;
+  const cmD = result?.CMTOT_D;
+  const vinfA = result?.VINF_A;
+  const vinfB = result?.VINF_B;
+  if (!cfU || !cmU || !vinfA || !vinfB) {
+    els.outBodyDeriv.textContent = '-';
+    return;
+  }
+
+  const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const dA = (arr) => dot3(arr, vinfA);
+  const dB = (arr) => dot3(arr, vinfB);
+
+  const cxU = cfU[0] || [];
+  const cyU = cfU[1] || [];
+  const czU = cfU[2] || [];
+  const clU = cmU[0] || [];
+  const cmY = cmU[1] || [];
+  const cnU = cmU[2] || [];
+
+  const rows = [];
+  rows.push(['', 'CX', 'CY', 'CZ', 'Cl', 'Cm', 'Cn']);
+  rows.push(['α', dA(cxU), dA(cyU), dA(czU), dA(clU), dA(cmY), dA(cnU)]);
+  rows.push(['β', dB(cxU), dB(cyU), dB(czU), dB(clU), dB(cmY), dB(cnU)]);
+  rows.push(['p', cxU[3] ?? 0, cyU[3] ?? 0, czU[3] ?? 0, clU[3] ?? 0, cmY[3] ?? 0, cnU[3] ?? 0]);
+  rows.push(['q', cxU[4] ?? 0, cyU[4] ?? 0, czU[4] ?? 0, clU[4] ?? 0, cmY[4] ?? 0, cnU[4] ?? 0]);
+  rows.push(['r', cxU[5] ?? 0, cyU[5] ?? 0, czU[5] ?? 0, clU[5] ?? 0, cmY[5] ?? 0, cnU[5] ?? 0]);
+
+  const nControl = uiState.modelCache?.controlMap?.size
+    || Math.max((cfD?.[0]?.length ?? 1) - 1, (cmD?.[0]?.length ?? 1) - 1);
+  const cxD = cfD?.[0] || [];
+  const cyD = cfD?.[1] || [];
+  const czD = cfD?.[2] || [];
+  const clD = cmD?.[0] || [];
+  const cmD1 = cmD?.[1] || [];
+  const cnD = cmD?.[2] || [];
+  for (let i = 1; i <= nControl; i += 1) {
+    rows.push([
+      `d${i}`,
+      cxD[i] ?? 0,
+      cyD[i] ?? 0,
+      czD[i] ?? 0,
+      clD[i] ?? 0,
+      cmD1[i] ?? 0,
+      cnD[i] ?? 0,
+    ]);
+  }
+
+  const derivSuffix = (rowHead) => {
+    if (rowHead === 'α') return 'a';
+    if (rowHead === 'β') return 'b';
+    return rowHead;
+  };
+
+  const html = rows.map((row, rIdx) => row.map((cell, cIdx) => {
+    if (rIdx === 0 || cIdx === 0) {
+      const cls = (rIdx === 0 && cIdx > 0) ? 'stability-cell stability-head stability-colhead' : 'stability-cell stability-head';
+      return `<div class="${cls}">${escapeHtml(String(cell))}</div>`;
+    }
+    const rowHead = String(rows[rIdx][0]);
+    const colHead = String(rows[0][cIdx]);
+    const deriv = `${colHead}${derivSuffix(rowHead)}`;
+    return `<div class="stability-cell stability-val" title="${escapeHtml(deriv)}"><strong class="stability-num">${fmtSignedFixed(Number(cell), 6)}</strong></div>`;
+  }).join('')).join('');
+  els.outBodyDeriv.innerHTML = html;
+}
+
+function renderSurfaceForcesGrid(result) {
+  if (!els.outForcesSurface) return;
+  const clSurf = result?.CLSURF;
+  const cdSurf = result?.CDSURF;
+  const cySurf = result?.CYSURF;
+  if (!clSurf || !cdSurf || !cySurf || clSurf.length <= 1) {
+    els.outForcesSurface.textContent = '-';
+    return;
+  }
+  const model = uiState.modelCache;
+  const execNames = Array.isArray(uiState.execSurfaceNames) ? uiState.execSurfaceNames : null;
+  const rows = [['', 'CL', 'CD', 'CY', 'Cl', 'Cm', 'Cn']];
+  for (let i = 1; i < clSurf.length; i += 1) {
+    const raw = execNames?.[i - 1] ?? model?.surfaces?.[i - 1]?.name ?? `Surf ${i}`;
+    const name = formatSurfaceDisplayName(raw, i);
+    const cm = result?.CMSURF?.[i] || [0, 0, 0];
+    rows.push([
+      name,
+      clSurf[i] ?? 0,
+      cdSurf[i] ?? 0,
+      cySurf[i] ?? 0,
+      cm[0] ?? 0,
+      cm[1] ?? 0,
+      cm[2] ?? 0,
+    ]);
+  }
+
+  const html = rows.map((row, rIdx) => row.map((cell, cIdx) => {
+    if (rIdx === 0 || cIdx === 0) {
+      const cls = (rIdx === 0 && cIdx > 0) ? 'stability-cell stability-head stability-colhead' : 'stability-cell stability-head';
+      if (cIdx === 0 && rIdx > 0) {
+        const text = escapeHtml(String(cell));
+        return `<div class="${cls} surface-name-cell" title="${text}"><span class="surface-name-text">${text}</span></div>`;
+      }
+      return `<div class="${cls}">${escapeHtml(String(cell))}</div>`;
+    }
+    return `<div class="stability-cell stability-val"><strong class="stability-num">${fmtSignedFixed(Number(cell), 4)}</strong></div>`;
+  }).join('')).join('');
+  els.outForcesSurface.innerHTML = html;
+}
+
+function buildExecSurfaceNames(model) {
+  if (!model?.surfaces?.length) return [];
+  const names = [];
+  model.surfaces.forEach((surf, idx) => {
+    const base = String(surf?.name || `Surf ${idx + 1}`);
+    names.push(base);
+    if (typeof surf?.yduplicate === 'number') {
+      names.push(`${base} (YDUP)`);
+    }
+  });
+  return names;
 }
 
 function setNumericInput(el, value, digits = 3) {
@@ -537,6 +963,86 @@ function readConstraintRows() {
     });
   });
   return rows;
+}
+
+function focusConstraintCell(rowIndex, column, selectValue = false) {
+  if (!Array.isArray(els.constraintRows) || rowIndex < 0 || rowIndex >= els.constraintRows.length) return;
+  const row = els.constraintRows[rowIndex];
+  if (!row) return;
+  const target = column === 'value'
+    ? row.querySelector('.constraint-value')
+    : row.querySelector('.constraint-select');
+  if (!target) return;
+  target.focus();
+  if (selectValue && target instanceof HTMLInputElement && typeof target.select === 'function') {
+    target.select();
+  }
+}
+
+function focusConstraintValueByVariable(variable) {
+  if (!Array.isArray(els.constraintRows) || !variable) return false;
+  const idx = els.constraintRows.findIndex((row) => row?.dataset?.var === variable);
+  if (idx < 0) return false;
+  focusConstraintCell(idx, 'value', true);
+  return true;
+}
+
+function handleConstraintShortcutKey(evt) {
+  if (evt.defaultPrevented || evt.ctrlKey || evt.metaKey || evt.altKey) return;
+  if (!evt.key || evt.key.length !== 1) return;
+
+  const active = document.activeElement;
+  const inConstraintPanel = Boolean(active?.closest?.('#constraintTable'));
+  if (!inConstraintPanel) {
+    if (active instanceof HTMLTextAreaElement) return;
+    if (active instanceof HTMLInputElement && active.type !== 'number') return;
+    if (active instanceof HTMLSelectElement) return;
+  }
+
+  const key = evt.key.toLowerCase();
+  const byShortcut = {
+    a: 'alpha',
+    b: 'beta',
+    r: 'p',
+    p: 'q',
+    y: 'r',
+  };
+  const variable = byShortcut[key];
+  if (!variable) return;
+  if (!focusConstraintValueByVariable(variable)) return;
+  evt.preventDefault();
+}
+
+function handleConstraintSelectKeydown(evt) {
+  if (!(evt.currentTarget instanceof HTMLElement)) return;
+  const rowEl = evt.currentTarget.closest('.constraint-row');
+  if (!rowEl) return;
+  const rowIndex = els.constraintRows.indexOf(rowEl);
+  if (rowIndex < 0) return;
+
+  if (evt.key === 'ArrowUp' || evt.key === 'ArrowDown') {
+    evt.preventDefault();
+    const delta = evt.key === 'ArrowUp' ? -1 : 1;
+    const nextIndex = Math.max(0, Math.min(els.constraintRows.length - 1, rowIndex + delta));
+    focusConstraintCell(nextIndex, 'constraint');
+    return;
+  }
+
+  if (evt.key === 'ArrowRight') {
+    evt.preventDefault();
+    focusConstraintCell(rowIndex, 'value', true);
+  }
+}
+
+function handleConstraintValueKeydown(evt) {
+  if (!(evt.currentTarget instanceof HTMLElement)) return;
+  if (evt.key !== 'ArrowLeft') return;
+  const rowEl = evt.currentTarget.closest('.constraint-row');
+  if (!rowEl) return;
+  const rowIndex = els.constraintRows.indexOf(rowEl);
+  if (rowIndex < 0) return;
+  evt.preventDefault();
+  focusConstraintCell(rowIndex, 'constraint');
 }
 
 function updateConstraintDuplicates() {
@@ -676,6 +1182,7 @@ function rebuildConstraintUI(model) {
         setNumericInput(input, getActiveCLValue(), 3);
       }
     });
+    select.addEventListener('keydown', handleConstraintSelectKeydown);
     cellConstraint.appendChild(select);
 
     const cellValue = document.createElement('div');
@@ -683,8 +1190,9 @@ function rebuildConstraintUI(model) {
     const input = document.createElement('input');
     input.className = 'constraint-value';
     input.type = 'number';
-    input.step = '0.01';
+    input.step = '0.1';
     input.value = row.value;
+    input.addEventListener('keydown', handleConstraintValueKeydown);
     cellValue.appendChild(input);
 
     rowEl.appendChild(cellVar);
@@ -718,6 +1226,7 @@ window.addEventListener('error', (evt) => {
 window.addEventListener('unhandledrejection', (evt) => {
   logDebug(`Promise rejection: ${evt.reason?.message ?? evt.reason}`);
 });
+window.addEventListener('keydown', handleConstraintShortcutKey);
 
 async function ensureThree() {
   if (threeReady) return true;
@@ -992,6 +1501,12 @@ els.fileText.addEventListener('input', () => {
 });
 els.fileText.addEventListener('scroll', syncFileEditorScroll);
 window.addEventListener('resize', fitFileEditorFontSize);
+els.fileAircraftName?.addEventListener('change', applyAircraftNameRename);
+els.fileAircraftName?.addEventListener('keydown', (evt) => {
+  if (evt.key !== 'Enter') return;
+  evt.preventDefault();
+  applyAircraftNameRename();
+});
 
 function makeTrimState(controlMap = null) {
   const state = {
@@ -1153,16 +1668,24 @@ function applyTrimResults(state) {
   const fac = state.PARVAL[idx2(IPFAC, IR, state.IPTOT)];
   const cl = state.PARVAL[idx2(IPCL, IR, state.IPTOT)];
 
-  els.outAlpha.textContent = `${fmt(findVar('alpha'), 2)} deg`;
-  els.outBeta.textContent = `${fmt(findVar('beta'), 2)} deg`;
-  els.outBank.textContent = `${fmt(phi, 2)} deg`;
-  els.outCL.textContent = fmt(cl, 3);
-  els.outV.textContent = `${fmt(vee, 2)} m/s`;
-  els.outRad.textContent = rad > 0 ? `${fmt(rad, 2)} m` : 'level';
-  els.outFac.textContent = fmt(fac, 3);
-  els.outThe.textContent = `${fmt(the, 2)} deg`;
-  els.outRates.textContent = `${fmt(findVar('p'), 2)}, ${fmt(findVar('q'), 2)}, ${fmt(findVar('r'), 2)}`;
-  els.outDef.textContent = '-';
+  if (els.outAlpha) els.outAlpha.textContent = `${fmt(findVar('alpha'), 2)} deg`;
+  if (els.outBeta) els.outBeta.textContent = `${fmt(findVar('beta'), 2)} deg`;
+  if (els.outBank) els.outBank.textContent = `${fmt(phi, 2)} deg`;
+  if (els.outCL) els.outCL.textContent = fmt(cl, 5);
+  if (els.outV) els.outV.textContent = `${fmt(vee, 2)} m/s`;
+  if (els.outRad) els.outRad.textContent = rad > 0 ? `${fmt(rad, 2)} m` : 'level';
+  if (els.outFac) els.outFac.textContent = fmt(fac, 3);
+  if (els.outThe) els.outThe.textContent = `${fmt(the, 2)} deg`;
+  if (els.outPb2v) els.outPb2v.textContent = fmt(findVar('p'), 5);
+  if (els.outQc2v) els.outQc2v.textContent = fmt(findVar('q'), 5);
+  if (els.outRb2v) els.outRb2v.textContent = fmt(findVar('r'), 5);
+  if (els.outRates) els.outRates.textContent = `${fmt(findVar('p'), 2)}, ${fmt(findVar('q'), 2)}, ${fmt(findVar('r'), 2)}`;
+  if (els.outDef) els.outDef.textContent = '-';
+  renderControlRows([]);
+  if (els.outMach) {
+    const mach = Number(uiState.modelHeader?.mach);
+    els.outMach.textContent = Number.isFinite(mach) ? fmt(mach, 3) : '-';
+  }
 
   try {
     updateTrefftz(cl);
@@ -1269,7 +1792,8 @@ function updateTrefftz(cl) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  ctx.fillStyle = '#0b0f17';
+  const panelBg = getCssVarColor('--panel', '#0f1115');
+  ctx.fillStyle = panelBg;
   ctx.fillRect(0, 0, width, height);
 
   let legend = canvas.parentElement?.querySelector?.('.trefftz-legend');
@@ -1576,7 +2100,7 @@ function updateTrefftz(cl) {
     }
 
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = '#0b0f17';
+    ctx.fillStyle = panelBg;
     ctx.fillRect(0, 0, width, height);
 
     let gridLines = panel?.querySelector?.('.trefftz-grid-lines');
@@ -1958,6 +2482,68 @@ function parseAirfoilText(text) {
   return parseAirfoilFileDetails(text).coords;
 }
 
+function normalizeAirfoilCoords(coords) {
+  if (!Array.isArray(coords) || !coords.length) return [];
+  const filtered = coords
+    .map((pair) => [Number(pair?.[0]), Number(pair?.[1])])
+    .filter(([x, z]) => Number.isFinite(x) && Number.isFinite(z));
+  if (!filtered.length) return [];
+
+  let minX = filtered[0][0];
+  let maxX = filtered[0][0];
+  for (const [x] of filtered) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+  }
+  const spanX = Math.abs(maxX - minX);
+  const leTol = Math.max(1e-8, spanX * 1e-5);
+  const teTol = Math.max(1e-8, spanX * 1e-5);
+
+  let leXSum = 0;
+  let leZSum = 0;
+  let leCount = 0;
+  let teXSum = 0;
+  let teZSum = 0;
+  let teCount = 0;
+  for (const [x, z] of filtered) {
+    if (Math.abs(x - minX) <= leTol) {
+      leXSum += x;
+      leZSum += z;
+      leCount += 1;
+    }
+    if (Math.abs(x - maxX) <= teTol) {
+      teXSum += x;
+      teZSum += z;
+      teCount += 1;
+    }
+  }
+
+  const leX = leCount ? (leXSum / leCount) : minX;
+  const leZ = leCount ? (leZSum / leCount) : 0;
+  const teX = teCount ? (teXSum / teCount) : maxX;
+  const teZ = teCount ? (teZSum / teCount) : 0;
+
+  let dx = teX - leX;
+  let dz = teZ - leZ;
+  let chord = Math.hypot(dx, dz);
+  if (chord < 1e-9) {
+    dx = 1;
+    dz = 0;
+    chord = 1;
+  }
+
+  // Rotate so the LE->TE chord lies on +x, then scale by chord.
+  const cosT = dx / chord;
+  const sinT = dz / chord;
+  return filtered.map(([x, z]) => {
+    const rx = x - leX;
+    const rz = z - leZ;
+    const xx = (rx * cosT + rz * sinT) / chord;
+    const zz = (-rx * sinT + rz * cosT) / chord;
+    return [xx, zz];
+  });
+}
+
 function parseAirfoilFileDetails(text) {
   const lines = text.split(/\r?\n/);
   const coords = [];
@@ -1977,7 +2563,7 @@ function parseAirfoilFileDetails(text) {
       displayName = trimmed;
     }
   }
-  return { coords, displayName };
+  return { coords: normalizeAirfoilCoords(coords), displayName };
 }
 
 function normalizeAirfoilPath(path) {
@@ -2251,6 +2837,15 @@ function buildSolverModel(text) {
 function buildSurfaceMesh(surface, color) {
   const group = new THREE.Group();
   if (surface.sections.length < 2) return group;
+  const controlDeflections = new Map();
+  const delcon = uiState.lastExecResult?.DELCON;
+  const controlMap = uiState.modelCache?.controlMap;
+  if (delcon && controlMap?.size) {
+    for (const [name, idx] of controlMap.entries()) {
+      const val = Number(delcon[idx]);
+      controlDeflections.set(name, Number.isFinite(val) ? val : 0);
+    }
+  }
 
   const verts = [];
   const controlVerts = new Map();
@@ -2273,12 +2868,47 @@ function buildSurfaceMesh(surface, color) {
   };
 
   const rotateSectionPoint = (section, point) => {
-    if (!section.ainc) return point;
+    const sectionAinc = Number(section?.ainc ?? 0);
+    const surfaceAinc = Number(surface?.angleDeg ?? 0);
+    const totalAinc = sectionAinc + surfaceAinc;
+    if (!totalAinc) return point;
     const le = new THREE.Vector3(section.xle, section.yle, section.zle);
     const v = new THREE.Vector3(point[0], point[1], point[2]).sub(le);
-    v.applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(section.ainc));
+    v.applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(totalAinc));
     v.add(le);
     return [v.x, v.y, v.z];
+  };
+
+  const applyControlDeflections = (section, point) => {
+    if (!section?.controls?.length) return point;
+    let v = new THREE.Vector3(point[0], point[1], point[2]);
+    const le = new THREE.Vector3(section.xle, section.yle, section.zle);
+    for (const ctrl of section.controls) {
+      const baseDef = controlDeflections.get(ctrl.name) ?? 0;
+      if (!baseDef) continue;
+      const gain = Number(ctrl.gain ?? 1);
+      const sgnDup = Number.isFinite(Number(ctrl.sgnDup)) ? Number(ctrl.sgnDup) : 1;
+      const deflectionDeg = baseDef * gain * sgnDup;
+      if (!deflectionDeg) continue;
+      const xhinge = Number(ctrl.xhinge ?? 0.75);
+      const hingeLocalX = section.chord * xhinge;
+      const local = v.clone().sub(le);
+      if (local.x < hingeLocalX) continue;
+      const hinge = new THREE.Vector3(section.xle + hingeLocalX, section.yle, section.zle);
+      let axis = new THREE.Vector3(ctrl.vhinge?.[0] ?? 0, ctrl.vhinge?.[1] ?? 1, ctrl.vhinge?.[2] ?? 0);
+      if (axis.lengthSq() < 1e-12) axis = new THREE.Vector3(0, 1, 0);
+      axis.normalize();
+      v.sub(hinge);
+      v.applyAxisAngle(axis, THREE.MathUtils.degToRad(deflectionDeg));
+      v.add(hinge);
+    }
+    return [v.x, v.y, v.z];
+  };
+
+  const transformSectionPoint = (section, rawPoint) => {
+    const flap = applyControlDeflections(section, rawPoint);
+    const rotated = rotateSectionPoint(section, flap);
+    return applyTransforms(rotated);
   };
 
   const addControlQuad = (name, le1, le2, te2, te1) => {
@@ -2296,9 +2926,7 @@ function buildSurfaceMesh(surface, color) {
       const xr = x * section.chord;
       const zr = z * section.chord;
       const raw = [section.xle + xr, section.yle, section.zle + zr];
-      const rotated = rotateSectionPoint(section, raw);
-      const final = applyTransforms(rotated);
-      points.push(final);
+      points.push(transformSectionPoint(section, raw));
     }
     if (ydup !== null && ydup !== undefined) {
       const mirrored = points.map((p) => [p[0], 2 * ydup - p[1], p[2]]);
@@ -2313,8 +2941,7 @@ function buildSurfaceMesh(surface, color) {
       const xr = x * section.chord;
       const zr = z * section.chord;
       const raw = [section.xle + xr, section.yle, section.zle + zr];
-      const rotated = rotateSectionPoint(section, raw);
-      return applyTransforms(rotated);
+      return transformSectionPoint(section, raw);
     });
     if (ydup !== null && ydup !== undefined) {
       const mirrored = points.map((p) => [p[0], 2 * ydup - p[1], p[2]]);
@@ -2326,10 +2953,10 @@ function buildSurfaceMesh(surface, color) {
   for (let s = 0; s < surface.sections.length - 1; s += 1) {
     const a = surface.sections[s];
     const b = surface.sections[s + 1];
-    const le1 = applyTransforms([a.xle, a.yle, a.zle]);
-    const le2 = applyTransforms([b.xle, b.yle, b.zle]);
-    const te1 = applyTransforms(rotateSectionPoint(a, [a.xle + a.chord, a.yle, a.zle]));
-    const te2 = applyTransforms(rotateSectionPoint(b, [b.xle + b.chord, b.yle, b.zle]));
+    const le1 = transformSectionPoint(a, [a.xle, a.yle, a.zle]);
+    const le2 = transformSectionPoint(b, [b.xle, b.yle, b.zle]);
+    const te1 = transformSectionPoint(a, [a.xle + a.chord, a.yle, a.zle]);
+    const te2 = transformSectionPoint(b, [b.xle + b.chord, b.yle, b.zle]);
     pushQuad(le1, le2, te2, te1);
     pushEdge(le1, le2);
     pushEdge(le2, te2);
@@ -2359,8 +2986,8 @@ function buildSurfaceMesh(surface, color) {
       const dispMateXhinge = rawMateXhinge >= 0.99 ? rawMateXhinge - 0.01 : (rawMateXhinge <= 0.01 ? rawMateXhinge + 0.01 : rawMateXhinge);
       const hx1 = a.xle + a.chord * dispXhinge;
       const hx2 = b.xle + b.chord * dispMateXhinge;
-      const h1 = applyTransforms(rotateSectionPoint(a, [hx1, a.yle, a.zle]));
-      const h2 = applyTransforms(rotateSectionPoint(b, [hx2, b.yle, b.zle]));
+      const h1 = transformSectionPoint(a, [hx1, a.yle, a.zle]);
+      const h2 = transformSectionPoint(b, [hx2, b.yle, b.zle]);
       addControlQuad(ctrl.name, h1, h2, te2, te1);
       hingeSegments.push([h1, h2]);
       if (typeof surface.yduplicate === 'number') {
@@ -2456,7 +3083,7 @@ function buildSurfaceMesh(surface, color) {
   ctx.font = '28px Consolas, "Courier New", monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(surface.name || 'Surface', 128, 64);
+  ctx.fillText(formatSurfaceDisplayName(surface.name || 'Surface', 1), 128, 64);
   const tex = new THREE.CanvasTexture(labelCanvas);
   const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true });
   const sprite = new THREE.Sprite(spriteMat);
@@ -2491,6 +3118,56 @@ function buildAircraftFromAVL(model) {
     group.add(mirrored);
   }
   return group;
+}
+
+function addReferenceMarker(target, header, center, maxDim) {
+  if (!THREE || !target || !header) return;
+  const xref = Number(header.xref);
+  const yref = Number(header.yref);
+  const zref = Number(header.zref);
+  if (!Number.isFinite(xref) || !Number.isFinite(yref) || !Number.isFinite(zref)) return;
+  const refCenter = center || new THREE.Vector3(0, 0, 0);
+  const size = Number.isFinite(maxDim) && maxDim > 0 ? maxDim : 1.0;
+  const radius = Math.max(0.03, Math.min(0.22, size * 0.012));
+
+  const geom = new THREE.SphereGeometry(radius, 20, 14);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0x93c5fd,
+    emissiveIntensity: 0.4,
+    metalness: 0.15,
+    roughness: 0.45,
+  });
+  const marker = new THREE.Mesh(geom, mat);
+  marker.name = 'reference-marker';
+  marker.renderOrder = 4;
+  marker.position.set(xref - refCenter.x, yref - refCenter.y, zref - refCenter.z);
+  target.add(marker);
+}
+
+function rebuildAircraftVisual(shouldFit = false) {
+  if (!scene || !uiState.displayModel) return;
+  const newAircraft = buildAircraftFromAVL(uiState.displayModel);
+  if (aircraft) scene.remove(aircraft);
+  aircraft = newAircraft;
+  scene.add(aircraft);
+  updateBank(Number(els.bank.value));
+  const bounds = computeBounds(aircraft);
+  if (bounds) {
+    aircraft.position.sub(bounds.center);
+    viewerState.bounds = bounds;
+    viewerState.fitDistance = bounds.maxDim * 1.6 + 4.0;
+    addReferenceMarker(aircraft, uiState.modelHeader, bounds.center, bounds.maxDim);
+    if (shouldFit) {
+      rebuildGrid(bounds.maxDim);
+      applyGridMode();
+      if (axesHelper) axesHelper.position.set(0, 0, 0);
+    }
+  } else {
+    addReferenceMarker(aircraft, uiState.modelHeader, null, null);
+  }
+  if (shouldFit) fitCameraToObject(aircraft);
+  updateLoadingVisualization();
 }
 
 let scene;
@@ -2620,7 +3297,7 @@ function applyViewPreset(mode) {
 function initScene() {
   if (!THREE || !OrbitControls) return;
   scene = new THREE.Scene();
-  scene.background = new THREE.Color('#0b0f17');
+  scene.background = new THREE.Color(getCssVarColor('--panel', '#0f1115'));
 
   const width = els.viewer.clientWidth;
   const height = els.viewer.clientHeight;
@@ -2811,6 +3488,7 @@ function loadGeometryFromText(text, shouldFit = true) {
   const parsed = parseAVL(text || '');
   uiState.modelHeader = parsed.header || null;
   const solverModel = buildSolverModel(text || '');
+  renderFileHeaderSummary(uiState.modelHeader, solverModel);
   uiState.controlMap = solverModel.controlMap;
   uiState.modelCache = solverModel;
   rebuildConstraintUI(solverModel);
@@ -2834,27 +3512,14 @@ function loadGeometryFromText(text, shouldFit = true) {
   setRequiredAirfoilFiles(model.airfoilFiles);
   renderRequiredAirfoilFiles();
   // AFILE dependencies are user-supplied via the File panel.
-  const newAircraft = buildAircraftFromAVL(model);
-  if (aircraft) scene.remove(aircraft);
-  aircraft = newAircraft;
-  scene.add(aircraft);
-  updateBank(Number(els.bank.value));
+  uiState.displayModel = model;
+  rebuildAircraftVisual(Boolean(shouldFit));
   const bounds = computeBounds(aircraft);
   if (bounds) {
-    aircraft.position.sub(bounds.center);
-    viewerState.bounds = bounds;
-    viewerState.fitDistance = bounds.maxDim * 1.6 + 4.0;
-    rebuildGrid(bounds.maxDim);
-    applyGridMode();
-    if (axesHelper) {
-      axesHelper.position.set(0, 0, 0);
-    }
     logDebug(`Bounds: min=(${fmt(bounds.box.min.x, 3)},${fmt(bounds.box.min.y, 3)},${fmt(bounds.box.min.z, 3)}) max=(${fmt(bounds.box.max.x, 3)},${fmt(bounds.box.max.y, 3)},${fmt(bounds.box.max.z, 3)})`);
   }
-  if (shouldFit) fitCameraToObject(aircraft);
   updateFlightConditions();
   logDebug(`Geometry rebuilt: surfaces=${model.surfaces.length}`);
-  updateLoadingVisualization();
 }
 
 function buildExecState(model) {
@@ -3303,6 +3968,7 @@ function runExecFromText(text) {
   const t0 = performance.now();
   logDebug('EXEC start');
   const model = buildSolverModel(text);
+  uiState.execSurfaceNames = buildExecSurfaceNames(model);
   const state = buildExecState(model);
   try {
     const rows = readConstraintRows();
@@ -3347,12 +4013,19 @@ function runExecFromText(text) {
       for (let n = 0; n < 6; n += 1) out.push(arr[idx2(row, n, 3)]);
       return out;
     };
+    const rowD = (arr, row) => {
+      if (!arr) return null;
+      const out = [];
+      for (let n = 0; n <= state.NDMAX; n += 1) out.push(arr[idx2(row, n, 3)]);
+      return out;
+    };
     const hinge = state.CHINGE ? (() => {
       const out = new Array(state.NCONTROL + 1).fill(0);
       for (let i = 1; i <= state.NCONTROL; i += 1) out[i] = state.CHINGE[i - 1] ?? 0.0;
       return out;
     })() : null;
     applyExecResults({
+      SREF: state.SREF,
       CREF: state.CREF,
       BREF: state.BREF,
       ALFA: state.ALFA,
@@ -3365,12 +4038,14 @@ function runExecFromText(text) {
       CMTOT: state.CMTOT ? Array.from(state.CMTOT) : null,
       CFTOT_U: state.CFTOT_U ? [rowU(state.CFTOT_U, 0), rowU(state.CFTOT_U, 1), rowU(state.CFTOT_U, 2)] : null,
       CMTOT_U: state.CMTOT_U ? [rowU(state.CMTOT_U, 0), rowU(state.CMTOT_U, 1), rowU(state.CMTOT_U, 2)] : null,
+      CFTOT_D: state.CFTOT_D ? [rowD(state.CFTOT_D, 0), rowD(state.CFTOT_D, 1), rowD(state.CFTOT_D, 2)] : null,
       CLTOT_U: state.CLTOT_U ? Array.from(state.CLTOT_U.slice(0, 6)) : null,
       CDTOT_U: state.CDTOT_U ? Array.from(state.CDTOT_U.slice(0, 6)) : null,
       CYTOT_U: state.CYTOT_U ? Array.from(state.CYTOT_U.slice(0, 6)) : null,
       CLTOT_D: state.CLTOT_D ? Array.from(state.CLTOT_D) : null,
       CDTOT_D: state.CDTOT_D ? Array.from(state.CDTOT_D) : null,
       CYTOT_D: state.CYTOT_D ? Array.from(state.CYTOT_D) : null,
+      CMTOT_D: state.CMTOT_D ? [rowD(state.CMTOT_D, 0), rowD(state.CMTOT_D, 1), rowD(state.CMTOT_D, 2)] : null,
       CLTOT_A: state.CLTOT_A ?? 0.0,
       CDTOT_A: state.CDTOT_A ?? 0.0,
       VINF_A: state.VINF_A ? Array.from(state.VINF_A) : null,
@@ -3407,6 +4082,7 @@ function runExecFromText(text) {
       PARVAL: state.PARVAL,
       WROT: state.WROT,
       DELCON: state.DELCON,
+      SPANEF: state.SPANEF,
     });
     execInProgress = false;
     updateTrefftzBusy();
@@ -3472,6 +4148,7 @@ function buildForcesElementLines(result) {
 
 function applyExecResults(result) {
   uiState.lastExecResult = result;
+  rebuildAircraftVisual(false);
   updateLoadingVisualization();
   const schedule = (fn) => {
     if (typeof requestIdleCallback === 'function') {
@@ -3512,21 +4189,57 @@ function applyExecResults(result) {
   const rad = parval ? parval[idx2(IPRAD, IR, 30)] : null;
   const fac = parval ? parval[idx2(IPFAC, IR, 30)] : null;
 
-  if (Number.isFinite(result.ALFA)) els.outAlpha.textContent = `${fmt(result.ALFA / (Math.PI / 180), 2)} deg`;
-  if (Number.isFinite(result.BETA)) els.outBeta.textContent = `${fmt(result.BETA / (Math.PI / 180), 2)} deg`;
-  if (Number.isFinite(result.CLTOT)) els.outCL.textContent = fmt(result.CLTOT, 3);
-  if (Number.isFinite(result.CDTOT)) els.outCD.textContent = fmt(result.CDTOT, 4);
-  if (Number.isFinite(result.CYTOT)) els.outCY.textContent = fmt(result.CYTOT, 4);
-  if (Number.isFinite(vee)) els.outV.textContent = `${fmt(vee, 2)} m/s`;
-  if (Number.isFinite(phi)) els.outBank.textContent = `${fmt(phi, 2)} deg`;
-  if (Number.isFinite(rad)) els.outRad.textContent = rad > 0 ? `${fmt(rad, 2)} m` : 'level';
-  if (Number.isFinite(fac)) els.outFac.textContent = fmt(fac, 3);
-  if (Number.isFinite(the)) els.outThe.textContent = `${fmt(the, 2)} deg`;
+  if (Number.isFinite(result.ALFA) && els.outAlpha) els.outAlpha.textContent = `${fmt(result.ALFA / (Math.PI / 180), 2)} deg`;
+  if (Number.isFinite(result.BETA) && els.outBeta) els.outBeta.textContent = `${fmt(result.BETA / (Math.PI / 180), 2)} deg`;
+  if (Number.isFinite(result.CLTOT) && els.outCL) els.outCL.textContent = fmt(result.CLTOT, 5);
+  if (Number.isFinite(result.CDTOT) && els.outCD) els.outCD.textContent = fmt(result.CDTOT, 5);
+  if (Number.isFinite(vee) && els.outV) els.outV.textContent = `${fmt(vee, 2)} m/s`;
+  if (Number.isFinite(phi) && els.outBank) els.outBank.textContent = `${fmt(phi, 2)} deg`;
+  if (Number.isFinite(rad) && els.outRad) els.outRad.textContent = rad > 0 ? `${fmt(rad, 2)} m` : 'level';
+  if (Number.isFinite(fac) && els.outFac) els.outFac.textContent = fmt(fac, 3);
+  if (Number.isFinite(the) && els.outThe) els.outThe.textContent = `${fmt(the, 2)} deg`;
+  if (els.outMach) {
+    const mach = Number(uiState.modelHeader?.mach);
+    els.outMach.textContent = Number.isFinite(mach) ? fmt(mach, 3) : '-';
+  }
   if (result.WROT) {
-    els.outRates.textContent = `${fmt(result.WROT[0], 3)}, ${fmt(result.WROT[1], 3)}, ${fmt(result.WROT[2], 3)}`;
+    if (els.outPb2v) els.outPb2v.textContent = fmt(result.WROT[0], 5);
+    if (els.outQc2v) els.outQc2v.textContent = fmt(result.WROT[1], 5);
+    if (els.outRb2v) els.outRb2v.textContent = fmt(result.WROT[2], 5);
+  }
+  if (result.CFTOT) {
+    if (els.outCXtot) els.outCXtot.textContent = fmt(result.CFTOT[0], 5);
+    if (els.outCYtot) els.outCYtot.textContent = fmt(result.CFTOT[1], 5);
+    if (els.outCZtot) els.outCZtot.textContent = fmt(result.CFTOT[2], 5);
   }
   if (result.CMTOT) {
-    els.outCM.textContent = `${fmt(result.CMTOT[0], 4)}, ${fmt(result.CMTOT[1], 4)}, ${fmt(result.CMTOT[2], 4)}`;
+    if (els.outCltot) els.outCltot.textContent = fmt(result.CMTOT[0], 5);
+    if (els.outCmtot) els.outCmtot.textContent = fmt(result.CMTOT[1], 5);
+    if (els.outCntot) els.outCntot.textContent = fmt(result.CMTOT[2], 5);
+  }
+  if (Number.isFinite(result.CDVTOT)) {
+    if (els.outCDvis) els.outCDvis.textContent = fmt(result.CDVTOT, 5);
+    if (Number.isFinite(result.CDTOT) && els.outCDind) els.outCDind.textContent = fmt(result.CDTOT - result.CDVTOT, 5);
+  }
+  if (els.outEff) {
+    els.outEff.textContent = '-';
+    if (Number.isFinite(result.SPANEF)) {
+      els.outEff.textContent = fmt(result.SPANEF, 4);
+    } else if (Number.isFinite(result.CLTOT) && Number.isFinite(result.CDTOT) && Number.isFinite(result.CDVTOT)) {
+      const sref = Number.isFinite(result.SREF) ? result.SREF : Number(uiState.modelHeader?.sref);
+      const bref = Number.isFinite(result.BREF) ? result.BREF : Number(uiState.modelHeader?.bref);
+      const cdi = result.CDTOT - result.CDVTOT;
+      const ar = (Number.isFinite(sref) && Number.isFinite(bref) && sref > 0) ? ((bref * bref) / sref) : null;
+      if (ar && cdi > 1e-8) {
+        els.outEff.textContent = fmt((result.CLTOT * result.CLTOT) / (Math.PI * ar * cdi), 4);
+      }
+    }
+  }
+  if (result.WROT) {
+    if (els.outRates) els.outRates.textContent = `${fmt(result.WROT[0], 3)}, ${fmt(result.WROT[1], 3)}, ${fmt(result.WROT[2], 3)}`;
+  }
+  if (result.CMTOT) {
+    if (els.outCM) els.outCM.textContent = `${fmt(result.CMTOT[0], 4)}, ${fmt(result.CMTOT[1], 4)}, ${fmt(result.CMTOT[2], 4)}`;
   }
   if (result.DELCON) {
     const deflections = [];
@@ -3534,100 +4247,27 @@ function applyExecResults(result) {
     if (model?.controlMap && model.controlMap.size) {
       for (const [name, idx] of model.controlMap.entries()) {
         const val = result.DELCON[idx] ?? 0.0;
-        deflections.push(`${name} ${fmt(val, 2)}`);
+        deflections.push({ name, value: fmt(val, 2) });
       }
     }
-    if (deflections.length) els.outDef.textContent = deflections.join(' / ');
+    renderControlRows(deflections);
+    if (deflections.length && els.outDef) {
+      els.outDef.textContent = deflections.map((d) => `${d.name} = ${d.value}`).join('\n');
+    }
   }
 
-  const stabilityLines = [];
-  if (result.CLTOT_U && result.CDTOT_U && result.CYTOT_U && result.VINF_A && result.VINF_B) {
-    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    const clU = result.CLTOT_U;
-    const cdU = result.CDTOT_U;
-    const cyU = result.CYTOT_U;
-    const vinfA = result.VINF_A;
-    const vinfB = result.VINF_B;
-    const dCLdA = dot(clU, vinfA) + (result.CLTOT_A ?? 0);
-    const dCDdA = dot(cdU, vinfA) + (result.CDTOT_A ?? 0);
-    const dCYdA = dot(cyU, vinfA);
-    const dCLdB = dot(clU, vinfB);
-    const dCDdB = dot(cdU, vinfB);
-    const dCYdB = dot(cyU, vinfB);
-    stabilityLines.push(`dCL/dalpha: ${fmt(dCLdA, 5)}`);
-    stabilityLines.push(`dCD/dalpha: ${fmt(dCDdA, 5)}`);
-    stabilityLines.push(`dCY/dalpha: ${fmt(dCYdA, 5)}`);
-    stabilityLines.push(`dCL/dbeta : ${fmt(dCLdB, 5)}`);
-    stabilityLines.push(`dCD/dbeta : ${fmt(dCDdB, 5)}`);
-    stabilityLines.push(`dCY/dbeta : ${fmt(dCYdB, 5)}`);
-    stabilityLines.push('');
-    stabilityLines.push(`CL_U: ${clU.map((v) => fmt(v, 5)).join(', ')}`);
-    stabilityLines.push(`CD_U: ${cdU.map((v) => fmt(v, 5)).join(', ')}`);
-    stabilityLines.push(`CY_U: ${cyU.map((v) => fmt(v, 5)).join(', ')}`);
-  }
-  if (result.CLTOT_D && result.CDTOT_D && result.CYTOT_D) {
-    stabilityLines.push('');
-    stabilityLines.push(`CL_D: ${result.CLTOT_D.map((v) => fmt(v, 5)).join(', ')}`);
-    stabilityLines.push(`CD_D: ${result.CDTOT_D.map((v) => fmt(v, 5)).join(', ')}`);
-    stabilityLines.push(`CY_D: ${result.CYTOT_D.map((v) => fmt(v, 5)).join(', ')}`);
-  }
+  renderStabilityGrid(result);
   schedule(() => {
     try {
-      if (els.outStability) {
-        els.outStability.textContent = stabilityLines.length ? stabilityLines.join('\n') : '-';
-      }
-
-      if (els.outBodyDeriv) {
-        const lines = [];
-        if (result.CFTOT_U) {
-          lines.push('dCF/dU (rows x,y,z):');
-          lines.push(`x: ${result.CFTOT_U[0].map((v) => fmt(v, 5)).join(', ')}`);
-          lines.push(`y: ${result.CFTOT_U[1].map((v) => fmt(v, 5)).join(', ')}`);
-          lines.push(`z: ${result.CFTOT_U[2].map((v) => fmt(v, 5)).join(', ')}`);
-        }
-        if (result.CMTOT_U) {
-          lines.push('');
-          lines.push('dCM/dU (rows x,y,z):');
-          lines.push(`x: ${result.CMTOT_U[0].map((v) => fmt(v, 5)).join(', ')}`);
-          lines.push(`y: ${result.CMTOT_U[1].map((v) => fmt(v, 5)).join(', ')}`);
-          lines.push(`z: ${result.CMTOT_U[2].map((v) => fmt(v, 5)).join(', ')}`);
-        }
-        renderLinesChunked(els.outBodyDeriv, lines, 80);
-      }
+      renderBodyDerivGrid(result);
     } catch (err) {
       logDebug(`EXEC derive render failed: ${err?.message ?? err}`);
     }
   });
 
-  if (els.outForcesTotal) {
-    const lines = [];
-    if (Number.isFinite(result.CLTOT)) lines.push(`CL: ${fmt(result.CLTOT, 5)}`);
-    if (Number.isFinite(result.CDTOT)) lines.push(`CD: ${fmt(result.CDTOT, 5)}`);
-    if (Number.isFinite(result.CYTOT)) lines.push(`CY: ${fmt(result.CYTOT, 5)}`);
-    if (Number.isFinite(result.CDVTOT)) lines.push(`CDV: ${fmt(result.CDVTOT, 5)}`);
-    if (result.CFTOT) lines.push(`CF: ${result.CFTOT.map((v) => fmt(v, 5)).join(', ')}`);
-    if (result.CMTOT) lines.push(`CM: ${result.CMTOT.map((v) => fmt(v, 5)).join(', ')}`);
-    els.outForcesTotal.textContent = lines.length ? lines.join('\n') : '-';
-  }
-
   schedule(() => {
     try {
-      if (els.outForcesSurface) {
-        const model = uiState.modelCache;
-        const lines = [];
-        if (result.CDSURF && result.CLSURF && result.CYSURF) {
-          for (let i = 1; i < result.CLSURF.length; i += 1) {
-            const name = model?.surfaces?.[i - 1]?.name ?? `Surf ${i}`;
-            const cdv = result.CDVSURF?.[i] ?? 0;
-            const cf = result.CFSURF?.[i] ?? null;
-            const cm = result.CMSURF?.[i] ?? null;
-            lines.push(`${name}: CL ${fmt(result.CLSURF[i], 5)} CD ${fmt(result.CDSURF[i], 5)} CY ${fmt(result.CYSURF[i], 5)} CDV ${fmt(cdv, 5)}`);
-            if (cf) lines.push(`  CF: ${cf.map((v) => fmt(v, 5)).join(', ')}`);
-            if (cm) lines.push(`  CM: ${cm.map((v) => fmt(v, 5)).join(', ')}`);
-          }
-        }
-        renderLinesChunked(els.outForcesSurface, lines, 120);
-      }
+      renderSurfaceForcesGrid(result);
 
       if (els.outForcesBody) {
         const lines = [];
@@ -3644,16 +4284,30 @@ function applyExecResults(result) {
       }
 
       if (els.outHinge) {
-        const lines = [];
+        const rows = [['', 'Chinge']];
         if (result.CHINGE) {
           const model = uiState.modelCache;
           const names = model?.controlMap ? Array.from(model.controlMap.keys()) : [];
           for (let i = 1; i < result.CHINGE.length; i += 1) {
             const name = names[i - 1] ?? `Ctrl ${i}`;
-            lines.push(`${name}: ${fmt(result.CHINGE[i], 6)}`);
+            rows.push([name, result.CHINGE[i] ?? 0]);
           }
         }
-        renderLinesChunked(els.outHinge, lines, 120);
+        if (rows.length === 1) {
+          els.outHinge.textContent = '-';
+        } else {
+          const html = rows.map((row, rIdx) => row.map((cell, cIdx) => {
+            if (rIdx === 0) {
+              const cls = cIdx > 0 ? 'stability-cell stability-head stability-colhead' : 'stability-cell stability-head';
+              return `<div class="${cls}">${escapeHtml(String(cell))}</div>`;
+            }
+            if (cIdx === 0) {
+              return `<div class="stability-cell stability-head">${escapeHtml(String(cell))}</div>`;
+            }
+            return `<div class="stability-cell stability-val"><strong class="stability-num">${fmtSignedFixed(Number(cell), 6)}</strong></div>`;
+          }).join('')).join('');
+          els.outHinge.innerHTML = html;
+        }
       }
     } catch (err) {
       logDebug(`EXEC detail render failed: ${err?.message ?? err}`);
@@ -3744,6 +4398,7 @@ window.addEventListener('resize', handleResize);
 
 async function bootApp() {
   initTopNav();
+  initPanelCollapse();
   await loadDefaultAVL();
   try {
     const model = buildSolverModel(els.fileText.value || '');

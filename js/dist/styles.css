@@ -163,6 +163,31 @@ a:hover {
   background: transparent;
   border-bottom: none;
   color: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel-toggle {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--ink);
+  font: 700 12px/1 Consolas, "Courier New", monospace;
+  padding: 0;
+  cursor: pointer;
+}
+
+.panel-toggle:hover {
+  border-color: var(--accent);
+}
+
+.panel.collapsed > :not(.panel-title) {
+  display: none !important;
 }
 
 .panel-body {
@@ -327,7 +352,7 @@ textarea.code {
   position: relative;
   border: 1px solid var(--edge);
   border-radius: 10px;
-  background: #272822;
+  background: var(--panel);
   overflow: hidden;
   --file-font-size: 13px;
 }
@@ -399,6 +424,71 @@ textarea.code {
 .file-meta {
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.aircraft-actions {
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.aircraft-buttons {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.aircraft-actions .file-meta {
+  margin-left: auto;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.file-summary {
+  margin-top: 8px;
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.file-aircraft-name {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  font-family: Consolas, "Courier New", monospace;
+  text-transform: uppercase;
+}
+
+.file-aircraft-name:focus {
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.file-summary-lines {
+  display: grid;
+  gap: 2px;
+  white-space: pre;
+}
+
+.file-summary-line {
+  display: flex;
+  gap: 18px;
+  white-space: nowrap;
+  flex-wrap: wrap;
+}
+
+.file-summary strong {
+  color: var(--ink);
+  font-weight: 600;
 }
 
 .airfoil-files {
@@ -589,13 +679,13 @@ textarea.code {
   width: 100%;
   height: clamp(200px, 30vh, 320px);
   display: block;
-  background: radial-gradient(800px 300px at 20% 0%, #111827 0%, #0b0f17 60%);
+  background: var(--panel);
 }
 
 .trefftz-plot {
   width: 100%;
   height: clamp(200px, 30vh, 320px);
-  background: radial-gradient(800px 300px at 20% 0%, #111827 0%, #0b0f17 60%);
+  background: var(--panel);
   border-radius: 16px;
   box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
   overflow: hidden;
@@ -610,7 +700,7 @@ textarea.code {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: rgba(11, 15, 23, 0.6);
+  background: color-mix(in oklab, var(--panel) 22%, transparent);
   color: #e2e8f0;
   font-size: 0.85rem;
   letter-spacing: 0.02em;
@@ -632,8 +722,8 @@ textarea.code {
 }
 
 .stage.trefftz-busy .trefftz-plot {
-  opacity: 0.35;
-  filter: grayscale(0.4);
+  opacity: 0.82;
+  filter: none;
 }
 
 .stage.trefftz-busy .trefftz-overlay {
@@ -805,6 +895,175 @@ textarea.code {
 .output .kvs {
   display: grid;
   gap: 12px;
+}
+
+.total-forces-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.force-cell {
+  display: flex;
+  justify-content: flex-start;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.force-cell strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: Consolas, "Courier New", monospace;
+  text-align: left;
+}
+
+.force-control-name {
+  white-space: pre;
+}
+
+.force-kv-hidden {
+  display: none;
+}
+
+.total-forces-grid .r1 { grid-row: 1; }
+.total-forces-grid .r2 { grid-row: 2; }
+.total-forces-grid .r3 { grid-row: 3; }
+.total-forces-grid .r4 { grid-row: 4; }
+.total-forces-grid .r5 { grid-row: 5; }
+.total-forces-grid .c1 { grid-column: 1; }
+.total-forces-grid .c2 { grid-column: 2; }
+.total-forces-grid .c3 { grid-column: 3; }
+.total-forces-grid .c4 { grid-column: 4; }
+
+#outControlRows {
+  display: contents;
+}
+
+.force-cell.control-row {
+  grid-column: 1;
+}
+
+.stability-grid {
+  display: grid;
+  grid-template-columns: minmax(30px, 0.36fr) repeat(5, minmax(0, 1fr));
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.body-deriv-grid {
+  display: grid;
+  grid-template-columns: minmax(30px, 0.36fr) repeat(6, minmax(0, 1fr));
+  gap: 4px 8px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.surface-forces-grid {
+  display: grid;
+  grid-template-columns: minmax(90px, 1.0fr) repeat(6, minmax(0, 1fr));
+  gap: 4px 10px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.hinge-grid {
+  display: inline-grid;
+  grid-template-columns: max-content max-content;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.25;
+  max-width: 100%;
+}
+
+.hinge-grid .stability-num {
+  min-width: 0;
+}
+
+.surface-forces-grid .stability-cell {
+  min-width: 0;
+}
+
+.body-deriv-grid .stability-cell {
+  min-width: 0;
+}
+
+.body-deriv-grid .stability-val {
+  justify-content: flex-end;
+}
+
+.body-deriv-grid .stability-num {
+  min-width: 8ch;
+}
+
+.surface-name-cell {
+  overflow: hidden;
+}
+
+.surface-name-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.surface-forces-grid .stability-num {
+  min-width: 7ch;
+}
+
+.stability-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 0;
+  padding: 0;
+}
+
+.stability-head {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.stability-colhead {
+  justify-content: center;
+  text-align: center;
+}
+
+.stability-val {
+  color: var(--ink);
+}
+
+.stability-cell strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.stability-num {
+  display: inline-block;
+  min-width: 10ch;
+  text-align: right;
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+}
+
+.stability-neutral {
+  margin-top: 8px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: Consolas, "Courier New", monospace;
 }
 
 .output .panel-body {
@@ -994,4 +1253,5 @@ textarea.code {
     flex: 0 0 100%;
     scroll-snap-align: start;
   }
+
 }

@@ -34,35 +34,51 @@
     <section class="col settings-col" id="settingsCol">
       <aside class="panel-col">
       <div class="panel">
-        <div class="panel-title">File</div>
+        <div class="panel-title">Aircraft</div>
         <div class="panel-body">
-          <div class="row">
-            <label class="btn">
-              Load AVL
-              <input id="fileInput" type="file" accept=".avl,.run,.dat,.txt,text/plain,application/octet-stream,*/*" multiple hidden />
-            </label>
-            <button id="saveBtn" class="btn ghost" type="button">Save AVL</button>
+          <div id="fileSummary" class="file-summary hidden">
+            <input id="fileAircraftName" class="file-aircraft-name" type="text" />
+            <div class="file-summary-lines">
+              <div># Surfaces = <strong id="fileNSurf">-</strong></div>
+              <div># Strips   = <strong id="fileNStrip">-</strong></div>
+              <div># Vortices = <strong id="fileNVort">-</strong></div>
+            </div>
+            <div class="file-summary-line">
+              Sref= <strong id="fileSref">-</strong>
+              Cref= <strong id="fileCref">-</strong>
+              Bref= <strong id="fileBref">-</strong>
+            </div>
+            <div class="file-summary-line">
+              Xref= <strong id="fileXref">-</strong>
+              Yref= <strong id="fileYref">-</strong>
+              Zref= <strong id="fileZref">-</strong>
+            </div>
           </div>
-          <div class="file-meta" id="fileMeta">No file loaded.</div>
-          <div class="file-editor" id="fileEditor">
-            <pre id="fileHighlight" class="file-highlight" aria-hidden="true"></pre>
-            <textarea id="fileText" class="code" rows="8" wrap="off" placeholder="AVL file text appears here..." spellcheck="false"></textarea>
+          <div class="row aircraft-actions">
+            <div class="aircraft-buttons">
+              <label class="btn">
+                Load AVL
+                <input id="fileInput" type="file" accept=".avl,.run,.dat,.txt,text/plain,application/octet-stream,*/*" multiple hidden />
+              </label>
+              <button id="saveBtn" class="btn ghost" type="button">Save AVL</button>
+            </div>
+            <div class="file-meta" id="fileMeta">No file loaded.</div>
           </div>
-        </div>
           <div id="airfoilFilesPanel" class="airfoil-files hidden">
             <div class="airfoil-files-title">AFILE Dependencies</div>
             <div id="airfoilFilesList" class="airfoil-files-list"></div>
           </div>
+        </div>
       </div>
 
       <div class="panel">
         <div class="panel-title">Flight Conditions</div>
         <div class="panel-body flight-conditions">
           <label class="flight-row"><span class="label-text">Gravity (m/s<sup>2</sup>)</span>
-            <input id="gee" type="number" step="0.01" value="9.81" />
+            <input id="gee" type="number" step="0.1" value="9.81" />
           </label>
           <label class="flight-row"><span class="label-text">Air density (kg/m<sup>3</sup>)</span>
-            <input id="rho" type="number" step="0.001" value="1.225" />
+            <input id="rho" type="number" step="0.1" value="1.225" />
           </label>
           <label class="flight-row"><span class="label-text">Mass (kg)</span>
             <input id="mass" type="number" step="0.1" value="120" />
@@ -71,7 +87,7 @@
             <input id="vel" type="number" step="0.1" value="30" />
           </label>
           <label class="flight-row"><span class="label-text">C<sub>L</sub></span>
-            <input id="cl" type="number" step="0.01" value="0.6" />
+            <input id="cl" type="number" step="0.1" value="0.6" />
           </label>
           <label class="flight-row"><span class="label-text">Flight mode</span>
             <select id="flightMode">
@@ -91,7 +107,7 @@
               <input id="radLoop" type="number" step="0.1" value="0" />
             </label>
             <label class="flight-row"><span class="label-text">Load factor</span>
-              <input id="facLoop" type="number" step="0.01" value="0" />
+              <input id="facLoop" type="number" step="0.1" value="0" />
             </label>
           </div>
         </div>
@@ -174,78 +190,88 @@
         </div>
         <canvas id="trefftz" class="trefftz-plot" width="860" height="320"></canvas>
       </div>
+
+      <div class="panel">
+        <div class="panel-title">AVL Editor</div>
+        <div class="panel-body">
+          <div class="file-editor" id="fileEditor">
+            <pre id="fileHighlight" class="file-highlight" aria-hidden="true"></pre>
+            <textarea id="fileText" class="code" rows="8" wrap="off" placeholder="AVL file text appears here..." spellcheck="false"></textarea>
+          </div>
+        </div>
+      </div>
       </main>
     </section>
 
     <section class="col outputs-col" id="outputsCol">
       <aside class="output-col">
       <div class="panel output">
-        <div class="panel-title">Trim Output</div>
+        <div class="panel-title">Total Forces</div>
         <div class="panel-body">
-          <div class="kvs" id="trimOutput">
-            <div class="kv"><span>Alpha</span><strong id="outAlpha">-</strong></div>
-            <div class="kv"><span>Beta</span><strong id="outBeta">-</strong></div>
-            <div class="kv"><span>Bank</span><strong id="outBank">-</strong></div>
-            <div class="kv"><span>CL</span><strong id="outCL">-</strong></div>
-            <div class="kv"><span>CD</span><strong id="outCD">-</strong></div>
-            <div class="kv"><span>CY</span><strong id="outCY">-</strong></div>
-            <div class="kv"><span>Velocity</span><strong id="outV">-</strong></div>
-            <div class="kv"><span>Turn radius</span><strong id="outRad">-</strong></div>
-            <div class="kv"><span>Load factor</span><strong id="outFac">-</strong></div>
-            <div class="kv"><span>Pitch (theta)</span><strong id="outThe">-</strong></div>
-            <div class="kv"><span>CM (x,y,z)</span><strong id="outCM">-</strong></div>
-            <div class="kv"><span>Rates (p,q,r)</span><strong id="outRates">-</strong></div>
-            <div class="kv"><span>Deflections</span><strong id="outDef">-</strong></div>
+          <div class="total-forces-grid" id="trimOutput">
+            <div class="force-cell r1 c1">α = <strong id="outAlpha">-</strong></div>
+            <div class="force-cell r1 c2">pb/2v = <strong id="outPb2v">-</strong></div>
+            <div class="force-cell r1 c3">&nbsp;CL = <strong id="outCL">-</strong></div>
+            <div class="force-cell r1 c4">cl = <strong id="outCltot">-</strong></div>
+
+            <div class="force-cell r2 c1">β = <strong id="outBeta">-</strong></div>
+            <div class="force-cell r2 c2">qc/2v = <strong id="outQc2v">-</strong></div>
+            <div class="force-cell r2 c3">&nbsp;CY = <strong id="outCYtot">-</strong></div>
+            <div class="force-cell r2 c4">cm = <strong id="outCmtot">-</strong></div>
+
+            <div class="force-cell r3 c1">M = <strong id="outMach">-</strong></div>
+            <div class="force-cell r3 c2">rb/2v = <strong id="outRb2v">-</strong></div>
+            <div class="force-cell r3 c3">&nbsp;CD = <strong id="outCD">-</strong></div>
+            <div class="force-cell r3 c4">cn = <strong id="outCntot">-</strong></div>
+
+            <div class="force-cell r4 c3">CDi = <strong id="outCDind">-</strong></div>
+            <div class="force-cell r4 c4">&nbsp;e = <strong id="outEff">-</strong></div>
+            <div class="force-cell r5 c3">CDp = <strong id="outCDvis">-</strong></div>
+
+            <div id="outControlRows"></div>
+
+            <div class="force-kv-hidden">bank = <strong id="outBank">-</strong></div>
+            <div class="force-kv-hidden">velocity = <strong id="outV">-</strong></div>
+            <div class="force-kv-hidden">turn radius = <strong id="outRad">-</strong></div>
+            <div class="force-kv-hidden">load factor = <strong id="outFac">-</strong></div>
+            <div class="force-kv-hidden">theta = <strong id="outThe">-</strong></div>
+            <div class="force-kv-hidden">cm xyz = <strong id="outCM">-</strong></div>
+            <div class="force-kv-hidden">rates = <strong id="outRates">-</strong></div>
+            <div class="force-kv-hidden">def = <strong id="outDef">-</strong></div>
+            <div class="force-kv-hidden">cx = <strong id="outCXtot">-</strong></div>
+            <div class="force-kv-hidden">cz = <strong id="outCZtot">-</strong></div>
           </div>
         </div>
       </div>
       <div class="panel output">
         <div class="panel-title">Stability Derivatives</div>
         <div class="panel-body">
-          <pre class="mono-output" id="outStability">-</pre>
+          <div class="stability-grid" id="outStability">-</div>
+          <div class="stability-neutral" id="outStabilityNeutral">Xnp = -</div>
         </div>
       </div>
       <div class="panel output">
         <div class="panel-title">Body-Axis Derivatives</div>
         <div class="panel-body">
-          <pre class="mono-output" id="outBodyDeriv">-</pre>
-        </div>
-      </div>
-      <div class="panel output">
-        <div class="panel-title">Total Forces</div>
-        <div class="panel-body">
-          <pre class="mono-output" id="outForcesTotal">-</pre>
+          <div class="body-deriv-grid" id="outBodyDeriv">-</div>
         </div>
       </div>
       <div class="panel output">
         <div class="panel-title">Surface Forces</div>
         <div class="panel-body">
-          <pre class="mono-output" id="outForcesSurface">-</pre>
-        </div>
-      </div>
-      <div class="panel output">
-        <div class="panel-title">Strip Forces</div>
-        <div class="panel-body">
-          <button id="downloadForcesStrip" class="btn" type="button">Download strip forces</button>
-        </div>
-      </div>
-      <div class="panel output">
-        <div class="panel-title">Element Forces</div>
-        <div class="panel-body">
-          <button id="downloadForcesElement" class="btn" type="button">Download element forces</button>
-        </div>
-      </div>
-      <div class="panel output">
-        <div class="panel-title">Body Forces</div>
-        <div class="panel-body">
-          <pre class="mono-output" id="outForcesBody">-</pre>
+          <div class="surface-forces-grid" id="outForcesSurface">-</div>
         </div>
       </div>
       <div class="panel output">
         <div class="panel-title">Hinge Moments</div>
         <div class="panel-body">
-          <pre class="mono-output" id="outHinge">-</pre>
+          <div class="hinge-grid" id="outHinge">-</div>
         </div>
+      </div>
+      <div aria-hidden="true" style="display:none;">
+        <button id="downloadForcesStrip" type="button">Download strip forces</button>
+        <button id="downloadForcesElement" type="button">Download element forces</button>
+        <pre id="outForcesBody">-</pre>
       </div>
       <div class="panel output">
         <div class="panel-title">Debug</div>

@@ -166,6 +166,12 @@ onmessage = async (evt) => {
       for (let n = 0; n < 6; n += 1) out.push(arr[idx2(row, n, 3)]);
       return out;
     };
+    const rowD = (arr, row) => {
+      if (!arr) return null;
+      const out = [];
+      for (let n = 0; n <= state.NDMAX; n += 1) out.push(arr[idx2(row, n, 3)]);
+      return out;
+    };
     const hinge = state.CHINGE ? (() => {
       const out = new Array(state.NCONTROL + 1).fill(0);
       for (let i = 1; i <= state.NCONTROL; i += 1) out[i] = state.CHINGE[i - 1] ?? 0.0;
@@ -174,6 +180,7 @@ onmessage = async (evt) => {
     postMessage({
       type: 'result',
       requestId,
+      SREF: state.SREF,
       CREF: state.CREF,
       BREF: state.BREF,
       ALFA: state.ALFA,
@@ -186,12 +193,14 @@ onmessage = async (evt) => {
       CMTOT: state.CMTOT ? Array.from(state.CMTOT) : null,
       CFTOT_U: state.CFTOT_U ? [rowU(state.CFTOT_U, 0), rowU(state.CFTOT_U, 1), rowU(state.CFTOT_U, 2)] : null,
       CMTOT_U: state.CMTOT_U ? [rowU(state.CMTOT_U, 0), rowU(state.CMTOT_U, 1), rowU(state.CMTOT_U, 2)] : null,
+      CFTOT_D: state.CFTOT_D ? [rowD(state.CFTOT_D, 0), rowD(state.CFTOT_D, 1), rowD(state.CFTOT_D, 2)] : null,
       CLTOT_U: state.CLTOT_U ? Array.from(state.CLTOT_U.slice(0, 6)) : null,
       CDTOT_U: state.CDTOT_U ? Array.from(state.CDTOT_U.slice(0, 6)) : null,
       CYTOT_U: state.CYTOT_U ? Array.from(state.CYTOT_U.slice(0, 6)) : null,
       CLTOT_D: state.CLTOT_D ? Array.from(state.CLTOT_D) : null,
       CDTOT_D: state.CDTOT_D ? Array.from(state.CDTOT_D) : null,
       CYTOT_D: state.CYTOT_D ? Array.from(state.CYTOT_D) : null,
+      CMTOT_D: state.CMTOT_D ? [rowD(state.CMTOT_D, 0), rowD(state.CMTOT_D, 1), rowD(state.CMTOT_D, 2)] : null,
       CLTOT_A: state.CLTOT_A ?? 0.0,
       CDTOT_A: state.CDTOT_A ?? 0.0,
       VINF_A: state.VINF_A ? Array.from(state.VINF_A) : null,
@@ -230,6 +239,7 @@ onmessage = async (evt) => {
       PARVAL: state.PARVAL,
       WROT: state.WROT,
       DELCON: state.DELCON,
+      SPANEF: state.SPANEF,
       TREFFTZ: trefftz,
     });
   } catch (err) {
