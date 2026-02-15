@@ -111,7 +111,6 @@ const els = {
   viewerHome: document.getElementById('viewerHome'),
   viewerView: document.getElementById('viewerView'),
   viewerGrid: document.getElementById('viewerGrid'),
-  viewerCoord: document.getElementById('viewerCoord'),
   viewerLoad: document.getElementById('viewerLoad'),
   viewerSurface: document.getElementById('viewerSurface'),
   viewerPressure: document.getElementById('viewerPressure'),
@@ -174,16 +173,20 @@ const uiState = {
 
 const viewerState = {
   mode: 'rotate',
-  viewModes: ['left', 'right', 'top'],
-  viewIndex: 0,
+  viewModes: ['top', 'forward', 'side'],
+  viewIndex: 2,
   gridModes: ['xy', 'yz', 'xz', 'none'],
   gridIndex: 0,
   bounds: null,
   fitDistance: 12,
-  coordMode: 'body',
 };
 
 const FLOW_FIELD_MODES = ['induced', 'induced+rotation', 'full'];
+const VIEW_MODE_LABELS = {
+  top: 'Top (down)',
+  forward: 'Forward (aft)',
+  side: 'Side (Y axis)',
+};
 
 let execInProgress = false;
 let trefftzPlot = null;
@@ -2554,11 +2557,6 @@ els.viewerGrid?.addEventListener('click', () => {
   applyGridMode();
   updateViewerButtons();
 });
-els.viewerCoord?.addEventListener('click', () => {
-  viewerState.coordMode = viewerState.coordMode === 'world' ? 'body' : 'world';
-  updateBank(Number(els.bank.value));
-  updateViewerButtons();
-});
 els.viewerLoad?.addEventListener('click', () => {
   uiState.showLoading = !uiState.showLoading;
   els.viewerLoad.classList.toggle('active', uiState.showLoading);
@@ -3443,6 +3441,23 @@ if (typeof window !== 'undefined') {
         vorticesVisible: Boolean(vortexGroup?.visible),
         flowVisible: Boolean(flowFieldGroup?.visible),
         flowMode: uiState.flowFieldMode,
+      };
+    },
+    getViewerViewState() {
+      const mode = viewerState.viewModes[viewerState.viewIndex] || null;
+      return {
+        mode,
+        label: mode ? (VIEW_MODE_LABELS[mode] || mode) : null,
+        cameraPosition: camera ? {
+          x: Number(camera.position?.x) || 0,
+          y: Number(camera.position?.y) || 0,
+          z: Number(camera.position?.z) || 0,
+        } : null,
+        cameraUp: camera ? {
+          x: Number(camera.up?.x) || 0,
+          y: Number(camera.up?.y) || 0,
+          z: Number(camera.up?.z) || 0,
+        } : null,
       };
     },
     setFlowSolverData(data) {
@@ -6585,14 +6600,11 @@ function getFlowPointSpriteTexture() {
 function updateViewerButtons() {
   if (!els.viewerPan || !els.viewerView || !els.viewerGrid) return;
   els.viewerPan.classList.toggle('active', viewerState.mode === 'pan');
-  const viewLabel = viewerState.viewModes[viewerState.viewIndex] || 'left';
+  const viewLabel = viewerState.viewModes[viewerState.viewIndex] || 'top';
+  const viewTitle = VIEW_MODE_LABELS[viewLabel] || viewLabel;
   const gridLabel = viewerState.gridModes[viewerState.gridIndex] || 'xy';
-  els.viewerView.title = `View: ${viewLabel.toUpperCase()}`;
+  els.viewerView.title = `View: ${viewTitle}`;
   els.viewerGrid.title = `Grid: ${gridLabel.toUpperCase()}`;
-  if (els.viewerCoord) {
-    els.viewerCoord.classList.toggle('active', viewerState.coordMode === 'world');
-    els.viewerCoord.title = viewerState.coordMode === 'world' ? 'World frame' : 'Body frame';
-  }
   if (els.viewerLoad) {
     els.viewerLoad.classList.toggle('active', uiState.showLoading);
   }
@@ -6709,19 +6721,18 @@ function setCameraUp(vec) {
 function applyViewPreset(mode) {
   if (!camera || !controls || !viewerState.bounds) return;
   const dist = viewerState.fitDistance || 10;
-  const lift = dist * 0.15;
-  if (mode === 'left') {
-    setCameraUp(new THREE.Vector3(0, 0, 1));
-    camera.position.set(0, -dist, lift);
-  } else if (mode === 'right') {
-    setCameraUp(new THREE.Vector3(0, 0, 1));
-    camera.position.set(0, dist, lift);
-  } else if (mode === 'top') {
+  if (mode === 'top') {
     setCameraUp(new THREE.Vector3(0, 1, 0));
     camera.position.set(0.0001, 0, dist);
+  } else if (mode === 'forward') {
+    setCameraUp(new THREE.Vector3(0, 0, 1));
+    camera.position.set(dist, 0, 0);
+  } else if (mode === 'side') {
+    setCameraUp(new THREE.Vector3(0, 0, 1));
+    camera.position.set(0, dist, 0);
   } else {
     setCameraUp(new THREE.Vector3(0, 0, 1));
-    camera.position.set(dist, -dist * 0.6, dist * 0.45);
+    camera.position.set(dist * 0.6, -dist * 0.4, dist * 0.28);
   }
   controls.target.set(0, 0, 0);
   controls.update();
@@ -6817,11 +6828,7 @@ function buildPlaceholderAircraft() {
 
 function updateBank(phiDeg) {
   if (!aircraft) return;
-  if (viewerState.coordMode === 'world') {
-    aircraft.rotation.x = THREE.MathUtils.degToRad(phiDeg);
-  } else {
-    aircraft.rotation.x = 0;
-  }
+  aircraft.rotation.x = 0;
 }
 
 function updateLoadingVisualization() {

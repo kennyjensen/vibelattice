@@ -29,6 +29,7 @@ test('viewer overlay buttons toggle panel spacing, vortices, and flow field inde
   try {
     await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#debugLog')).toContainText('App ready', { timeout: 20000 });
+    await expect(page.locator('#viewerCoord')).toHaveCount(0);
     await page.waitForFunction(() => Boolean(window.__trefftzTestHook?.getViewerOverlayState));
     await page.evaluate(() => {
       const nvor = 1;

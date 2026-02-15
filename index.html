@@ -201,56 +201,45 @@
         <div id="viewer" class="viewer">
           <div id="viewerAircraftName" class="viewer-aircraft-name"></div>
           <div class="viewer-overlay">
-            <button class="viewer-btn icon-btn" id="viewerPan" type="button" title="Pan mode">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 2v4m0 12v4m10-10h-4M6 12H2M7 7l-3 3 3 3M17 7l3 3-3 3M7 17l3 3 3-3M17 17l-3 3-3-3" />
-              </svg>
-            </button>
-            <button class="viewer-btn icon-btn" id="viewerZoomIn" type="button" title="Zoom in">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <circle cx="11" cy="11" r="6" />
-                <path d="M11 8v6m-3-3h6m4.5 4.5-3.5-3.5" />
-              </svg>
-            </button>
-            <button class="viewer-btn icon-btn" id="viewerZoomOut" type="button" title="Zoom out">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <circle cx="11" cy="11" r="6" />
-                <path d="M8 11h6m4.5 4.5-3.5-3.5" />
-              </svg>
-            </button>
             <button class="viewer-btn icon-btn" id="viewerHome" type="button" title="Fit to model">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 11.5 12 5l8 6.5" />
                 <path d="M7 10.5v7h10v-7" />
               </svg>
             </button>
+            <button class="viewer-btn icon-btn" id="viewerZoomIn" type="button" title="Zoom in">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6" />
+                <path d="M11 8v6m-3-3h6M15.2 15.2l3.3 3.3" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerZoomOut" type="button" title="Zoom out">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6" />
+                <path d="M8 11h6M15.2 15.2l3.3 3.3" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerPan" type="button" title="Pan mode">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+                <path d="M9 7 12 4l3 3" />
+                <path d="M9 17l3 3 3-3" />
+                <path d="M7 9 4 12l3 3" />
+                <path d="M17 9l3 3-3 3" />
+              </svg>
+            </button>
             <button class="viewer-btn icon-btn" id="viewerView" type="button" title="Cycle view">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 12a8 8 0 0 1 14-5" />
-                <path d="M20 7v-5h-5" />
-                <path d="M20 12a8 8 0 0 1-14 5" />
-                <path d="M4 17v5h5" />
+                <path d="M18 8.5a7.5 7.5 0 0 0-11.5-2.3" />
+                <path d="M6.5 6.2 8.6213 2.5257M6.5 6.2 10.1743 8.3213" />
+                <path d="M6 15.5a7.5 7.5 0 0 0 11.5 2.3" />
+                <path d="M17.5 17.8 13.8257 15.6787M17.5 17.8 15.3787 21.4743" />
               </svg>
             </button>
             <button class="viewer-btn icon-btn" id="viewerGrid" type="button" title="Cycle grid">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <rect x="4" y="4" width="16" height="16" rx="1.5" />
                 <path d="M4 12h16M12 4v16" />
-              </svg>
-            </button>
-            <button class="viewer-btn icon-btn" id="viewerCoord" type="button" title="Coordinate frame">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 19h16" />
-                <path d="M5 18l4-4 4 3 6-8" />
-                <path d="M18 6h2v2" />
-              </svg>
-            </button>
-            <button class="viewer-btn icon-btn" id="viewerLoad" type="button" title="Toggle loading">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 19h16" />
-                <path d="M7 17V7" />
-                <path d="M12 17V5" />
-                <path d="M17 17V9" />
               </svg>
             </button>
           </div>
@@ -260,12 +249,6 @@
                 <path d="M4 7l8-4 8 4-8 4-8-4z" />
                 <path d="M4 12l8 4 8-4" />
                 <path d="M4 17l8 4 8-4" />
-              </svg>
-            </button>
-            <button class="viewer-btn icon-btn" id="viewerPressure" type="button" title="Toggle pressure">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 3c2.8 3.7 5 6.2 5 9.2a5 5 0 1 1-10 0c0-3 2.2-5.5 5-9.2z" />
-                <path d="M9.3 13.2a2.9 2.9 0 0 0 2.7 2.8" />
               </svg>
             </button>
             <button class="viewer-btn icon-btn" id="viewerPanelSpacing" type="button" title="Panel spacing">
@@ -279,6 +262,20 @@
                 <path d="M4 12h8" />
                 <path d="M12 12l4-4M12 12l4 4" />
                 <path d="M16 8h4M16 16h4" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerPressure" type="button" title="Toggle pressure">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3c2.8 3.7 5 6.2 5 9.2a5 5 0 1 1-10 0c0-3 2.2-5.5 5-9.2z" />
+                <path d="M9.3 13.2a2.9 2.9 0 0 0 2.7 2.8" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerLoad" type="button" title="Toggle loading">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 19h16" />
+                <path d="M7 17V7" />
+                <path d="M12 17V5" />
+                <path d="M17 17V9" />
               </svg>
             </button>
             <button class="viewer-btn icon-btn" id="viewerFlow" type="button" title="Flow velocity field">
