@@ -1,9 +1,15 @@
 import { EXEC, preloadAoperLinSolveWasm, preloadAsetupWasm, preloadAeroWasm, preloadAicWasmBridge, preloadAsetpLuWasmBridge } from './aoper.js';
 import { TRMSET_CORE } from './atrim.js';
+import { SYSMAT, EIGSOL } from '../src/amode.js';
+import { APPGET } from '../src/amass.js';
 
 let execWasm = null;
 let execWasmReady = null;
 let execWasmState = null;
+let amodeWasm = null;
+let amodeWasmReady = null;
+let amodeWasmState = null;
+let amodeWasmLast = null;
 
 async function loadExecWasm() {
   if (execWasm) return execWasm;
@@ -30,6 +36,129 @@ async function loadExecWasm() {
 
 function idx2(i, j, dim1) {
   return i + dim1 * j;
+}
+
+function ensureAmodeState(state) {
+  state.JEMAX = state.JEMAX || 12;
+  state.JEU = state.JEU || 1;
+  state.JEW = state.JEW || 2;
+  state.JEQ = state.JEQ || 3;
+  state.JETH = state.JETH || 4;
+  state.JEV = state.JEV || 5;
+  state.JEP = state.JEP || 6;
+  state.JER = state.JER || 7;
+  state.JEPH = state.JEPH || 8;
+  state.JEX = state.JEX || 9;
+  state.JEY = state.JEY || 10;
+  state.JEZ = state.JEZ || 11;
+  state.JEPS = state.JEPS || 12;
+  if (!state.__amode) {
+    const jemax = state.JEMAX + 1;
+    const ndmax = (state.NDMAX || Math.max(1, state.NCONTROL || 1)) + 1;
+    state.__amode = {
+      ASYS: new Float32Array(jemax * jemax),
+      BSYS: new Float32Array(jemax * ndmax),
+      RSYS: new Float32Array(jemax),
+    };
+  }
+}
+
+async function loadAmodeWasm() {
+  if (amodeWasm) return amodeWasm;
+  if (amodeWasmReady) return amodeWasmReady;
+  amodeWasmReady = (async () => {
+    const url = new URL('./amode.wasm', import.meta.url);
+    const bytes = await (await fetch(url)).arrayBuffer();
+    const imports = {
+      env: {
+        runchk_js: () => {},
+        sysmat_js: (ir) => {
+          const { ASYS, BSYS, RSYS } = amodeWasmState.__amode;
+          amodeWasmLast = SYSMAT(amodeWasmState, ir, ASYS, BSYS, RSYS);
+        },
+        appmat_js: () => {},
+        syssho_js: () => {},
+        eigsol_js: (ir, etol, nsys) => {
+          const { ASYS } = amodeWasmState.__amode;
+          amodeWasmLast = EIGSOL(amodeWasmState, ir, etol, ASYS, nsys);
+        },
+      },
+    };
+    const { instance } = await WebAssembly.instantiate(bytes, imports);
+    amodeWasm = instance.exports;
+    return amodeWasm;
+  })();
+  return amodeWasmReady;
+}
+
+function normalizeEigenVec(vr, vi, nsys) {
+  let mag = 0;
+  for (let i = 0; i < nsys; i += 1) {
+    mag = Math.max(mag, Math.hypot(vr[i] || 0, vi[i] || 0));
+  }
+  const s = mag > 1e-8 ? 1 / mag : 1;
+  return {
+    re: Array.from({ length: nsys }, (_, i) => (vr[i] || 0) * s),
+    im: Array.from({ length: nsys }, (_, i) => (vi[i] || 0) * s),
+  };
+}
+
+async function computeEigenmodes(state, useWasm) {
+  ensureAmodeState(state);
+  const IR = 1;
+  const ETOL = 1e-5;
+  if (state.LMASS) {
+    try {
+      APPGET(state);
+    } catch (err) {
+      log(`APPGET failed: ${err?.message ?? err}`);
+    }
+  }
+  let sysRes = null;
+  let eigRes = null;
+  if (useWasm) {
+    const wasm = await loadAmodeWasm();
+    amodeWasmState = state;
+    wasm.SYSMAT(IR);
+    sysRes = amodeWasmLast;
+    const nsys = sysRes?.NSYS || 0;
+    wasm.EIGSOL(IR, ETOL, nsys);
+    eigRes = amodeWasmLast;
+  } else {
+    const { ASYS, BSYS, RSYS } = state.__amode;
+    sysRes = SYSMAT(state, IR, ASYS, BSYS, RSYS);
+    eigRes = EIGSOL(state, IR, ETOL, ASYS, sysRes?.NSYS || 0);
+  }
+  const nsys = sysRes?.NSYS || 0;
+  const evals = eigRes?.EVAL || [];
+  const evecs = eigRes?.EVEC || [];
+  const names = ['u', 'w', 'q', 'theta', 'v', 'p', 'r', 'phi', 'x', 'y', 'z', 'psi'];
+  const modes = evals.map((ev, idx) => {
+    const vec = evecs[idx] ? normalizeEigenVec(evecs[idx].re, evecs[idx].im, nsys) : { re: [], im: [] };
+    const v = vec.re;
+    const roll = (v[5] || 0) + 0.8 * (v[7] || 0);
+    const pitch = (v[2] || 0) + 0.8 * (v[3] || 0);
+    const yaw = (v[6] || 0) + 0.8 * (v[11] || 0);
+    const tx = (v[0] || 0) + 0.6 * (v[8] || 0);
+    const ty = (v[4] || 0) + 0.6 * (v[9] || 0);
+    const tz = (v[1] || 0) + 0.6 * (v[10] || 0);
+    return {
+      name: `Mode ${idx + 1}`,
+      re: ev.re,
+      im: ev.im,
+      stateOrder: names.slice(0, nsys),
+      eigenvector: vec,
+      vec: {
+        rx: roll,
+        ry: pitch,
+        rz: yaw,
+        tx,
+        ty,
+        tz,
+      },
+    };
+  });
+  return { nsys, modes };
 }
 
 function log(message) {
@@ -177,6 +306,7 @@ onmessage = async (evt) => {
       for (let i = 1; i <= state.NCONTROL; i += 1) out[i] = state.CHINGE[i - 1] ?? 0.0;
       return out;
     })() : null;
+    const eigen = await computeEigenmodes(state, Boolean(useWasm));
     postMessage({
       type: 'result',
       requestId,
@@ -236,11 +366,21 @@ onmessage = async (evt) => {
       CHINGE: hinge,
       JFRST: state.JFRST ? Array.from(state.JFRST) : null,
       NJ: state.NJ ? Array.from(state.NJ) : null,
+      BETM: state.BETM,
+      IYSYM: state.IYSYM,
+      IZSYM: state.IZSYM,
+      YSYM: state.YSYM,
+      ZSYM: state.ZSYM,
+      NVOR: state.NVOR,
+      GAM: state.GAM ? Array.from(state.GAM.slice(0, state.NVOR + 1)) : null,
+      RV1: state.RV1 ? Array.from(state.RV1.slice(0, 4 * (state.NVOR + 1))) : null,
+      RV2: state.RV2 ? Array.from(state.RV2.slice(0, 4 * (state.NVOR + 1))) : null,
       PARVAL: state.PARVAL,
       WROT: state.WROT,
       DELCON: state.DELCON,
       SPANEF: state.SPANEF,
       TREFFTZ: trefftz,
+      EIGEN: eigen,
     });
   } catch (err) {
     postMessage({ type: 'error', message: err?.message ?? String(err) });

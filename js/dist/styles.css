@@ -39,6 +39,7 @@ body {
   align-items: baseline;
   justify-content: space-between;
   padding: 0;
+  gap: 12px;
 }
 
 .title-text {
@@ -69,6 +70,21 @@ body {
 
 .title-sub a:hover {
   color: #a8ccff;
+}
+
+.github-star {
+  display: inline-flex;
+  align-items: center;
+}
+
+.github-star-desktop {
+  margin-left: auto;
+}
+
+.github-star-mobile {
+  display: none;
+  justify-content: flex-start;
+  padding: 2px 2px 0;
 }
 
 a {
@@ -126,6 +142,10 @@ a:hover {
 
 .col {
   min-width: 0;
+}
+
+.editor-col {
+  display: none;
 }
 
 .settings-col, .plots-col, .outputs-col {
@@ -587,13 +607,18 @@ textarea.code {
 }
 
 .stage {
-  background: linear-gradient(180deg, rgba(18, 23, 34, 0.88), rgba(15, 19, 29, 0.96));
+  background: var(--panel);
   border: 1px solid var(--edge);
   border-radius: 18px;
   box-shadow: 0 30px 50px var(--shadow);
   overflow: hidden;
   position: relative;
   animation: rise 420ms ease both;
+}
+
+.stage-panel-body {
+  padding: 0;
+  position: relative;
 }
 
 .stage-header {
@@ -663,6 +688,7 @@ textarea.code {
   position: relative;
   height: clamp(240px, 44vh, 460px);
   touch-action: none;
+  background: var(--panel);
 }
 
 .viewer-aircraft-name {
@@ -685,6 +711,7 @@ textarea.code {
 
 .viewer canvas {
   touch-action: none;
+  background: var(--panel);
 }
 
 .viewer-overlay {
@@ -693,6 +720,16 @@ textarea.code {
   right: 12px;
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  z-index: 5;
+}
+
+.viewer-overlay-bottom {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: row;
   gap: 8px;
   z-index: 5;
 }
@@ -737,6 +774,18 @@ textarea.code {
   overflow: hidden;
   position: relative;
   display: block;
+}
+
+.eigen-plot {
+  width: 100%;
+  height: clamp(180px, 24vh, 280px);
+  background: var(--panel);
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+  overflow: hidden;
+  position: relative;
+  display: block;
+  touch-action: none;
 }
 
 .trefftz-overlay {
@@ -1364,6 +1413,39 @@ textarea.code {
   gap: 8px;
 }
 
+.mass-props-panel {
+  gap: 10px;
+}
+
+.mass-props-actions {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 10px;
+}
+
+.mass-props-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.mass-props-grid > label.flight-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+}
+
+.mass-props-grid > label.flight-row .label-text {
+  white-space: nowrap;
+}
+
+.mass-props-grid > label.flight-row > input {
+  width: 100%;
+  min-width: 0;
+  margin-left: 0 !important;
+  float: none !important;
+}
+
 @keyframes rise {
   from { transform: translateY(12px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
@@ -1391,6 +1473,14 @@ textarea.code {
     flex-wrap: nowrap;
     gap: 4px;
     min-width: 0;
+  }
+
+  .github-star-desktop {
+    display: none;
+  }
+
+  .github-star-mobile {
+    display: inline-flex;
   }
 
   .title-sub {
@@ -1423,6 +1513,7 @@ textarea.code {
     padding: 16px 16px 24px 16px;
     gap: 16px;
     min-height: calc(100vh - 120px);
+    min-height: calc(100dvh - 120px);
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
@@ -1436,4 +1527,52 @@ textarea.code {
     scroll-snap-align: start;
   }
 
+  #editorCol {
+    order: 0;
+    display: flex;
+    min-height: calc(100vh - 120px);
+    min-height: calc(100dvh - 120px);
+  }
+
+  #settingsCol {
+    order: 1;
+  }
+
+  #plotsCol {
+    order: 2;
+  }
+
+  #outputsCol {
+    order: 3;
+  }
+
+  #editorCol > .panel-col {
+    gap: 0;
+    min-height: 100%;
+  }
+
+  #editorPanel {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 100%;
+  }
+
+  #editorPanel > .panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding-bottom: 12px;
+  }
+
+  #editorPanel .file-editor {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+  }
+
+  #editorPanel .file-highlight,
+  #editorPanel .file-editor textarea.code {
+    min-height: 100%;
+    height: 100%;
+  }
 }

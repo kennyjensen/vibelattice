@@ -6,6 +6,7 @@
   (import "env" "sysmat_js" (func $sysmat_js (param i32)))
   (import "env" "appmat_js" (func $appmat_js (param i32)))
   (import "env" "syssho_js" (func $syssho_js (param i32)))
+  (import "env" "eigsol_js" (func $eigsol_js (param i32 f64 i32)))
   (memory (export "memory") 1)
 
   (func (export "RUNCHK") (param $run i32)
@@ -16,4 +17,6 @@
     (call $appmat_js (local.get $ir)))
   (func (export "SYSSHO") (param $n i32)
     (call $syssho_js (local.get $n)))
+  (func (export "EIGSOL") (param $ir i32) (param $etol f64) (param $nsys i32)
+    (call $eigsol_js (local.get $ir) (local.get $etol) (local.get $nsys)))
 )

@@ -373,6 +373,23 @@ export function APPGET(state) {
     }
   }
 
+  // Runtime geometry arrays are 1-based (AVL-style) with 4-value point stride.
+  // Some unit tests use compact 0-based arrays with 3-value stride.
+  const stripBase = (
+    (state.CHORD?.length ?? 0) >= state.NSTRIP + 1
+    && (state.WSTRIP?.length ?? 0) >= state.NSTRIP + 1
+    && (state.ENSY?.length ?? 0) >= state.NSTRIP + 1
+    && (state.ENSZ?.length ?? 0) >= state.NSTRIP + 1
+  ) ? 1 : 0;
+  const vecDim = (
+    (state.RLE?.length ?? 0) >= 4 * (state.NSTRIP + stripBase)
+    && (state.RLE1?.length ?? 0) >= 4 * (state.NSTRIP + stripBase)
+    && (state.RLE2?.length ?? 0) >= 4 * (state.NSTRIP + stripBase)
+  ) ? 4 : 3;
+  // Runtime geometry built by MAKESURF stores vectors in 4-stride arrays with
+  // component indices 1..3. Compact test fixtures store 3-stride vectors at 0..2.
+  const coordBase = vecDim === 4 ? 1 : 0;
+
   const uc = new Float32Array(3);
   const us = new Float32Array(3);
   const un = new Float32Array(3);
@@ -380,16 +397,21 @@ export function APPGET(state) {
   const rxun = new Float32Array(3);
 
   for (let j = 0; j < state.NSTRIP; j += 1) {
-    const cr = f32(state.CHORD[j]);
-    const sr = f32(cr * state.WSTRIP[j]);
+    const jj = j + stripBase;
+    const cr = f32(state.CHORD[jj] ?? 0.0);
+    const sr = f32(cr * (state.WSTRIP[jj] ?? 0.0));
 
     un[0] = 0.0;
-    un[1] = state.ENSY[j];
-    un[2] = state.ENSZ[j];
+    un[1] = state.ENSY[jj] ?? 0.0;
+    un[2] = state.ENSZ[jj] ?? 0.0;
 
-    us[0] = f32(state.RLE2[idx2(0, j, 3)] - state.RLE1[idx2(0, j, 3)] + f32(0.5 * f32(state.CHORD2[j] - state.CHORD1[j])));
-    us[1] = f32(state.RLE2[idx2(1, j, 3)] - state.RLE1[idx2(1, j, 3)]);
-    us[2] = f32(state.RLE2[idx2(2, j, 3)] - state.RLE1[idx2(2, j, 3)]);
+    us[0] = f32(
+      (state.RLE2[idx2(coordBase + 0, jj, vecDim)] ?? 0.0)
+      - (state.RLE1[idx2(coordBase + 0, jj, vecDim)] ?? 0.0)
+      + f32(0.5 * f32((state.CHORD2[jj] ?? 0.0) - (state.CHORD1[jj] ?? 0.0))),
+    );
+    us[1] = f32((state.RLE2[idx2(coordBase + 1, jj, vecDim)] ?? 0.0) - (state.RLE1[idx2(coordBase + 1, jj, vecDim)] ?? 0.0));
+    us[2] = f32((state.RLE2[idx2(coordBase + 2, jj, vecDim)] ?? 0.0) - (state.RLE1[idx2(coordBase + 2, jj, vecDim)] ?? 0.0));
     const umag = f32(Math.sqrt(f32(us[0] * us[0] + us[1] * us[1] + us[2] * us[2])));
     if (umag > 0.0) {
       us[0] = f32(us[0] / umag);
@@ -399,9 +421,9 @@ export function APPGET(state) {
 
     CROSS(us, un, uc);
 
-    rm[0] = f32(state.RLE[idx2(0, j, 3)] + f32(0.5 * cr));
-    rm[1] = state.RLE[idx2(1, j, 3)];
-    rm[2] = state.RLE[idx2(2, j, 3)];
+    rm[0] = f32((state.RLE[idx2(coordBase + 0, jj, vecDim)] ?? 0.0) + f32(0.5 * cr));
+    rm[1] = state.RLE[idx2(coordBase + 1, jj, vecDim)] ?? 0.0;
+    rm[2] = state.RLE[idx2(coordBase + 2, jj, vecDim)] ?? 0.0;
 
     CROSS(rm, un, rxun);
 

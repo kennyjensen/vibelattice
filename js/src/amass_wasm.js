@@ -96,27 +96,78 @@ export async function loadAmassWasm(options = {}) {
 
   function APPGET_wasm(state) {
     allocator.reset();
-    const chordPtr = allocF32(state.CHORD.length);
-    const wstripPtr = allocF32(state.WSTRIP.length);
-    const ensyPtr = allocF32(state.ENSY.length);
-    const enszPtr = allocF32(state.ENSZ.length);
-    const rle1Ptr = allocF32(state.RLE1.length);
-    const rle2Ptr = allocF32(state.RLE2.length);
-    const chord1Ptr = allocF32(state.CHORD1.length);
-    const chord2Ptr = allocF32(state.CHORD2.length);
-    const rlePtr = allocF32(state.RLE.length);
+
+    const oneBased = (
+      (state.CHORD?.length ?? 0) >= state.NSTRIP + 1
+      && (state.WSTRIP?.length ?? 0) >= state.NSTRIP + 1
+      && (state.ENSY?.length ?? 0) >= state.NSTRIP + 1
+      && (state.ENSZ?.length ?? 0) >= state.NSTRIP + 1
+      && (state.RLE?.length ?? 0) >= 4 * (state.NSTRIP + 1)
+      && (state.RLE1?.length ?? 0) >= 4 * (state.NSTRIP + 1)
+      && (state.RLE2?.length ?? 0) >= 4 * (state.NSTRIP + 1)
+    );
+
+    let chord = state.CHORD;
+    let wstrip = state.WSTRIP;
+    let ensy = state.ENSY;
+    let ensz = state.ENSZ;
+    let chord1 = state.CHORD1;
+    let chord2 = state.CHORD2;
+    let rle = state.RLE;
+    let rle1 = state.RLE1;
+    let rle2 = state.RLE2;
+
+    if (oneBased) {
+      chord = new Float32Array(state.NSTRIP);
+      wstrip = new Float32Array(state.NSTRIP);
+      ensy = new Float32Array(state.NSTRIP);
+      ensz = new Float32Array(state.NSTRIP);
+      chord1 = new Float32Array(state.NSTRIP);
+      chord2 = new Float32Array(state.NSTRIP);
+      rle = new Float32Array(3 * state.NSTRIP);
+      rle1 = new Float32Array(3 * state.NSTRIP);
+      rle2 = new Float32Array(3 * state.NSTRIP);
+      for (let j = 0; j < state.NSTRIP; j += 1) {
+        const jj = j + 1;
+        chord[j] = state.CHORD[jj] ?? 0.0;
+        wstrip[j] = state.WSTRIP[jj] ?? 0.0;
+        ensy[j] = state.ENSY[jj] ?? 0.0;
+        ensz[j] = state.ENSZ[jj] ?? 0.0;
+        chord1[j] = state.CHORD1[jj] ?? 0.0;
+        chord2[j] = state.CHORD2[jj] ?? 0.0;
+        rle1[j * 3 + 0] = state.RLE1[jj * 4 + 1] ?? 0.0;
+        rle1[j * 3 + 1] = state.RLE1[jj * 4 + 2] ?? 0.0;
+        rle1[j * 3 + 2] = state.RLE1[jj * 4 + 3] ?? 0.0;
+        rle2[j * 3 + 0] = state.RLE2[jj * 4 + 1] ?? 0.0;
+        rle2[j * 3 + 1] = state.RLE2[jj * 4 + 2] ?? 0.0;
+        rle2[j * 3 + 2] = state.RLE2[jj * 4 + 3] ?? 0.0;
+        rle[j * 3 + 0] = state.RLE[jj * 4 + 1] ?? 0.0;
+        rle[j * 3 + 1] = state.RLE[jj * 4 + 2] ?? 0.0;
+        rle[j * 3 + 2] = state.RLE[jj * 4 + 3] ?? 0.0;
+      }
+    }
+
+    const chordPtr = allocF32(chord.length);
+    const wstripPtr = allocF32(wstrip.length);
+    const ensyPtr = allocF32(ensy.length);
+    const enszPtr = allocF32(ensz.length);
+    const rle1Ptr = allocF32(rle1.length);
+    const rle2Ptr = allocF32(rle2.length);
+    const chord1Ptr = allocF32(chord1.length);
+    const chord2Ptr = allocF32(chord2.length);
+    const rlePtr = allocF32(rle.length);
     const amassPtr = allocF32(9);
     const ainerPtr = allocF32(9);
 
-    writeF32(f32, chordPtr, state.CHORD);
-    writeF32(f32, wstripPtr, state.WSTRIP);
-    writeF32(f32, ensyPtr, state.ENSY);
-    writeF32(f32, enszPtr, state.ENSZ);
-    writeF32(f32, rle1Ptr, state.RLE1);
-    writeF32(f32, rle2Ptr, state.RLE2);
-    writeF32(f32, chord1Ptr, state.CHORD1);
-    writeF32(f32, chord2Ptr, state.CHORD2);
-    writeF32(f32, rlePtr, state.RLE);
+    writeF32(f32, chordPtr, chord);
+    writeF32(f32, wstripPtr, wstrip);
+    writeF32(f32, ensyPtr, ensy);
+    writeF32(f32, enszPtr, ensz);
+    writeF32(f32, rle1Ptr, rle1);
+    writeF32(f32, rle2Ptr, rle2);
+    writeF32(f32, chord1Ptr, chord1);
+    writeF32(f32, chord2Ptr, chord2);
+    writeF32(f32, rlePtr, rle);
 
     APPGET(state.NSTRIP, Math.fround(state.UNITL), Math.fround(Math.PI),
       chordPtr, wstripPtr, ensyPtr, enszPtr,

@@ -23,14 +23,30 @@
         <div class="title">VibeLattice</div>
         <div class="title-sub">A vortex lattice method based on <a href="https://web.mit.edu/drela/Public/web/avl/" target="_blank" rel="noopener">AVL</a></div>
       </div>
+      <div id="githubStarDesktop" class="github-star github-star-desktop">
+        <a
+          class="github-button"
+          href="https://github.com/kennyjensen/vibelattice"
+          data-color-scheme="no-preference: dark; light: dark; dark: dark;"
+          data-icon="octicon-star"
+          data-size="large"
+          data-show-count="true"
+          aria-label="Star kennyjensen/vibelattice on GitHub"
+        >Star</a>
+      </div>
     </div>
   </header>
   <div class="page-indicator" role="tablist" aria-label="Panels">
-    <button id="navSettings" class="nav-btn active" data-index="0" type="button">Settings</button>
-    <button id="navPlots" class="nav-btn" data-index="1" type="button">Plots</button>
-    <button id="navOutputs" class="nav-btn" data-index="2" type="button">Outputs</button>
+    <button id="navEditor" class="nav-btn" data-index="0" type="button">Editor</button>
+    <button id="navSettings" class="nav-btn" data-index="1" type="button">Settings</button>
+    <button id="navPlots" class="nav-btn active" data-index="2" type="button">Plots</button>
+    <button id="navOutputs" class="nav-btn" data-index="3" type="button">Outputs</button>
   </div>
   <div class="app" id="appRoot">
+    <section class="col editor-col" id="editorCol">
+      <aside class="panel-col" id="editorPanelCol"></aside>
+    </section>
+
     <section class="col settings-col" id="settingsCol">
       <aside class="panel-col">
       <div class="panel">
@@ -87,16 +103,16 @@
       <div class="panel">
         <div class="panel-title">Flight Conditions</div>
         <div class="panel-body flight-conditions">
-          <label class="flight-row"><span class="label-text">Gravity (m/s<sup>2</sup>)</span>
+          <label class="flight-row"><span class="label-text">Gravity</span>
             <input id="gee" type="number" step="0.01" value="9.81" />
           </label>
-          <label class="flight-row"><span class="label-text">Air density (kg/m<sup>3</sup>)</span>
+          <label class="flight-row"><span class="label-text">Air density</span>
             <input id="rho" type="number" step="0.001" value="1.225" />
           </label>
-          <label class="flight-row"><span class="label-text">Mass (kg)</span>
+          <label class="flight-row"><span class="label-text">Mass</span>
             <input id="mass" type="number" step="0.1" value="120" />
           </label>
-          <label class="flight-row"><span class="label-text">Velocity (m/s)</span>
+          <label class="flight-row"><span class="label-text">Velocity</span>
             <input id="vel" type="number" step="0.1" value="30" />
           </label>
           <label class="flight-row"><span class="label-text">C<sub>L</sub></span>
@@ -111,12 +127,12 @@
           <input id="clLoop" type="hidden" value="0.6" />
           <input id="velLoop" type="hidden" value="30" />
           <div id="levelInputs" class="grid-2 flight-grid">
-            <label class="flight-row"><span class="label-text">Bank angle (deg)</span>
+            <label class="flight-row"><span class="label-text">Bank angle</span>
               <input id="bank" type="number" step="0.1" value="0" />
             </label>
           </div>
           <div id="loopInputs" class="grid-2 flight-grid hidden">
-            <label class="flight-row"><span class="label-text">Turn radius (m)</span>
+            <label class="flight-row"><span class="label-text">Turn radius</span>
               <input id="radLoop" type="number" step="0.1" value="0" />
             </label>
             <label class="flight-row"><span class="label-text">Load factor</span>
@@ -147,6 +163,32 @@
           <div id="runCaseList" class="run-cases-list"></div>
           <div class="row run-case-edit-actions">
             <button id="runCaseAddBtn" class="btn" type="button">Add case</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Mass Properties</div>
+        <div class="panel-body mass-props-panel">
+          <div class="row mass-props-actions">
+            <label class="btn">
+              Load Mass
+              <input id="massPropsInput" type="file" accept=".mass,text/plain,application/octet-stream" hidden />
+            </label>
+            <button id="massPropsSaveBtn" class="btn" type="button">Save Mass</button>
+          </div>
+          <div class="file-meta" id="massPropsMeta">No mass file loaded.</div>
+          <div class="mass-props-grid">
+            <label class="flight-row"><span class="label-text">Mass</span><input id="massTotal" type="number" step="0.0001" /></label>
+            <label class="flight-row"><span class="label-text">Xcg</span><input id="massXcg" type="number" step="0.0001" /></label>
+            <label class="flight-row"><span class="label-text">Ycg</span><input id="massYcg" type="number" step="0.0001" /></label>
+            <label class="flight-row"><span class="label-text">Zcg</span><input id="massZcg" type="number" step="0.0001" /></label>
+            <label class="flight-row"><span class="label-text">Ixx</span><input id="massIxx" type="number" step="0.0001" /></label>
+            <label class="flight-row"><span class="label-text">Iyy</span><input id="massIyy" type="number" step="0.0001" /></label>
+            <label class="flight-row"><span class="label-text">Izz</span><input id="massIzz" type="number" step="0.0001" /></label>
+            <label class="flight-row"><span class="label-text">Ixy</span><input id="massIxy" type="number" step="0.0001" /></label>
+            <label class="flight-row"><span class="label-text">Ixz</span><input id="massIxz" type="number" step="0.0001" /></label>
+            <label class="flight-row"><span class="label-text">Iyz</span><input id="massIyz" type="number" step="0.0001" /></label>
           </div>
         </div>
       </div>
@@ -212,18 +254,76 @@
               </svg>
             </button>
           </div>
+          <div class="viewer-overlay-bottom">
+            <button class="viewer-btn icon-btn" id="viewerSurface" type="button" title="Surface mode">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7l8-4 8 4-8 4-8-4z" />
+                <path d="M4 12l8 4 8-4" />
+                <path d="M4 17l8 4 8-4" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerPressure" type="button" title="Toggle pressure">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3c2.8 3.7 5 6.2 5 9.2a5 5 0 1 1-10 0c0-3 2.2-5.5 5-9.2z" />
+                <path d="M9.3 13.2a2.9 2.9 0 0 0 2.7 2.8" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerPanelSpacing" type="button" title="Panel spacing">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="4" width="16" height="16" rx="1.2" />
+                <path d="M4 9.5h16M4 14.5h16M9.5 4v16M14.5 4v16" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerVortices" type="button" title="Bound and leg vortices">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 12h8" />
+                <path d="M12 12l4-4M12 12l4 4" />
+                <path d="M16 8h4M16 16h4" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="viewerFlow" type="button" title="Flow velocity field">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 8h10" />
+                <path d="M4 12h14" />
+                <path d="M4 16h8" />
+                <path d="M12 6l2 2-2 2M16 10l2 2-2 2M10 14l2 2-2 2" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
 
-      <div class="stage">
-        <div class="trefftz-overlay" id="trefftzOverlay" aria-hidden="true">
-          <div class="trefftz-spinner" aria-hidden="true"></div>
-          <div class="trefftz-overlay-text">Thinking…</div>
+      <div class="stage panel" id="trefftzPanel">
+        <div class="panel-title">Trefftz</div>
+        <div class="panel-body stage-panel-body">
+          <div class="trefftz-overlay" id="trefftzOverlay" aria-hidden="true">
+            <div class="trefftz-spinner" aria-hidden="true"></div>
+            <div class="trefftz-overlay-text">Thinking…</div>
+          </div>
+          <canvas id="trefftz" class="trefftz-plot" width="860" height="320" style="background:#0f1115;"></canvas>
         </div>
-        <canvas id="trefftz" class="trefftz-plot" width="860" height="320"></canvas>
       </div>
 
-      <div class="panel">
+      <div class="stage panel" id="eigenPanel">
+        <div class="panel-title">Eigenmodes</div>
+        <div class="panel-body stage-panel-body">
+          <canvas id="eigenPlot" class="eigen-plot" width="860" height="280" style="background:#0f1115;"></canvas>
+        </div>
+      </div>
+      <div id="githubStarMobile" class="github-star github-star-mobile">
+        <a
+          class="github-button"
+          href="https://github.com/kennyjensen/vibelattice"
+          data-color-scheme="no-preference: dark; light: dark; dark: dark;"
+          data-icon="octicon-star"
+          data-size="large"
+          data-show-count="true"
+          aria-label="Star kennyjensen/vibelattice on GitHub"
+        >Star</a>
+      </div>
+
+      <div id="editorDesktopAnchor"></div>
+      <div class="panel" id="editorPanel">
         <div class="panel-title">AVL Editor</div>
         <div class="panel-body">
           <div class="file-editor" id="fileEditor">
@@ -425,5 +525,6 @@ rudder  1.0  0.0  0. 0. 0.  1
       .then(() => window.__debugLog?.('App module loaded.'))
       .catch((err) => window.__debugLog?.(`App module failed: ${err?.message ?? err}`));
   </script>
+  <script async defer src="https://buttons.github.io/buttons.js"></script>
 </body>
 </html>

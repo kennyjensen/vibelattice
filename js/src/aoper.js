@@ -345,6 +345,9 @@ export function EXEC(state, NITER, INFO, IR) {
     const ddc = new Float64Array(state.NDMAX + 1);
     const work = new Float64Array(ivmax + 1);
     const ivsys = new Int32Array(ivmax + 1);
+    if (state.DEBUG_TRIM) {
+      state.__trimIters = [];
+    }
 
     for (let iter = 1; iter <= niter; iter += 1) {
       let ca;
@@ -593,6 +596,17 @@ export function EXEC(state, NITER, INFO, IR) {
       for (let n = 1; n <= state.NCONTROL; n += 1) {
         const iv = state.IVTOT + n;
         ddc[n] = -vres[iv];
+      }
+      if (state.DEBUG_TRIM) {
+        state.__trimIters.push({
+          iter,
+          dal,
+          dbe,
+          dwx,
+          dwy,
+          dwz,
+          ddc: Array.from(ddc.slice(1, state.NCONTROL + 1)),
+        });
       }
 
       const dmax = 1.5708;

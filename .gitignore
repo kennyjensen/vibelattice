@@ -1,0 +1,7 @@
+*.o
+*.a
+test-results
+*_ref
+third_party/avl/bin/*
+third_party/avl/runs/*
+third_party/avl/plotlib/*

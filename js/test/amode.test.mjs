@@ -17,6 +17,14 @@ function runFortranRef() {
   return proc.stdout;
 }
 
+function runFortranEigRef() {
+  const bin = path.join(refDir, 'amode_eig_ref');
+  const proc = spawnSync(bin, { encoding: 'utf8' });
+  if (proc.error) throw proc.error;
+  if (proc.status !== 0) throw new Error(proc.stderr || `ref exited with ${proc.status}`);
+  return proc.stdout;
+}
+
 function extractNumbers(text) {
   const matches = text.match(/[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eEdD][-+]?\d+)?/g) || [];
   return matches.map((v) => Number(v.replace(/d/i, 'e')));
@@ -292,4 +300,43 @@ test('amode.f WASM port matches Fortran reference', async () => {
   const appRsysNums = extractNumbers(sections.get('RSYS_APPMAT'));
   const actualAppRsys = extractRSYS(state, state.__amode.RSYS, appRes.NSYS);
   assertCloseArray(actualAppRsys, appRsysNums, 1e-3);
+});
+
+test('amode EIGSOL JS/WASM match Fortran eigenvalue reference', async () => {
+  const refBin = path.join(refDir, 'amode_eig_ref');
+  if (!fs.existsSync(refBin)) {
+    assert.fail(`Fortran eigen reference binary not found: ${refBin}`);
+  }
+  const refOut = runFortranEigRef();
+  const sections = splitSections(refOut);
+  const eigNums = extractNumbers(sections.get('EIGSOL'));
+  assert.ok(eigNums.length >= 2, 'missing EIGSOL output in fortran reference');
+  const ierr = Math.trunc(eigNums[0]);
+  const nEig = Math.trunc(eigNums[1]);
+  assert.equal(ierr, 0, 'Fortran EIGSOL failed');
+  const refEig = [];
+  for (let i = 0; i < nEig; i += 1) {
+    refEig.push({ re: eigNums[2 + 2 * i], im: eigNums[2 + 2 * i + 1] });
+  }
+  const key = (e) => `${Number(e.re).toFixed(6)},${Number(e.im).toFixed(6)}`;
+  const refSet = new Set(refEig.map(key));
+
+  const stateJs = makeState();
+  const ASYS_JS = new Float32Array((stateJs.JEMAX + 1) * (stateJs.JEMAX + 1));
+  const BSYS_JS = new Float32Array((stateJs.JEMAX + 1) * (stateJs.NDMAX + 1));
+  const RSYS_JS = new Float32Array(stateJs.JEMAX + 1);
+  const appJs = APPMAT(stateJs, 1, ASYS_JS, BSYS_JS, RSYS_JS);
+  const { EIGSOL } = await import('../src/amode.js');
+  const eigJs = EIGSOL(stateJs, 1, 1.0e-5, ASYS_JS, appJs.NSYS);
+  assert.equal(eigJs.KEIG, refEig.length);
+  const jsSet = new Set(eigJs.EVAL.map(key));
+  assert.deepEqual(jsSet, refSet);
+
+  const stateWasm = makeState();
+  const { APPMAT_wasm, EIGSOL_wasm } = await loadAmodeWasm();
+  const appWasm = APPMAT_wasm(stateWasm, 1);
+  const eigWasm = EIGSOL_wasm(stateWasm, 1, 1.0e-5, stateWasm.__amode.ASYS, appWasm.NSYS);
+  assert.equal(eigWasm.KEIG, refEig.length);
+  const wasmSet = new Set(eigWasm.EVAL.map(key));
+  assert.deepEqual(wasmSet, refSet);
 });

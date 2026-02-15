@@ -12,6 +12,12 @@ all: $(REF_BINS)
 %_ref: %_ref.f $(AVL_SRC)
 	$(FC) $(FFLAGS) -o $@ $< $(AVL_SRC)
 
+vorvel_ref: vorvel_ref.f $(AVL_SRC_DIR)/vorvel.f
+	$(FC) $(FFLAGS) -o $@ $< $(AVL_SRC_DIR)/vorvel.f
+
+vorvelc_ref: vorvelc_ref.f $(AVL_SRC_DIR)/vorvelc.f
+	$(FC) $(FFLAGS) -o $@ $< $(AVL_SRC_DIR)/vorvelc.f
+
 matrix_ref: matrix_ref.f90 $(AVL_SRC)
 	$(FC) $(FFLAGS) -o $@ $< $(AVL_SRC)
 

@@ -3,6 +3,11 @@ import { EXEC } from './aoper.js';
 import { MAKESURF, ENCALC, SDUPL } from './amake.js';
 import { GETCAM } from './airutil.js';
 import { AKIMA, NRMLIZ } from './sgutil.js';
+import {
+  addInducedVelocityFromVorvelc as addInducedVelocityFromVorvelcKernel,
+  addInducedVelocityFromHorseshoe as addInducedVelocityFromHorseshoeKernel,
+  buildSolverHorseshoesFromExec,
+} from './flow_induced.js';
 
 let THREE = null;
 let OrbitControls = null;
@@ -47,15 +52,21 @@ const els = {
   trimBtn: document.getElementById('trimBtn'),
   useWasmExec: document.getElementById('useWasmExec'),
   appRoot: document.getElementById('appRoot'),
+  navEditor: document.getElementById('navEditor'),
   navSettings: document.getElementById('navSettings'),
   navPlots: document.getElementById('navPlots'),
   navOutputs: document.getElementById('navOutputs'),
+  editorCol: document.getElementById('editorCol'),
+  editorPanelCol: document.getElementById('editorPanelCol'),
   settingsCol: document.getElementById('settingsCol'),
   plotsCol: document.getElementById('plotsCol'),
   outputsCol: document.getElementById('outputsCol'),
+  editorDesktopAnchor: document.getElementById('editorDesktopAnchor'),
+  editorPanel: document.getElementById('editorPanel'),
   viewer: document.getElementById('viewer'),
   viewerAircraftName: document.getElementById('viewerAircraftName'),
   trefftz: document.getElementById('trefftz'),
+  eigenPlot: document.getElementById('eigenPlot'),
   trefftzOverlay: document.getElementById('trefftzOverlay'),
   outAlpha: document.getElementById('outAlpha'),
   outBeta: document.getElementById('outBeta'),
@@ -102,6 +113,11 @@ const els = {
   viewerGrid: document.getElementById('viewerGrid'),
   viewerCoord: document.getElementById('viewerCoord'),
   viewerLoad: document.getElementById('viewerLoad'),
+  viewerSurface: document.getElementById('viewerSurface'),
+  viewerPressure: document.getElementById('viewerPressure'),
+  viewerPanelSpacing: document.getElementById('viewerPanelSpacing'),
+  viewerVortices: document.getElementById('viewerVortices'),
+  viewerFlow: document.getElementById('viewerFlow'),
   constraintRows: [],
   constraintTable: document.getElementById('constraintTable'),
   runCasesInput: document.getElementById('runCasesInput'),
@@ -109,6 +125,19 @@ const els = {
   runCasesMeta: document.getElementById('runCasesMeta'),
   runCaseList: document.getElementById('runCaseList'),
   runCaseAddBtn: document.getElementById('runCaseAddBtn'),
+  massPropsInput: document.getElementById('massPropsInput'),
+  massPropsSaveBtn: document.getElementById('massPropsSaveBtn'),
+  massPropsMeta: document.getElementById('massPropsMeta'),
+  massTotal: document.getElementById('massTotal'),
+  massXcg: document.getElementById('massXcg'),
+  massYcg: document.getElementById('massYcg'),
+  massZcg: document.getElementById('massZcg'),
+  massIxx: document.getElementById('massIxx'),
+  massIyy: document.getElementById('massIyy'),
+  massIzz: document.getElementById('massIzz'),
+  massIxy: document.getElementById('massIxy'),
+  massIxz: document.getElementById('massIxz'),
+  massIyz: document.getElementById('massIyz'),
 };
 
 const uiState = {
@@ -121,9 +150,26 @@ const uiState = {
   loopDriver: 'cl',
   lastExecResult: null,
   showLoading: false,
+  surfaceRenderMode: 'wireframe',
+  showPressure: false,
+  showPanelSpacing: false,
+  showVortices: false,
+  showFlowField: false,
+  flowFieldMode: 'induced',
+  pressureField: null,
+  eigenModes: [],
+  eigenModesByRunCase: {},
+  selectedEigenMode: -1,
+  eigenPoints: [],
+  eigenZoom: 1,
+  eigenCenterRe: 0,
+  eigenCenterIm: 0,
+  eigenViewport: null,
   runCases: [],
   runCasesFilename: null,
   selectedRunCaseIndex: -1,
+  massProps: null,
+  massPropsFilename: null,
 };
 
 const viewerState = {
@@ -136,6 +182,8 @@ const viewerState = {
   fitDistance: 12,
   coordMode: 'body',
 };
+
+const FLOW_FIELD_MODES = ['induced', 'induced+rotation', 'full'];
 
 let execInProgress = false;
 let trefftzPlot = null;
@@ -587,22 +635,55 @@ function updateTrefftzBusy() {
   }, remaining);
 }
 
+function syncEditorPanelPlacement() {
+  if (!els.editorPanel || !els.editorDesktopAnchor || !els.editorPanelCol) return;
+  const mobile = typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 900px)').matches;
+  if (mobile) {
+    if (els.editorPanel.parentElement !== els.editorPanelCol) {
+      els.editorPanelCol.appendChild(els.editorPanel);
+    }
+    return;
+  }
+
+  const desktopParent = els.editorDesktopAnchor.parentElement;
+  if (!desktopParent) return;
+  if (els.editorPanel.parentElement !== desktopParent || els.editorDesktopAnchor.nextElementSibling !== els.editorPanel) {
+    els.editorDesktopAnchor.after(els.editorPanel);
+  }
+}
+
 function initTopNav() {
-  if (!els.appRoot || !els.navSettings || !els.navPlots || !els.navOutputs) return;
+  if (!els.appRoot || !els.navEditor || !els.navSettings || !els.navPlots || !els.navOutputs) return;
+  syncEditorPanelPlacement();
   const navItems = [
+    { btn: els.navEditor, col: els.editorCol },
     { btn: els.navSettings, col: els.settingsCol },
     { btn: els.navPlots, col: els.plotsCol },
     { btn: els.navOutputs, col: els.outputsCol },
   ];
+  const getTargetLeft = (idx) => {
+    const col = navItems[idx]?.col;
+    if (col && Number.isFinite(col.offsetLeft)) return Math.max(0, col.offsetLeft);
+    const pageWidth = els.appRoot.clientWidth || 0;
+    return Math.max(0, pageWidth * idx);
+  };
   const setActiveIndex = (index) => {
     const clamped = Math.max(0, Math.min(index, navItems.length - 1));
     navItems.forEach(({ btn }, idx) => btn?.classList?.toggle('active', idx === clamped));
   };
 
   const updateActiveFromScroll = () => {
-    const pageWidth = els.appRoot.clientWidth;
-    if (!pageWidth) return;
-    const index = Math.round(els.appRoot.scrollLeft / pageWidth);
+    const left = els.appRoot.scrollLeft;
+    let index = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    navItems.forEach((_, idx) => {
+      const target = getTargetLeft(idx);
+      const distance = Math.abs(left - target);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        index = idx;
+      }
+    });
     setActiveIndex(index);
   };
 
@@ -610,8 +691,7 @@ function initTopNav() {
     if (!btn) return;
     if (btn.dataset) btn.dataset.index = String(idx);
     btn.addEventListener('click', () => {
-      const pageWidth = els.appRoot.clientWidth;
-      els.appRoot.scrollTo({ left: pageWidth * idx, behavior: 'smooth' });
+      els.appRoot.scrollTo({ left: getTargetLeft(idx), behavior: 'smooth' });
       setActiveIndex(idx);
     });
   });
@@ -626,17 +706,18 @@ function initTopNav() {
   }, { passive: true });
 
   requestAnimationFrame(() => {
+    syncEditorPanelPlacement();
     const hasMatchMedia = typeof window.matchMedia === 'function';
     if (hasMatchMedia && window.matchMedia('(max-width: 900px)').matches) {
-      const defaultIndex = 1;
-      const pageWidth = els.appRoot.clientWidth;
-      if (pageWidth) {
-        els.appRoot.scrollLeft = pageWidth * defaultIndex;
+      const defaultIndex = 2;
+      const targetLeft = getTargetLeft(defaultIndex);
+      if (targetLeft > 0 || defaultIndex === 0) {
+        els.appRoot.scrollLeft = targetLeft;
         setActiveIndex(defaultIndex);
         return;
       }
     }
-    setActiveIndex(0);
+    updateActiveFromScroll();
   });
 }
 
@@ -1195,11 +1276,231 @@ function caseColorOrFallback(entry, index) {
   return palette[index % palette.length];
 }
 
+function hexToRgba(hex, alpha = 1) {
+  const h = String(hex || '').trim();
+  if (!/^#[0-9a-fA-F]{6}$/.test(h)) return `rgba(147,197,253,${alpha})`;
+  const r = Number.parseInt(h.slice(1, 3), 16);
+  const g = Number.parseInt(h.slice(3, 5), 16);
+  const b = Number.parseInt(h.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function activeRunCaseColor() {
+  if (!Array.isArray(uiState.runCases) || !uiState.runCases.length) return null;
+  const idx = (Number.isInteger(uiState.selectedRunCaseIndex) && uiState.selectedRunCaseIndex >= 0)
+    ? Math.min(uiState.selectedRunCaseIndex, uiState.runCases.length - 1)
+    : 0;
+  return caseColorOrFallback(uiState.runCases[idx], idx);
+}
+
+function activeRunCaseIndex() {
+  if (!Array.isArray(uiState.runCases) || !uiState.runCases.length) return -1;
+  if (Number.isInteger(uiState.selectedRunCaseIndex) && uiState.selectedRunCaseIndex >= 0) {
+    return Math.min(uiState.selectedRunCaseIndex, uiState.runCases.length - 1);
+  }
+  return 0;
+}
+
+function clearEigenModeRunCaseCache() {
+  uiState.eigenModesByRunCase = {};
+  uiState.eigenModes = [];
+  uiState.selectedEigenMode = -1;
+  stopModeAnimation();
+  drawEigenPlot();
+}
+
 function ensureRunFileExtension(name) {
   const trimmed = String(name || '').trim();
   if (!trimmed) return 'cases.run';
   if (/\.[Rr][Uu][Nn]$/.test(trimmed)) return trimmed;
   return `${trimmed}.run`;
+}
+
+function ensureMassFileExtension(name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return 'model.mass';
+  if (/\.[Mm][Aa][Ss][Ss]$/.test(trimmed)) return trimmed;
+  return `${trimmed}.mass`;
+}
+
+function readMassPropsFromUI() {
+  const num = (el, fallback = 0) => {
+    const v = Number(el?.value);
+    return Number.isFinite(v) ? v : fallback;
+  };
+  return {
+    mass: num(els.massTotal, num(els.mass, 0)),
+    xcg: num(els.massXcg, Number(uiState.modelHeader?.xref) || 0),
+    ycg: num(els.massYcg, Number(uiState.modelHeader?.yref) || 0),
+    zcg: num(els.massZcg, Number(uiState.modelHeader?.zref) || 0),
+    ixx: num(els.massIxx, 0),
+    iyy: num(els.massIyy, 0),
+    izz: num(els.massIzz, 0),
+    ixy: num(els.massIxy, 0),
+    ixz: num(els.massIxz, 0),
+    iyz: num(els.massIyz, 0),
+    g: Number.isFinite(Number(els.gee?.value)) ? Number(els.gee.value) : 9.81,
+    rho: Number.isFinite(Number(els.rho?.value)) ? Number(els.rho.value) : 1.225,
+    lunit: 'm',
+    munit: 'kg',
+    tunit: 's',
+  };
+}
+
+function makeDefaultMassProps() {
+  return {
+    mass: Number(els.mass?.value || 0),
+    xcg: Number(uiState.modelHeader?.xref || 0),
+    ycg: Number(uiState.modelHeader?.yref || 0),
+    zcg: Number(uiState.modelHeader?.zref || 0),
+    ixx: 0,
+    iyy: 0,
+    izz: 0,
+    ixy: 0,
+    ixz: 0,
+    iyz: 0,
+    g: Number(els.gee?.value || 9.81),
+    rho: Number(els.rho?.value || 1.225),
+    lunit: 'm',
+    munit: 'kg',
+    tunit: 's',
+  };
+}
+
+function renderMassProps(props = null) {
+  const mp = props || uiState.massProps || readMassPropsFromUI();
+  uiState.massProps = mp;
+  const show = (el, v, d = 4) => {
+    if (!el) return;
+    el.value = Number.isFinite(Number(v)) ? fmt(Number(v), d) : '';
+  };
+  show(els.massTotal, mp.mass, 4);
+  show(els.massXcg, mp.xcg, 4);
+  show(els.massYcg, mp.ycg, 4);
+  show(els.massZcg, mp.zcg, 4);
+  show(els.massIxx, mp.ixx, 4);
+  show(els.massIyy, mp.iyy, 4);
+  show(els.massIzz, mp.izz, 4);
+  show(els.massIxy, mp.ixy, 4);
+  show(els.massIxz, mp.ixz, 4);
+  show(els.massIyz, mp.iyz, 4);
+  if (els.massPropsMeta) {
+    const name = ensureMassFileExtension(uiState.massPropsFilename || 'model.mass');
+    els.massPropsMeta.textContent = `Mass=${fmt(mp.mass, 4)} • ${name}`;
+  }
+}
+
+function parseMassFileText(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const vars = { g: null, rho: null, lunit: 'm', munit: 'kg', tunit: 's' };
+  const scale = new Array(10).fill(1);
+  const add = new Array(10).fill(0);
+  const rows = [];
+
+  const stripComments = (line) => String(line || '').replace(/!.*/, '').replace(/#.*/, '').trim();
+  const parseNums = (line) => line.trim().split(/\s+/).map((t) => Number(t)).filter((n) => Number.isFinite(n));
+
+  lines.forEach((raw) => {
+    const line = stripComments(raw);
+    if (!line) return;
+    const varMatch = line.match(/^(Lunit|Munit|Tunit|g|rho)\s*=\s*([^\s]+)\s*([A-Za-z\/^0-9._-]+)?/i);
+    if (varMatch) {
+      const key = varMatch[1].toLowerCase();
+      const val = Number(varMatch[2]);
+      if (key === 'lunit' || key === 'munit' || key === 'tunit') {
+        vars[key] = String(varMatch[3] || varMatch[2] || vars[key]).replace(/[^A-Za-z]/g, '') || vars[key];
+      } else if (Number.isFinite(val)) {
+        vars[key] = val;
+      }
+      return;
+    }
+    if (line.startsWith('*')) {
+      const nums = parseNums(line.slice(1));
+      nums.forEach((n, i) => { if (i < scale.length) scale[i] = n; });
+      return;
+    }
+    if (line.startsWith('+')) {
+      const nums = parseNums(line.slice(1));
+      nums.forEach((n, i) => { if (i < add.length) add[i] = n; });
+      return;
+    }
+    const nums = parseNums(line);
+    if (nums.length < 7) return;
+    const rawVals = new Array(10).fill(0);
+    nums.slice(0, 10).forEach((n, i) => { rawVals[i] = n; });
+    const vals = rawVals.map((v, i) => add[i] + scale[i] * v);
+    rows.push({
+      mass: vals[0], x: vals[1], y: vals[2], z: vals[3],
+      ixx: vals[4], iyy: vals[5], izz: vals[6], ixy: vals[7], ixz: vals[8], iyz: vals[9],
+    });
+  });
+
+  if (!rows.length) throw new Error('No mass rows found.');
+  let massSum = 0;
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  rows.forEach((r) => {
+    massSum += r.mass;
+    sx += r.mass * r.x;
+    sy += r.mass * r.y;
+    sz += r.mass * r.z;
+  });
+  if (!Number.isFinite(massSum) || Math.abs(massSum) < 1e-12) throw new Error('Invalid total mass.');
+  const xcg = sx / massSum;
+  const ycg = sy / massSum;
+  const zcg = sz / massSum;
+
+  let ixx0 = 0;
+  let iyy0 = 0;
+  let izz0 = 0;
+  let ixy0 = 0;
+  let ixz0 = 0;
+  let iyz0 = 0;
+  rows.forEach((r) => {
+    ixx0 += r.ixx + r.mass * (r.y * r.y + r.z * r.z);
+    iyy0 += r.iyy + r.mass * (r.x * r.x + r.z * r.z);
+    izz0 += r.izz + r.mass * (r.x * r.x + r.y * r.y);
+    ixy0 += r.ixy + r.mass * (r.x * r.y);
+    ixz0 += r.ixz + r.mass * (r.x * r.z);
+    iyz0 += r.iyz + r.mass * (r.y * r.z);
+  });
+
+  return {
+    mass: massSum,
+    xcg,
+    ycg,
+    zcg,
+    ixx: ixx0 - massSum * (ycg * ycg + zcg * zcg),
+    iyy: iyy0 - massSum * (xcg * xcg + zcg * zcg),
+    izz: izz0 - massSum * (xcg * xcg + ycg * ycg),
+    ixy: ixy0 - massSum * xcg * ycg,
+    ixz: ixz0 - massSum * xcg * zcg,
+    iyz: iyz0 - massSum * ycg * zcg,
+    g: Number.isFinite(vars.g) ? vars.g : Number(els.gee?.value || 9.81),
+    rho: Number.isFinite(vars.rho) ? vars.rho : Number(els.rho?.value || 1.225),
+    lunit: vars.lunit,
+    munit: vars.munit,
+    tunit: vars.tunit,
+  };
+}
+
+function serializeMassFile(props) {
+  const p = props || readMassPropsFromUI();
+  return [
+    '# VibeLattice Mass Properties',
+    '#',
+    `Lunit = 1.0 ${p.lunit || 'm'}`,
+    `Munit = 1.0 ${p.munit || 'kg'}`,
+    `Tunit = 1.0 ${p.tunit || 's'}`,
+    '',
+    `g   = ${fmt(p.g, 6)}`,
+    `rho = ${fmt(p.rho, 6)}`,
+    '',
+    '# mass    xcg    ycg    zcg     Ixx     Iyy     Izz     Ixy     Ixz     Iyz',
+    `${fmt(p.mass, 6)} ${fmt(p.xcg, 6)} ${fmt(p.ycg, 6)} ${fmt(p.zcg, 6)} ${fmt(p.ixx, 6)} ${fmt(p.iyy, 6)} ${fmt(p.izz, 6)} ${fmt(p.ixy, 6)} ${fmt(p.ixz, 6)} ${fmt(p.iyz, 6)}`,
+    '',
+  ].join('\n');
 }
 
 function updateRunCasesMeta(message = '') {
@@ -1234,6 +1535,7 @@ function selectRunCase(index, { apply = true } = {}) {
   if (apply) applyRunCaseToUI(uiState.runCases[index]);
   renderRunCasesList();
   updateRunCasesMeta();
+  drawEigenPlot();
 }
 
 function renderRunCasesList() {
@@ -1284,6 +1586,7 @@ function renderRunCasesList() {
     color.addEventListener('click', (evt) => evt.stopPropagation());
     color.addEventListener('input', () => {
       entry.color = color.value;
+      drawEigenPlot();
     });
 
     const trash = document.createElement('button');
@@ -1304,6 +1607,10 @@ function renderRunCasesList() {
       evt.stopPropagation();
       const removedSelected = idx === uiState.selectedRunCaseIndex;
       uiState.runCases.splice(idx, 1);
+      uiState.eigenModesByRunCase = {};
+      uiState.eigenModes = [];
+      uiState.selectedEigenMode = -1;
+      stopModeAnimation();
       if (!uiState.runCases.length) {
         uiState.selectedRunCaseIndex = -1;
       } else if (removedSelected) {
@@ -1314,6 +1621,7 @@ function renderRunCasesList() {
       }
       renderRunCasesList();
       updateRunCasesMeta();
+      drawEigenPlot();
     });
 
     row.addEventListener('click', () => {
@@ -1468,22 +1776,6 @@ function parseAvlRunCasesText(text) {
     'cn yaw mom': 'cmz',
   };
 
-  const toSI = (value, unitText, key) => {
-    const unit = normalizeRunKey(unitText);
-    if (!Number.isFinite(value)) return value;
-    if (unit.includes('ft/s^2')) return value * 0.3048;
-    if (unit.includes('ft/s')) return value * 0.3048;
-    if (unit.includes('slug/ft^3')) return value * 515.378818;
-    if (unit === 'ft') return value * 0.3048;
-    if (unit === 'slug') return value * 14.59390294;
-    if (key === 'velocity') return value * 0.3048;
-    if (key === 'density') return value * 515.378818;
-    if (key === 'gravacc') return value * 0.3048;
-    if (key === 'turnrad') return value * 0.3048;
-    if (key === 'mass') return value * 14.59390294;
-    return value;
-  };
-
   for (const rawLine of lines) {
     const line = String(rawLine || '');
     const caseMatch = line.match(/^\s*Run case\s+\d+\s*:\s*(.*?)\s*$/i);
@@ -1514,22 +1806,23 @@ function parseAvlRunCasesText(text) {
     const value = Number(valueMatch[2]);
     const unitRaw = valueMatch[3] || '';
     const keyNorm = normalizeRunKey(keyRaw);
-    const siValue = toSI(value, unitRaw, keyNorm);
-    if (!Number.isFinite(siValue)) continue;
+    if (!Number.isFinite(value)) continue;
 
-    if (keyNorm === 'bank') current.inputs.bank = siValue;
-    else if (keyNorm === 'velocity') current.inputs.vel = siValue;
-    else if (keyNorm === 'density') current.inputs.rho = siValue;
-    else if (keyNorm === 'gravacc') current.inputs.gee = siValue;
-    else if (keyNorm === 'turnrad') current.inputs.radLoop = siValue;
-    else if (keyNorm === 'loadfac') current.inputs.facLoop = siValue;
-    else if (keyNorm === 'cl') current.inputs.cl = siValue;
-    else if (keyNorm === 'mass') current.inputs.mass = siValue;
-    else if (keyNorm === 'alpha') current.constraints.push({ variable: 'alpha', constraint: 'alpha', numeric: siValue });
-    else if (keyNorm === 'beta') current.constraints.push({ variable: 'beta', constraint: 'beta', numeric: siValue });
-    else if (keyNorm === 'pb/2v') current.constraints.push({ variable: 'p', constraint: 'p', numeric: siValue });
-    else if (keyNorm === 'qc/2v') current.constraints.push({ variable: 'q', constraint: 'q', numeric: siValue });
-    else if (keyNorm === 'rb/2v') current.constraints.push({ variable: 'r', constraint: 'r', numeric: siValue });
+    const hasMappedVariable = (variableKey) => current.constraints.some((row) => row.variable === variableKey);
+
+    if (keyNorm === 'bank') current.inputs.bank = value;
+    else if (keyNorm === 'velocity') current.inputs.vel = value;
+    else if (keyNorm === 'density') current.inputs.rho = value;
+    else if (keyNorm === 'gravacc') current.inputs.gee = value;
+    else if (keyNorm === 'turnrad') current.inputs.radLoop = value;
+    else if (keyNorm === 'loadfac') current.inputs.facLoop = value;
+    else if (keyNorm === 'cl') current.inputs.cl = value;
+    else if (keyNorm === 'mass') current.inputs.mass = value;
+    else if (keyNorm === 'alpha' && !hasMappedVariable('alpha')) current.constraints.push({ variable: 'alpha', constraint: 'alpha', numeric: value });
+    else if (keyNorm === 'beta' && !hasMappedVariable('beta')) current.constraints.push({ variable: 'beta', constraint: 'beta', numeric: value });
+    else if (keyNorm === 'pb/2v' && !hasMappedVariable('p')) current.constraints.push({ variable: 'p', constraint: 'p', numeric: value });
+    else if (keyNorm === 'qc/2v' && !hasMappedVariable('q')) current.constraints.push({ variable: 'q', constraint: 'q', numeric: value });
+    else if (keyNorm === 'rb/2v' && !hasMappedVariable('r')) current.constraints.push({ variable: 'r', constraint: 'r', numeric: value });
   }
   if (current) cases.push(current);
 
@@ -1557,6 +1850,51 @@ function parseRunsPayload(text) {
   if (!normalized.length) throw new Error('No run cases found in file.');
   if (selectedIndex < 0 || selectedIndex >= normalized.length) selectedIndex = 0;
   return { cases: normalized, selectedIndex };
+}
+
+function applyLoadedRunCases(parsed, filename, source = 'Loaded') {
+  uiState.eigenModesByRunCase = {};
+  uiState.eigenModes = [];
+  uiState.selectedEigenMode = -1;
+  stopModeAnimation();
+  uiState.runCases = parsed.cases;
+  uiState.selectedRunCaseIndex = parsed.selectedIndex;
+  uiState.runCasesFilename = filename;
+  renderRunCasesList();
+  updateRunCasesMeta(`${source} ${parsed.cases.length} run case(s) from ${filename}`);
+  applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
+  drawEigenPlot();
+}
+
+function applyLoadedMassProps(props, filename, source = 'Loaded') {
+  uiState.massPropsFilename = filename;
+  uiState.massProps = props;
+  renderMassProps(props);
+  if (els.mass) setNumericInput(els.mass, props.mass, 4);
+  const hasActiveRunCase = Array.isArray(uiState.runCases) && uiState.runCases.length > 0 && uiState.selectedRunCaseIndex >= 0;
+  if (!hasActiveRunCase) {
+    if (els.gee) setNumericInput(els.gee, props.g, 4);
+    if (els.rho) setNumericInput(els.rho, props.rho, 6);
+  }
+  scheduleAutoTrim();
+  logDebug(`${source} mass file: ${filename}`);
+}
+
+function resetAuxPanelsForNewAvl() {
+  uiState.runCases = [];
+  uiState.selectedRunCaseIndex = -1;
+  uiState.runCasesFilename = null;
+  renderRunCasesList();
+  updateRunCasesMeta();
+  uiState.eigenModesByRunCase = {};
+  uiState.eigenModes = [];
+  uiState.selectedEigenMode = -1;
+  stopModeAnimation();
+  drawEigenPlot();
+
+  uiState.massPropsFilename = null;
+  uiState.massProps = makeDefaultMassProps();
+  renderMassProps(uiState.massProps);
 }
 
 function buildRunsPayload() {
@@ -1893,20 +2231,41 @@ function applyAirfoilTextForKey(path, text) {
 
 async function handleFileLoad(file) {
   const text = await readFileAsText(file);
+  const lower = String(file.name || '').toLowerCase();
+  const isAvl = lower.endsWith('.avl');
   uiState.text = text;
   uiState.filename = file.name;
   setFileTextValue(uiState.text);
   els.fileMeta.textContent = `Loaded: ${file.name} (${file.size} bytes)`;
   loadGeometryFromText(uiState.text, true);
+  if (isAvl) {
+    resetAuxPanelsForNewAvl();
+  }
   resetTrimSeed();
   applyTrim({ useSeed: false });
   logDebug(`Loaded file: ${file.name}`);
+}
+
+async function loadRunCasesFromFile(file, source = 'Loaded') {
+  const text = await readFileAsText(file);
+  const parsed = parseRunsPayload(text);
+  applyLoadedRunCases(parsed, file.name, source);
+  logDebug(`${source} run cases: ${file.name}`);
+}
+
+async function loadMassPropsFromFile(file, source = 'Loaded') {
+  const text = await readFileAsText(file);
+  const props = parseMassFileText(text);
+  applyLoadedMassProps(props, file.name, source);
 }
 
 async function handleFileSelection(files) {
   const all = Array.from(files || []);
   if (!all.length) return;
 
+  const avlFiles = [];
+  const runFiles = [];
+  const massFiles = [];
   const textFiles = [];
   for (const file of all) {
     const lower = String(file.name || '').toLowerCase();
@@ -1921,22 +2280,36 @@ async function handleFileSelection(files) {
       }
       continue;
     }
-    if (lower.endsWith('.avl') || lower.endsWith('.run') || lower.endsWith('.txt')) {
-      textFiles.push(file);
-    }
+    if (lower.endsWith('.avl')) avlFiles.push(file);
+    else if (lower.endsWith('.run')) runFiles.push(file);
+    else if (lower.endsWith('.mass')) massFiles.push(file);
+    else if (lower.endsWith('.txt')) textFiles.push(file);
   }
 
-  const primary = textFiles.find((f) => String(f.name || '').toLowerCase().endsWith('.avl'))
-    || textFiles.find((f) => String(f.name || '').toLowerCase().endsWith('.run'))
-    || textFiles[0]
-    || null;
-
-  if (primary) {
-    await handleFileLoad(primary);
-  } else {
+  const primaryAvl = avlFiles[0] || textFiles[0] || null;
+  if (primaryAvl) {
+    await handleFileLoad(primaryAvl);
+  } else if (!runFiles.length && !massFiles.length) {
     renderRequiredAirfoilFiles();
     scheduleAutoTrim();
     els.fileMeta.textContent = `Loaded dependencies: ${all.length} file(s)`;
+  }
+
+  if (runFiles[0]) {
+    try {
+      await loadRunCasesFromFile(runFiles[0], 'Loaded');
+    } catch (err) {
+      updateRunCasesMeta(`Failed to load ${runFiles[0].name}`);
+      logDebug(`Run cases load failed: ${err?.message ?? err}`);
+    }
+  }
+  if (massFiles[0]) {
+    try {
+      await loadMassPropsFromFile(massFiles[0], 'Loaded');
+    } catch (err) {
+      if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massFiles[0].name}`;
+      logDebug(`Mass file load failed: ${err?.message ?? err}`);
+    }
   }
 
   // Repaint dependency status after model parse.
@@ -1984,6 +2357,54 @@ async function loadDefaultAVL() {
   logDebug('Default file plane.avl not found.');
 }
 
+async function fetchTextFromCandidates(candidates) {
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const text = await res.text();
+      if (!text.trim()) continue;
+      return text;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+async function loadDefaultRunAndMass() {
+  const runCandidates = [
+    new URL('./third_party/avl/runs/plane.run', window.location.href).toString(),
+    new URL('../third_party/avl/runs/plane.run', window.location.href).toString(),
+    new URL('../../third_party/avl/runs/plane.run', window.location.href).toString(),
+  ];
+  const runText = await fetchTextFromCandidates(runCandidates);
+  if (runText) {
+    try {
+      const parsed = parseRunsPayload(runText);
+      applyLoadedRunCases(parsed, 'plane.run', 'Loaded default');
+      logDebug('Loaded default run cases: plane.run');
+    } catch (err) {
+      logDebug(`Default run-case load failed: ${err?.message ?? err}`);
+    }
+  }
+
+  const massCandidates = [
+    new URL('./third_party/avl/runs/plane.mass', window.location.href).toString(),
+    new URL('../third_party/avl/runs/plane.mass', window.location.href).toString(),
+    new URL('../../third_party/avl/runs/plane.mass', window.location.href).toString(),
+  ];
+  const massText = await fetchTextFromCandidates(massCandidates);
+  if (massText) {
+    try {
+      const props = parseMassFileText(massText);
+      applyLoadedMassProps(props, 'plane.mass', 'Loaded default');
+    } catch (err) {
+      logDebug(`Default mass load failed: ${err?.message ?? err}`);
+    }
+  }
+}
+
 els.fileInput.addEventListener('change', async (evt) => {
   const files = evt.target.files;
   if (files?.length) await handleFileSelection(files);
@@ -2019,15 +2440,7 @@ els.runCasesInput?.addEventListener('change', async (evt) => {
   evt.target.value = '';
   if (!file) return;
   try {
-    const text = await readFileAsText(file);
-    const parsed = parseRunsPayload(text);
-    uiState.runCases = parsed.cases;
-    uiState.selectedRunCaseIndex = parsed.selectedIndex;
-    uiState.runCasesFilename = file.name;
-    renderRunCasesList();
-    updateRunCasesMeta(`Loaded ${parsed.cases.length} run case(s) from ${file.name}`);
-    applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
-    logDebug(`Loaded run cases: ${file.name}`);
+    await loadRunCasesFromFile(file, 'Loaded');
   } catch (err) {
     updateRunCasesMeta(`Failed to load ${file.name}`);
     logDebug(`Run cases load failed: ${err?.message ?? err}`);
@@ -2055,10 +2468,51 @@ els.runCaseAddBtn?.addEventListener('click', () => {
   const created = captureRunCaseFromUI(name);
   created.color = caseColorOrFallback(created, uiState.runCases.length);
   uiState.runCases.push(created);
+  uiState.eigenModesByRunCase = {};
+  uiState.eigenModes = [];
+  uiState.selectedEigenMode = -1;
+  stopModeAnimation();
   uiState.selectedRunCaseIndex = uiState.runCases.length - 1;
   applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
   renderRunCasesList();
   updateRunCasesMeta();
+  drawEigenPlot();
+});
+
+els.massPropsInput?.addEventListener('change', async (evt) => {
+  const file = evt.target?.files?.[0];
+  evt.target.value = '';
+  if (!file) return;
+  try {
+    await loadMassPropsFromFile(file, 'Loaded');
+  } catch (err) {
+    if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${file.name}`;
+    logDebug(`Mass file load failed: ${err?.message ?? err}`);
+  }
+});
+
+els.massPropsSaveBtn?.addEventListener('click', () => {
+  const props = readMassPropsFromUI();
+  uiState.massProps = props;
+  const filename = ensureMassFileExtension(uiState.massPropsFilename || 'model.mass');
+  uiState.massPropsFilename = filename;
+  downloadText(filename, serializeMassFile(props));
+  renderMassProps(props);
+});
+
+[
+  els.massTotal, els.massXcg, els.massYcg, els.massZcg,
+  els.massIxx, els.massIyy, els.massIzz, els.massIxy, els.massIxz, els.massIyz,
+].forEach((el) => {
+  if (!el) return;
+  el.addEventListener('input', () => {
+    uiState.massProps = readMassPropsFromUI();
+  });
+  el.addEventListener('change', () => {
+    uiState.massProps = readMassPropsFromUI();
+    renderMassProps(uiState.massProps);
+    scheduleAutoTrim();
+  });
 });
 
 els.clearDebug?.addEventListener('click', () => {
@@ -2110,6 +2564,58 @@ els.viewerLoad?.addEventListener('click', () => {
   els.viewerLoad.classList.toggle('active', uiState.showLoading);
   updateLoadingVisualization();
 });
+els.viewerSurface?.addEventListener('click', () => {
+  const cycle = ['wireframe', 'both', 'surface'];
+  const idx = cycle.indexOf(uiState.surfaceRenderMode);
+  uiState.surfaceRenderMode = cycle[(idx + 1 + cycle.length) % cycle.length];
+  updateViewerButtons();
+  applySurfaceRenderMode();
+});
+els.viewerPressure?.addEventListener('click', () => {
+  uiState.showPressure = !uiState.showPressure;
+  if (uiState.showPressure && uiState.surfaceRenderMode !== 'surface') {
+    uiState.surfaceRenderMode = 'surface';
+  }
+  updateViewerButtons();
+  applySurfaceRenderMode();
+});
+els.viewerPanelSpacing?.addEventListener('click', () => {
+  uiState.showPanelSpacing = !uiState.showPanelSpacing;
+  applyAuxOverlayVisibility();
+  updateViewerButtons();
+});
+els.viewerVortices?.addEventListener('click', () => {
+  uiState.showVortices = !uiState.showVortices;
+  applyAuxOverlayVisibility();
+  updateViewerButtons();
+});
+els.viewerFlow?.addEventListener('click', () => {
+  if (!uiState.showFlowField) {
+    uiState.showFlowField = true;
+  } else {
+    const idx = FLOW_FIELD_MODES.indexOf(uiState.flowFieldMode);
+    const safeIdx = idx >= 0 ? idx : 0;
+    if (safeIdx >= FLOW_FIELD_MODES.length - 1) {
+      uiState.showFlowField = false;
+      uiState.flowFieldMode = FLOW_FIELD_MODES[0];
+    } else {
+      uiState.flowFieldMode = FLOW_FIELD_MODES[safeIdx + 1];
+    }
+  }
+  if (aircraft) {
+    const bounds = computeBounds(aircraft);
+    rebuildAuxOverlays(bounds || null);
+  } else {
+    applyAuxOverlayVisibility();
+  }
+  updateViewerButtons();
+});
+els.eigenPlot?.addEventListener('click', handleEigenCanvasClick);
+els.eigenPlot?.addEventListener('wheel', handleEigenCanvasWheel, { passive: false });
+els.eigenPlot?.addEventListener('touchstart', handleEigenTouchStart, { passive: false });
+els.eigenPlot?.addEventListener('touchmove', handleEigenTouchMove, { passive: false });
+els.eigenPlot?.addEventListener('touchend', handleEigenTouchEnd, { passive: false });
+els.eigenPlot?.addEventListener('touchcancel', handleEigenTouchEnd, { passive: false });
 
 els.flightMode?.addEventListener('change', () => {
   syncFlightModePanels();
@@ -2326,14 +2832,14 @@ function applyTrimResults(state) {
   const fac = state.PARVAL[idx2(IPFAC, IR, state.IPTOT)];
   const cl = state.PARVAL[idx2(IPCL, IR, state.IPTOT)];
 
-  if (els.outAlpha) els.outAlpha.textContent = `${fmtSignedAligned(findVar('alpha'), 2)} deg`;
-  if (els.outBeta) els.outBeta.textContent = `${fmtSignedAligned(findVar('beta'), 2)} deg`;
-  if (els.outBank) els.outBank.textContent = `${fmt(phi, 2)} deg`;
+  if (els.outAlpha) els.outAlpha.textContent = fmtSignedAligned(findVar('alpha'), 2);
+  if (els.outBeta) els.outBeta.textContent = fmtSignedAligned(findVar('beta'), 2);
+  if (els.outBank) els.outBank.textContent = fmt(phi, 2);
   if (els.outCL) els.outCL.textContent = fmtSignedAligned(cl, 5);
-  if (els.outV) els.outV.textContent = `${fmt(vee, 2)} m/s`;
-  if (els.outRad) els.outRad.textContent = rad > 0 ? `${fmt(rad, 2)} m` : 'level';
+  if (els.outV) els.outV.textContent = fmt(vee, 2);
+  if (els.outRad) els.outRad.textContent = rad > 0 ? fmt(rad, 2) : 'level';
   if (els.outFac) els.outFac.textContent = fmt(fac, 3);
-  if (els.outThe) els.outThe.textContent = `${fmt(the, 2)} deg`;
+  if (els.outThe) els.outThe.textContent = fmt(the, 2);
   if (els.outPb2v) els.outPb2v.textContent = fmtSignedAligned(findVar('p'), 3);
   if (els.outQc2v) els.outQc2v.textContent = fmtSignedAligned(findVar('q'), 3);
   if (els.outRb2v) els.outRb2v.textContent = fmtSignedAligned(findVar('r'), 3);
@@ -2454,6 +2960,28 @@ function updateTrefftz(cl) {
   ctx.fillStyle = panelBg;
   ctx.fillRect(0, 0, width, height);
 
+  const panel = canvas.parentElement;
+  if (!hasTrefftz) {
+    const legend = panel?.querySelector?.('.trefftz-legend');
+    const axisLabels = panel?.querySelector?.('.trefftz-axis-labels');
+    if (legend) legend.style.display = 'none';
+    if (axisLabels) axisLabels.style.display = 'none';
+    panel?.querySelector?.('.trefftz-ticks')?.remove?.();
+    panel?.querySelector?.('.trefftz-axis-lines')?.remove?.();
+    panel?.querySelector?.('.trefftz-grid-lines')?.remove?.();
+    if (window.__trefftzTestHook) {
+      window.__trefftzTestHook.gridY = [];
+      window.__trefftzTestHook.zeroLine = null;
+      window.__trefftzTestHook.mapAxis = null;
+    }
+    uiState.trefftzLayoutVersion = (uiState.trefftzLayoutVersion || 0) + 1;
+    if (window.__trefftzTestHook) {
+      window.__trefftzTestHook.layoutVersion = uiState.trefftzLayoutVersion;
+      window.__trefftzTestHook.layoutReady = !document.fonts || document.fonts.status === 'loaded';
+    }
+    return;
+  }
+
   let legend = canvas.parentElement?.querySelector?.('.trefftz-legend');
   if (!legend) {
     legend = document.createElement?.('div');
@@ -2462,6 +2990,7 @@ function updateTrefftz(cl) {
       canvas.parentElement?.appendChild(legend);
     }
   }
+  if (legend) legend.style.display = '';
   if (legend) {
     legend.innerHTML = `
       <div class="trefftz-legend-item">
@@ -2498,9 +3027,10 @@ function updateTrefftz(cl) {
       canvas.parentElement?.appendChild(axisLabels);
     }
   }
+  if (axisLabels) axisLabels.style.display = '';
   if (axisLabels) {
     axisLabels.innerHTML = `
-      <div class="trefftz-axis-label x">Span (m)</div>
+      <div class="trefftz-axis-label x">Span</div>
       <div class="trefftz-axis-label y-left"><span class="katex-label" data-math="c_l"></span></div>
       <div class="trefftz-axis-label y-right"><span class="katex-label" data-math="a_i"></span></div>
     `;
@@ -2531,7 +3061,7 @@ function updateTrefftz(cl) {
     });
   }
 
-  if (hasTrefftz) {
+  {
     const { strips, surfaces, cref } = uiState.trefftzData;
     let ymin = Infinity;
     let ymax = -Infinity;
@@ -2869,26 +3399,6 @@ function updateTrefftz(cl) {
       logDebug(`Trefftz lines: y0=${fmt(y0, 2)} y1=${fmt(y1, 2)} zeroCL=${fmt(zeroLine, 2)} zeroAI=${fmt(zeroW, 2)}`);
     }
 
-  } else {
-    const span = width * 0.8;
-    const center = width * 0.1;
-    const base = height * 0.75;
-    const scale = Math.max(0.2, Math.min(1.2, cl));
-
-    ctx.beginPath();
-    for (let i = 0; i <= 120; i += 1) {
-      const t = (i / 120) * 2 - 1;
-      const y = base - (1 - t * t) * (height * 0.45) * scale;
-      const x = center + (t + 1) * (span / 2);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = '#2dd4bf';
-    ctx.lineWidth = 2;
-    ctx.shadowColor = 'rgba(45,212,191,0.35)';
-    ctx.shadowBlur = 8;
-    ctx.stroke();
-    ctx.shadowBlur = 0;
   }
 
   uiState.trefftzLayoutVersion = (uiState.trefftzLayoutVersion || 0) + 1;
@@ -2904,7 +3414,919 @@ if (typeof window !== 'undefined') {
       uiState.trefftzData = data;
       updateTrefftz(Number(els.cl?.value || 0));
     },
+    setEigenModes(modes) {
+      uiState.eigenModes = Array.isArray(modes) ? modes : [];
+      uiState.selectedEigenMode = -1;
+      uiState.eigenZoom = 1;
+      uiState.eigenCenterRe = 0;
+      uiState.eigenCenterIm = 0;
+      drawEigenPlot();
+    },
+    getSelectedEigenMode() {
+      return uiState.selectedEigenMode;
+    },
+    getEigenPoints() {
+      return Array.isArray(uiState.eigenPoints) ? uiState.eigenPoints.map((p) => ({ ...p })) : [];
+    },
+    getEigenViewport() {
+      return uiState.eigenViewport ? { ...uiState.eigenViewport } : null;
+    },
+    getViewerOverlayState() {
+      return {
+        showPanelSpacing: Boolean(uiState.showPanelSpacing),
+        showVortices: Boolean(uiState.showVortices),
+        showFlowField: Boolean(uiState.showFlowField),
+        hasPanelSpacing: Boolean(panelSpacingGroup),
+        hasVortices: Boolean(vortexGroup),
+        hasFlow: Boolean(flowFieldGroup),
+        panelSpacingVisible: Boolean(panelSpacingGroup?.visible),
+        vorticesVisible: Boolean(vortexGroup?.visible),
+        flowVisible: Boolean(flowFieldGroup?.visible),
+        flowMode: uiState.flowFieldMode,
+      };
+    },
+    setFlowSolverData(data) {
+      const payload = (data && typeof data === 'object') ? data : {};
+      uiState.lastExecResult = { ...(uiState.lastExecResult || {}), ...payload };
+      if (aircraft && uiState.displayModel) {
+        rebuildAuxOverlays(computeBounds(aircraft));
+      }
+    },
+    setFlowFieldActive(active) {
+      uiState.showFlowField = Boolean(active);
+      if (aircraft && uiState.displayModel && !flowFieldGroup) {
+        rebuildAuxOverlays(computeBounds(aircraft) || null);
+      }
+      applyAuxOverlayVisibility();
+      updateViewerButtons();
+    },
+    getFlowFieldStats() {
+      const tracer = flowFieldGroup?.getObjectByName?.('flow-tracer');
+      const tracerCfg = tracer?.userData?.flowTracer;
+      if (tracer && tracerCfg) {
+        const trailLine = tracerCfg.trailLine;
+        const trailAlphaAttr = trailLine?.geometry?.getAttribute?.('alpha');
+        const cloudCount = Math.max(0, Math.floor(Number(tracerCfg.cloudCount) || 0));
+        return {
+          count: 1 + cloudCount,
+          maxRadius: Math.hypot(
+            Number(tracer.position?.x) || 0,
+            Number(tracer.position?.y) || 0,
+            Number(tracer.position?.z) || 0,
+          ),
+          lineOpacities: [],
+          xUniqueCount: 1 + cloudCount,
+          source: flowFieldGroup?.userData?.flowSource || null,
+          vortexCount: Number(flowFieldGroup?.userData?.flowVortexCount) || 0,
+          mode: flowFieldGroup?.userData?.flowMode || null,
+          deltaOnly: Boolean(flowFieldGroup?.userData?.flowDeltaOnly),
+          attachedToAircraft: Boolean(aircraft && flowFieldGroup?.parent === aircraft),
+          includesRigidBodyRotation: Boolean(flowFieldGroup?.userData?.flowIncludesRigidBodyRotation),
+          hasAlphaAttr: Boolean(trailAlphaAttr?.count),
+          hasArrowheads: false,
+          hasTrails: Boolean(flowFieldGroup?.userData?.flowTrails),
+          cycleSeconds: null,
+          isTracer: true,
+          tracerRadius: Number(tracer.material?.size) || null,
+        };
+      }
+      const flowLines = Array.isArray(flowFieldGroup?.children)
+        ? flowFieldGroup.children.filter((obj) => obj?.isLineSegments && String(obj.name || '').startsWith('flow-vectors'))
+        : [];
+      if (!flowLines.length) return null;
+      let maxRadius = 0;
+      let count = 0;
+      const uniqueX = new Set();
+      const lineOpacities = [];
+      let hasAlphaAttr = false;
+      let cycleSeconds = null;
+      let hasArrowheads = false;
+      let hasTrails = false;
+      flowLines.forEach((line) => {
+        const pos = line.geometry?.getAttribute?.('position');
+        const alphaAttr = line.geometry?.getAttribute?.('alpha');
+        if (alphaAttr?.count) hasAlphaAttr = true;
+        const vertsPerArrow = Number(line.userData?.flowAnim?.verticesPerArrow) || 2;
+        if (Boolean(line.userData?.flowAnim?.hasArrowheads)) hasArrowheads = true;
+        if ((Number(line.userData?.flowAnim?.trailCount) || 0) > 0) hasTrails = true;
+        const cycleRate = Number(line.userData?.flowAnim?.cycleRate);
+        if (Number.isFinite(cycleRate) && cycleRate > 1e-9 && cycleSeconds == null) {
+          cycleSeconds = 1 / cycleRate;
+        }
+        if (pos?.count) {
+          for (let i = 0; i < pos.count; i += vertsPerArrow) {
+            const x = pos.getX(i);
+            const y = pos.getY(i);
+            const z = pos.getZ(i);
+            const r = Math.hypot(x, y, z);
+            if (r > maxRadius) maxRadius = r;
+            uniqueX.add(Math.round(x * 1000));
+            count += 1;
+          }
+        }
+        const opacity = Number(line.material?.opacity);
+        if (Number.isFinite(opacity)) lineOpacities.push(opacity);
+      });
+      lineOpacities.sort((a, b) => a - b);
+      return {
+        count,
+        maxRadius,
+        lineOpacities,
+        xUniqueCount: uniqueX.size,
+        source: flowFieldGroup?.userData?.flowSource || null,
+        vortexCount: Number(flowFieldGroup?.userData?.flowVortexCount) || 0,
+        mode: flowFieldGroup?.userData?.flowMode || null,
+        deltaOnly: Boolean(flowFieldGroup?.userData?.flowDeltaOnly),
+        attachedToAircraft: Boolean(aircraft && flowFieldGroup?.parent === aircraft),
+        includesRigidBodyRotation: Boolean(flowFieldGroup?.userData?.flowIncludesRigidBodyRotation),
+        hasAlphaAttr,
+        hasArrowheads,
+        hasTrails,
+        cycleSeconds,
+      };
+    },
+    getFlowAnimationProbe() {
+      const flowLines = Array.isArray(flowFieldGroup?.children)
+        ? flowFieldGroup.children.filter((obj) => obj?.isLineSegments && String(obj.name || '').startsWith('flow-vectors'))
+        : [];
+      const line = flowLines.find((obj) => obj?.geometry?.getAttribute?.('position')?.count >= 2);
+      if (line) {
+        const pos = line.geometry.getAttribute('position');
+        return {
+          sx: pos.getX(0),
+          sy: pos.getY(0),
+          sz: pos.getZ(0),
+          ex: pos.getX(1),
+          ey: pos.getY(1),
+          ez: pos.getZ(1),
+        };
+      }
+      const tracer = flowFieldGroup?.getObjectByName?.('flow-tracer');
+      const cfg = tracer?.userData?.flowTracer;
+      if (!tracer || !cfg) return null;
+      const vx = Number(cfg.velocity?.x) || 0;
+      const vy = Number(cfg.velocity?.y) || 0;
+      const vz = Number(cfg.velocity?.z) || 0;
+      return {
+        sx: Number(tracer.position?.x) || 0,
+        sy: Number(tracer.position?.y) || 0,
+        sz: Number(tracer.position?.z) || 0,
+        ex: (Number(tracer.position?.x) || 0) + vx,
+        ey: (Number(tracer.position?.y) || 0) + vy,
+        ez: (Number(tracer.position?.z) || 0) + vz,
+        isTracer: true,
+      };
+    },
+    getFlowTracerProbe() {
+      const tracer = flowFieldGroup?.getObjectByName?.('flow-tracer');
+      const cfg = tracer?.userData?.flowTracer;
+      if (!tracer || !cfg) return null;
+      return {
+        x: Number(tracer.position?.x) || 0,
+        y: Number(tracer.position?.y) || 0,
+        z: Number(tracer.position?.z) || 0,
+        startX: Number(cfg.start?.x) || 0,
+        startY: Number(cfg.start?.y) || 0,
+        startZ: Number(cfg.start?.z) || 0,
+        vx: Number(cfg.velocity?.x) || 0,
+        vy: Number(cfg.velocity?.y) || 0,
+        vz: Number(cfg.velocity?.z) || 0,
+        trailStepSeconds: Number(cfg.trailSampleSec) || null,
+        trailDurationSeconds: Number(cfg.trailDurationSec) || null,
+        trailStoredPoints: Math.max(0, Math.floor(Number(cfg.trailCount) || 0)),
+      };
+    },
+    getFlowTrailProbe() {
+      const flowLines = Array.isArray(flowFieldGroup?.children)
+        ? flowFieldGroup.children.filter((obj) => obj?.isLineSegments && String(obj.name || '').startsWith('flow-vectors'))
+        : [];
+      const line = flowLines.find((obj) => obj?.geometry?.getAttribute?.('position')?.count >= 2);
+      if (!line) {
+        const tracer = flowFieldGroup?.getObjectByName?.('flow-tracer');
+        const cfg = tracer?.userData?.flowTracer;
+        const trailLine = cfg?.trailLine;
+        const pos = trailLine?.geometry?.getAttribute?.('position');
+        const alpha = trailLine?.geometry?.getAttribute?.('alpha');
+        if (tracer && cfg && pos && alpha) {
+          const trails = [];
+          const segCount = Math.floor(pos.count / 2);
+          for (let t = 0; t < segCount; t += 1) {
+            const base = t * 2;
+            trails.push({
+              sx: pos.getX(base),
+              sy: pos.getY(base),
+              sz: pos.getZ(base),
+              ex: pos.getX(base + 1),
+              ey: pos.getY(base + 1),
+              ez: pos.getZ(base + 1),
+              alpha0: alpha.getX(base),
+              alpha1: alpha.getX(base + 1),
+            });
+          }
+          let cloudVisibleSegments = 0;
+          let cloudTotalSegments = 0;
+          const cloudAlpha = cfg.cloudTrailLine?.geometry?.getAttribute?.('alpha');
+          if (cloudAlpha?.count) {
+            cloudTotalSegments = Math.floor(cloudAlpha.count / 2);
+            for (let i = 0; i < cloudTotalSegments; i += 1) {
+              const a0 = Number(cloudAlpha.getX(i * 2) || 0);
+              const a1 = Number(cloudAlpha.getX((i * 2) + 1) || 0);
+              if (a0 > 0.02 || a1 > 0.02) cloudVisibleSegments += 1;
+            }
+          }
+          return {
+            trailCount: Number(cfg.trailPointCapacity) || 0,
+            cycleSeconds: null,
+            trailStepSeconds: Number(cfg.trailSampleSec) || null,
+            trailDurationSeconds: Number(cfg.trailDurationSec) || null,
+            trailStoredPoints: Math.max(0, Math.floor(Number(cfg.trailCount) || 0)),
+            trails,
+            cloudVisibleSegments,
+            cloudTotalSegments,
+            isTracer: true,
+          };
+        }
+        return null;
+      }
+      const anim = line.userData?.flowAnim || {};
+      const trailCount = Math.max(0, Math.floor(Number(anim.trailCount) || 0));
+      const vertsPerArrow = Math.max(2, Number(anim.verticesPerArrow) || 2);
+      const pos = line.geometry?.getAttribute?.('position');
+      const alpha = line.geometry?.getAttribute?.('alpha');
+      if (!pos || !alpha || pos.count < vertsPerArrow || alpha.count < vertsPerArrow) return null;
+      const trails = [];
+      for (let t = 0; t < trailCount; t += 1) {
+        const base = (t + 1) * 2;
+        if (base + 1 >= vertsPerArrow) break;
+        trails.push({
+          sx: pos.getX(base),
+          sy: pos.getY(base),
+          sz: pos.getZ(base),
+          ex: pos.getX(base + 1),
+          ey: pos.getY(base + 1),
+          ez: pos.getZ(base + 1),
+          alpha0: alpha.getX(base),
+          alpha1: alpha.getX(base + 1),
+        });
+      }
+      return {
+        trailCount,
+        cycleSeconds: Number.isFinite(Number(anim.cycleRate)) && Number(anim.cycleRate) > 1e-9
+          ? 1 / Number(anim.cycleRate)
+          : null,
+        trailStepSeconds: Number(anim.trailStepSeconds) || null,
+        trails,
+      };
+    },
+    getNearestFlowArrowTo(x = 0, y = 0, z = 0) {
+      const tx = Number(x);
+      const ty = Number(y);
+      const tz = Number(z);
+      if (!Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(tz)) return null;
+      const flowLines = Array.isArray(flowFieldGroup?.children)
+        ? flowFieldGroup.children.filter((obj) => obj?.isLineSegments && String(obj.name || '').startsWith('flow-vectors'))
+        : [];
+      let best = null;
+      flowLines.forEach((line) => {
+        const pos = line.geometry?.getAttribute?.('position');
+        if (!pos?.count) return;
+        const vertsPerArrow = Number(line.userData?.flowAnim?.verticesPerArrow) || 2;
+        for (let i = 0; i + 1 < pos.count; i += vertsPerArrow) {
+          const sx = pos.getX(i);
+          const sy = pos.getY(i);
+          const sz = pos.getZ(i);
+          const ex = pos.getX(i + 1);
+          const ey = pos.getY(i + 1);
+          const ez = pos.getZ(i + 1);
+          const d2 = ((sx - tx) ** 2) + ((sy - ty) ** 2) + ((sz - tz) ** 2);
+          if (!best || d2 < best.d2) {
+            best = { d2, sx, sy, sz, ex, ey, ez };
+          }
+        }
+      });
+      if (best) return best;
+      const tracer = flowFieldGroup?.getObjectByName?.('flow-tracer');
+      const cfg = tracer?.userData?.flowTracer;
+      if (tracer && cfg) {
+        const sx = Number(tracer.position?.x) || 0;
+        const sy = Number(tracer.position?.y) || 0;
+        const sz = Number(tracer.position?.z) || 0;
+        return {
+          d2: ((sx - tx) ** 2) + ((sy - ty) ** 2) + ((sz - tz) ** 2),
+          sx,
+          sy,
+          sz,
+          ex: sx + (Number(cfg.velocity?.x) || 0),
+          ey: sy + (Number(cfg.velocity?.y) || 0),
+          ez: sz + (Number(cfg.velocity?.z) || 0),
+          isTracer: true,
+        };
+      }
+      return best;
+    },
+    getOverlayAlignmentStats() {
+      const flowLines = Array.isArray(flowFieldGroup?.children)
+        ? flowFieldGroup.children.filter((obj) => obj?.isLineSegments && String(obj.name || '').startsWith('flow-vectors'))
+        : [];
+      let fx = 0;
+      let fy = 0;
+      let fz = 0;
+      let fn = 0;
+      flowLines.forEach((line) => {
+        const pos = line.geometry?.getAttribute?.('position');
+        if (!pos?.count) return;
+        const vertsPerArrow = Number(line.userData?.flowAnim?.verticesPerArrow) || 2;
+        for (let i = 0; i < pos.count; i += vertsPerArrow) {
+          fx += pos.getX(i);
+          fy += pos.getY(i);
+          fz += pos.getZ(i);
+          fn += 1;
+        }
+      });
+      if (fn <= 0) {
+        const tracer = flowFieldGroup?.getObjectByName?.('flow-tracer');
+        if (tracer?.userData?.flowTracer) {
+          fx = Number(tracer.position?.x) || 0;
+          fy = Number(tracer.position?.y) || 0;
+          fz = Number(tracer.position?.z) || 0;
+          fn = 1;
+        }
+      }
+      if (fn <= 0) return null;
+      const flowCenter = { x: fx / fn, y: fy / fn, z: fz / fn };
+
+      let vx = 0;
+      let vy = 0;
+      let vz = 0;
+      let vn = 0;
+      const boundLines = Array.isArray(vortexGroup?.children)
+        ? vortexGroup.children.filter((obj) => String(obj?.name || '') === 'bound-vortices')
+        : [];
+      const tmp = (THREE && typeof THREE.Vector3 === 'function') ? new THREE.Vector3() : null;
+      boundLines.forEach((line) => {
+        const pos = line.geometry?.getAttribute?.('position');
+        if (!pos?.count) return;
+        line.updateMatrixWorld?.(true);
+        for (let i = 0; i < pos.count; i += 1) {
+          let x = pos.getX(i);
+          let y = pos.getY(i);
+          let z = pos.getZ(i);
+          if (tmp && line.matrixWorld) {
+            tmp.set(x, y, z).applyMatrix4(line.matrixWorld);
+            x = tmp.x;
+            y = tmp.y;
+            z = tmp.z;
+          }
+          vx += x;
+          vy += y;
+          vz += z;
+          vn += 1;
+        }
+      });
+      if (vn <= 0) return { flowCenter, vortexCenter: null, dx: null, dy: null, dz: null };
+      const vortexCenter = { x: vx / vn, y: vy / vn, z: vz / vn };
+      return {
+        flowCenter,
+        vortexCenter,
+        dx: flowCenter.x - vortexCenter.x,
+        dy: flowCenter.y - vortexCenter.y,
+        dz: flowCenter.z - vortexCenter.z,
+      };
+    },
+    getReferenceMarkerPosition() {
+      if (!aircraft) return null;
+      const marker = aircraft.getObjectByName?.('reference-marker');
+      if (!marker) return null;
+      marker.updateMatrixWorld?.(true);
+      if (marker.getWorldPosition) {
+        const p = marker.getWorldPosition(new THREE.Vector3());
+        return { x: p.x, y: p.y, z: p.z };
+      }
+      return {
+        x: Number(marker.position?.x) || 0,
+        y: Number(marker.position?.y) || 0,
+        z: Number(marker.position?.z) || 0,
+      };
+    },
+    sampleInducedAtWorld(x = 0, y = 0, z = 0) {
+      const px = Number(x);
+      const py = Number(y);
+      const pz = Number(z);
+      if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) return null;
+      const flowOffset = {
+        x: Number(aircraft?.position?.x) || 0,
+        y: Number(aircraft?.position?.y) || 0,
+        z: Number(aircraft?.position?.z) || 0,
+      };
+      const flowData = buildFlowVortexDataFromExec(uiState.lastExecResult, [], flowOffset);
+      const horseshoes = Array.isArray(flowData?.horseshoes) ? flowData.horseshoes : [];
+      const solverParams = {
+        beta: Math.abs(Number(flowData?.beta) || 0) > 1e-8 ? Number(flowData.beta) : 1,
+        iysym: Number(flowData?.iysym) || 0,
+        izsym: Number(flowData?.izsym) || 0,
+        ysym: Number(flowData?.ysym) || 0,
+        zsym: Number(flowData?.zsym) || 0,
+      };
+      const acc = [0, 0, 0];
+      for (let i = 0; i < horseshoes.length; i += 1) {
+        addInducedVelocityFromHorseshoe(px, py, pz, horseshoes[i], solverParams, acc);
+      }
+      return {
+        u: acc[0],
+        v: acc[1],
+        w: acc[2],
+        count: horseshoes.length,
+        offset: flowOffset,
+      };
+    },
   };
+}
+
+function computeEigenModesFromExec(result) {
+  if (result?.EIGEN?.modes?.length) {
+    return result.EIGEN.modes.map((m) => ({
+      name: m.name || 'Mode',
+      re: Number(m.re) || 0,
+      im: Number(m.im) || 0,
+      vec: m.vec || { rx: 0, ry: 0, rz: 0, tx: 0, ty: 0, tz: 0 },
+      eigenvector: m.eigenvector || null,
+      stateOrder: m.stateOrder || null,
+    }));
+  }
+  return [];
+}
+
+function drawEigenPlot() {
+  const canvas = els.eigenPlot;
+  if (!canvas?.getContext) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || canvas.width;
+  const height = canvas.clientHeight || canvas.height;
+  const w = Math.max(1, Math.floor(width * dpr));
+  const h = Math.max(1, Math.floor(height * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = getCssVarColor('--panel', '#0f1115');
+  ctx.fillRect(0, 0, width, height);
+
+  const pad = { l: 44, r: 18, t: 20, b: 30 };
+  const x0 = pad.l;
+  const y0 = pad.t;
+  const pw = Math.max(1, width - pad.l - pad.r);
+  const ph = Math.max(1, height - pad.t - pad.b);
+
+  const modes = uiState.eigenModes || [];
+  if (!modes.length) {
+    uiState.eigenPoints = [];
+    uiState.eigenViewport = null;
+    ctx.fillStyle = '#8ea2b8';
+    ctx.font = '12px Consolas, "Courier New", monospace';
+    ctx.fillText('No eigenmodes available yet. Run trim/EXEC first.', x0 + 8, y0 + 18);
+    return;
+  }
+
+  let maxRe = 0.2;
+  let maxIm = 0.2;
+  modes.forEach((m) => {
+    maxRe = Math.max(maxRe, Math.abs(Number(m.re) || 0));
+    maxIm = Math.max(maxIm, Math.abs(Number(m.im) || 0));
+  });
+  const zoom = Math.max(0.5, Math.min(8, Number(uiState.eigenZoom) || 1));
+  uiState.eigenZoom = zoom;
+  maxRe = Math.max(0.05, (maxRe * 1.2) / zoom);
+  maxIm = Math.max(0.05, (maxIm * 1.2) / zoom);
+  const centerRe = Number.isFinite(uiState.eigenCenterRe) ? Number(uiState.eigenCenterRe) : 0;
+  const centerIm = Number.isFinite(uiState.eigenCenterIm) ? Number(uiState.eigenCenterIm) : 0;
+
+  const xFor = (re) => x0 + ((re - centerRe + maxRe) / (2 * maxRe)) * pw;
+  const yFor = (im) => y0 + (1 - ((im - centerIm + maxIm) / (2 * maxIm))) * ph;
+  const yMid = yFor(0);
+  const xMid = xFor(0);
+  uiState.eigenViewport = {
+    xMid, yMid, maxRe, maxIm, zoom, centerRe, centerIm, x0, y0, pw, ph,
+  };
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.13)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x0, yMid);
+  ctx.lineTo(x0 + pw, yMid);
+  ctx.moveTo(xMid, y0);
+  ctx.lineTo(xMid, y0 + ph);
+  ctx.stroke();
+
+  ctx.fillStyle = '#8ea2b8';
+  ctx.font = '11px Consolas, "Courier New", monospace';
+  ctx.fillText('Re', x0 + pw - 18, yMid - 6);
+  ctx.fillText('Im', xMid + 6, y0 + 12);
+
+  const runColor = activeRunCaseColor();
+  const activeCaseIdx = activeRunCaseIndex();
+  const isModeSelectable = (mode) => {
+    const caseIdx = Number.isInteger(mode?.runCaseIndex) ? Number(mode.runCaseIndex) : -1;
+    return caseIdx < 0 || caseIdx === activeCaseIdx || activeCaseIdx < 0;
+  };
+  if (uiState.selectedEigenMode >= 0 && !isModeSelectable(modes[uiState.selectedEigenMode])) {
+    uiState.selectedEigenMode = -1;
+    stopModeAnimation();
+  }
+  uiState.eigenPoints = [];
+  modes.forEach((m, idx) => {
+    const re = Number(m.re) || 0;
+    const im = Number(m.im) || 0;
+    const px = xFor(re);
+    const py = yFor(im);
+    const modeRunCaseIdx = Number.isInteger(m?.runCaseIndex) ? Number(m.runCaseIndex) : -1;
+    const modeSelectable = isModeSelectable(m);
+    const isSelected = idx === uiState.selectedEigenMode && modeSelectable;
+    const modeColor = (modeRunCaseIdx >= 0 && Array.isArray(uiState.runCases) && modeRunCaseIdx < uiState.runCases.length)
+      ? caseColorOrFallback(uiState.runCases[modeRunCaseIdx], modeRunCaseIdx)
+      : runColor;
+    if (modeColor) {
+      if (modeSelectable) {
+        ctx.strokeStyle = isSelected ? '#ffffff' : modeColor;
+        ctx.fillStyle = isSelected ? modeColor : hexToRgba(modeColor, 0.35);
+      } else {
+        ctx.strokeStyle = hexToRgba(modeColor, 0.45);
+        ctx.fillStyle = hexToRgba(modeColor, 0.12);
+      }
+    } else {
+      if (modeSelectable) {
+        ctx.strokeStyle = isSelected ? '#f59e0b' : '#60a5fa';
+        ctx.fillStyle = isSelected ? '#f59e0b' : '#93c5fd';
+      } else {
+        ctx.strokeStyle = 'rgba(96,165,250,0.45)';
+        ctx.fillStyle = 'rgba(147,197,253,0.12)';
+      }
+    }
+    ctx.lineWidth = isSelected ? 2 : 1.5;
+    ctx.beginPath();
+    ctx.arc(px, py, isSelected ? 5 : 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    if (Math.abs(im) > 1e-8) {
+      const py2 = yFor(-im);
+      ctx.beginPath();
+      ctx.arc(px, py2, isSelected ? 5 : 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.fillStyle = modeSelectable ? '#c7d2fe' : '#6b7b95';
+    ctx.font = '10px Consolas, "Courier New", monospace';
+    ctx.fillText(m.name, px + 8, py - 6);
+    if (isSelected) {
+      const reTxt = (Number(m.re) || 0).toFixed(3);
+      const imVal = Number(m.im) || 0;
+      const sign = imVal >= 0 ? '+' : '-';
+      const imTxt = Math.abs(imVal).toFixed(3);
+      const eigTxt = `${reTxt} ${sign} ${imTxt}i`;
+      ctx.fillStyle = '#fcd34d';
+      ctx.font = '10px Consolas, "Courier New", monospace';
+      ctx.fillText(eigTxt, px + 8, py + 10);
+    }
+    uiState.eigenPoints.push({
+      idx,
+      x: px,
+      y: py,
+      color: modeColor || null,
+      selectable: modeSelectable,
+      runCaseIndex: modeRunCaseIdx,
+      dimmed: !modeSelectable,
+    });
+  });
+}
+
+function stopModeAnimation() {
+  if (!modeAnimation) return;
+  const basePos = modeAnimation.basePos?.clone?.();
+  const baseRot = modeAnimation.baseRot?.clone?.();
+  modeAnimation = null;
+  if (!aircraft) return;
+  if (basePos) aircraft.position.copy(basePos);
+  if (baseRot) aircraft.rotation.set(baseRot.x, baseRot.y, baseRot.z);
+}
+
+function startModeAnimation(modeIndex) {
+  const mode = uiState.eigenModes?.[modeIndex];
+  if (!mode) return;
+  stopModeAnimation();
+  uiState.selectedEigenMode = modeIndex;
+  if (!aircraft) {
+    drawEigenPlot();
+    return;
+  }
+  const freq = Math.max(0.2, Math.abs(Number(mode.im) || 0));
+  const damp = Math.max(0.01, Math.abs(Number(mode.re) || 0));
+  const raw = mode.vec || { rx: 0, ry: 0, rz: 0, tx: 0, ty: 0, tz: 0 };
+  const rotMag = Math.max(Math.abs(raw.rx || 0), Math.abs(raw.ry || 0), Math.abs(raw.rz || 0), 1e-8);
+  const posMag = Math.max(Math.abs(raw.tx || 0), Math.abs(raw.ty || 0), Math.abs(raw.tz || 0), 1e-8);
+  const vec = {
+    rx: (raw.rx || 0) * (0.18 / rotMag),
+    ry: (raw.ry || 0) * (0.18 / rotMag),
+    rz: (raw.rz || 0) * (0.18 / rotMag),
+    tx: (raw.tx || 0) * (0.25 / posMag),
+    ty: (raw.ty || 0) * (0.25 / posMag),
+    tz: (raw.tz || 0) * (0.25 / posMag),
+  };
+  modeAnimation = {
+    started: performance.now(),
+    basePos: aircraft.position.clone(),
+    baseRot: aircraft.rotation.clone(),
+    vec,
+    w: 2 * Math.PI * freq,
+    sigma: damp * 0.25,
+  };
+  drawEigenPlot();
+}
+
+function handleEigenCanvasClick(evt) {
+  if (!els.eigenPlot) return;
+  const pts = (uiState.eigenPoints || []).filter((pt) => pt?.selectable !== false);
+  if (!pts.length) return;
+  const rect = els.eigenPlot.getBoundingClientRect();
+  const x = evt.clientX - rect.left;
+  const y = evt.clientY - rect.top;
+  let best = null;
+  pts.forEach((pt) => {
+    const dx = pt.x - x;
+    const dy = pt.y - y;
+    const d2 = dx * dx + dy * dy;
+    if (!best || d2 < best.d2) best = { idx: pt.idx, d2 };
+  });
+  if (!best || best.d2 > 144) return;
+  if (best.idx === uiState.selectedEigenMode) {
+    uiState.selectedEigenMode = -1;
+    stopModeAnimation();
+    drawEigenPlot();
+    return;
+  }
+  startModeAnimation(best.idx);
+}
+
+function handleEigenCanvasWheel(evt) {
+  if (!els.eigenPlot) return;
+  evt.preventDefault();
+  const current = Math.max(0.5, Math.min(8, Number(uiState.eigenZoom) || 1));
+  const factor = evt.deltaY < 0 ? 1.12 : (1 / 1.12);
+  const next = Math.max(0.5, Math.min(8, current * factor));
+  if (Math.abs(next - current) < 1e-4) return;
+  zoomEigenAtClient(next, evt.clientX, evt.clientY);
+}
+
+function zoomEigenAtClient(nextZoom, clientX, clientY) {
+  const vp = uiState.eigenViewport;
+  const canvas = els.eigenPlot;
+  if (!vp || !canvas) {
+    uiState.eigenZoom = nextZoom;
+    drawEigenPlot();
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const relX = Number.isFinite(clientX) ? (clientX - rect.left) : (rect.width * 0.5);
+  const relY = Number.isFinite(clientY) ? (clientY - rect.top) : (rect.height * 0.5);
+  const x = Math.max(vp.x0, Math.min(vp.x0 + vp.pw, relX));
+  const y = Math.max(vp.y0, Math.min(vp.y0 + vp.ph, relY));
+  const nx = ((x - vp.x0) / Math.max(1, vp.pw)) * 2 - 1;
+  const ny = (y - vp.y0) / Math.max(1, vp.ph);
+  const oldZoom = Math.max(0.5, Math.min(8, Number(vp.zoom) || Number(uiState.eigenZoom) || 1));
+  const oldMaxRe = Number(vp.maxRe) || 0.1;
+  const oldMaxIm = Number(vp.maxIm) || 0.1;
+  const centerRe = Number(vp.centerRe) || 0;
+  const centerIm = Number(vp.centerIm) || 0;
+  const reAt = centerRe + nx * oldMaxRe;
+  const imAt = centerIm + (1 - 2 * ny) * oldMaxIm;
+  const baseRe = oldMaxRe * oldZoom;
+  const baseIm = oldMaxIm * oldZoom;
+  const newMaxRe = Math.max(0.05, baseRe / nextZoom);
+  const newMaxIm = Math.max(0.05, baseIm / nextZoom);
+  uiState.eigenCenterRe = reAt - nx * newMaxRe;
+  uiState.eigenCenterIm = imAt - (1 - 2 * ny) * newMaxIm;
+  uiState.eigenZoom = nextZoom;
+  drawEigenPlot();
+}
+
+function touchDistance(touches) {
+  if (!touches || touches.length < 2) return 0;
+  const a = touches[0];
+  const b = touches[1];
+  const dx = Number(a.clientX) - Number(b.clientX);
+  const dy = Number(a.clientY) - Number(b.clientY);
+  return Math.hypot(dx, dy);
+}
+
+function handleEigenTouchStart(evt) {
+  if (!evt?.touches || evt.touches.length < 2) return;
+  evt.preventDefault();
+  const dist = touchDistance(evt.touches);
+  if (!Number.isFinite(dist) || dist <= 0) return;
+  eigenTouchZoom = { active: true, lastDist: dist };
+}
+
+function handleEigenTouchMove(evt) {
+  if (!eigenTouchZoom.active || !evt?.touches || evt.touches.length < 2) return;
+  evt.preventDefault();
+  const dist = touchDistance(evt.touches);
+  if (!Number.isFinite(dist) || dist <= 0 || !Number.isFinite(eigenTouchZoom.lastDist) || eigenTouchZoom.lastDist <= 0) return;
+  const scale = dist / eigenTouchZoom.lastDist;
+  if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.01) return;
+  const current = Math.max(0.5, Math.min(8, Number(uiState.eigenZoom) || 1));
+  const next = Math.max(0.5, Math.min(8, current * scale));
+  eigenTouchZoom.lastDist = dist;
+  if (Math.abs(next - current) < 1e-4) return;
+  const t0 = evt.touches[0];
+  const t1 = evt.touches[1];
+  const midX = (Number(t0.clientX) + Number(t1.clientX)) * 0.5;
+  const midY = (Number(t0.clientY) + Number(t1.clientY)) * 0.5;
+  zoomEigenAtClient(next, midX, midY);
+}
+
+function handleEigenTouchEnd(evt) {
+  if (evt?.touches?.length >= 2) {
+    const dist = touchDistance(evt.touches);
+    eigenTouchZoom.lastDist = Number.isFinite(dist) && dist > 0 ? dist : eigenTouchZoom.lastDist;
+    return;
+  }
+  eigenTouchZoom = { active: false, lastDist: 0 };
+}
+
+function updateModeAnimation() {
+  if (!modeAnimation || !aircraft) return;
+  const t = (performance.now() - modeAnimation.started) / 1000;
+  const amp = Math.exp(-modeAnimation.sigma * t);
+  const osc = Math.sin(modeAnimation.w * t);
+  const s = amp * osc;
+  const v = modeAnimation.vec;
+  aircraft.position.set(
+    modeAnimation.basePos.x + (v.tx || 0) * s,
+    modeAnimation.basePos.y + (v.ty || 0) * s,
+    modeAnimation.basePos.z + (v.tz || 0) * s,
+  );
+  aircraft.rotation.set(
+    modeAnimation.baseRot.x + (v.rx || 0) * s,
+    modeAnimation.baseRot.y + (v.ry || 0) * s,
+    modeAnimation.baseRot.z + (v.rz || 0) * s,
+  );
+  if (amp < 0.02) {
+    stopModeAnimation();
+  }
+}
+
+function resetFlowTracerPosition(group = flowFieldGroup) {
+  const tracer = group?.getObjectByName?.('flow-tracer');
+  const cfg = tracer?.userData?.flowTracer;
+  if (!tracer || !cfg?.start) return;
+  tracer.position.set(
+    Number(cfg.start.x) || 0,
+    Number(cfg.start.y) || 0,
+    Number(cfg.start.z) || 0,
+  );
+  if (!cfg.velocity || typeof cfg.velocity !== 'object') cfg.velocity = { x: 0, y: 0, z: 0 };
+  cfg.velocity.x = 0;
+  cfg.velocity.y = 0;
+  cfg.velocity.z = 0;
+  cfg.lastTimeSec = null;
+  cfg.trailHead = -1;
+  cfg.trailCount = 0;
+  cfg.trailNextSampleSec = null;
+  const cloud = cfg.cloudPoints;
+  const cloudStart = cfg.cloudStartPositions;
+  const cloudPosAttr = cloud?.geometry?.getAttribute?.('position');
+  const cloudCount = Math.max(0, Math.floor(Number(cfg.cloudCount) || 0));
+  if (cloudPosAttr?.array && cloudStart?.length) {
+    const arr = cloudPosAttr.array;
+    const n = Math.min(arr.length, cloudStart.length);
+    for (let i = 0; i < n; i += 1) arr[i] = cloudStart[i];
+    cloudPosAttr.needsUpdate = true;
+  }
+  if (cfg.cloudTrailHeads && cfg.cloudTrailCounts) {
+    for (let i = 0; i < cfg.cloudTrailHeads.length; i += 1) cfg.cloudTrailHeads[i] = -1;
+    cfg.cloudTrailCounts.fill(0);
+  }
+  const cloudNext = cfg.cloudTrailNextSampleSec;
+  const cloudPhase = cfg.cloudTrailSamplePhase;
+  if (cloudNext && cloudNext.length) {
+    for (let i = 0; i < cloudNext.length; i += 1) {
+      const phase = Number(cloudPhase?.[i]);
+      cloudNext[i] = Number.isFinite(phase) ? phase : 0;
+    }
+  }
+  if (cloudPosAttr?.array && cloudCount > 0) {
+    const arr = cloudPosAttr.array;
+    for (let i = 0; i < cloudCount; i += 1) {
+      const off = i * 3;
+      pushCloudTrailSampleForIndex(cfg, i, arr[off + 0], arr[off + 1], arr[off + 2]);
+    }
+  }
+  pushFlowTracerTrailSample(cfg, tracer.position.x, tracer.position.y, tracer.position.z);
+  writeFlowTracerTrailGeometry(tracer, cfg);
+  writeCloudTrailGeometry(cfg);
+}
+
+function updateFlowFieldAnimation() {
+  if (!flowFieldGroup) return;
+  const tracer = flowFieldGroup.getObjectByName?.('flow-tracer');
+  const cfg = tracer?.userData?.flowTracer;
+  if (!tracer || !cfg) return;
+  if (!uiState.showFlowField || !flowFieldGroup.visible) {
+    resetFlowTracerPosition(flowFieldGroup);
+    return;
+  }
+  const nowMs = performance.now();
+  if ((nowMs - flowFieldAnimLastMs) < 16) return;
+  const nowSec = nowMs * 0.001;
+  const prevSec = Number(cfg.lastTimeSec);
+  cfg.lastTimeSec = nowSec;
+  flowFieldAnimLastMs = nowMs;
+  const sampleSec = Math.max(1e-6, Number(cfg.trailSampleSec) || 1);
+  if (!Number.isFinite(cfg.trailNextSampleSec)) {
+    cfg.trailNextSampleSec = nowSec + sampleSec;
+  }
+  if (!Number.isFinite(prevSec)) {
+    writeFlowTracerTrailGeometry(tracer, cfg);
+    return;
+  }
+  let dt = nowSec - prevSec;
+  if (!Number.isFinite(dt) || dt <= 0) return;
+  dt = Math.min(0.05, dt);
+  const advDt = dt * Math.max(0.01, Number(cfg.speedScale) || 1);
+  const pos = tracer.position;
+  const tracerVel = cfg.tmpTracerVel || (cfg.tmpTracerVel = [0, 0, 0]);
+  sampleFlowVelocityAtPoint(pos.x, pos.y, pos.z, cfg, tracerVel);
+  if (!cfg.velocity || typeof cfg.velocity !== 'object') cfg.velocity = { x: 0, y: 0, z: 0 };
+  cfg.velocity.x = tracerVel[0];
+  cfg.velocity.y = tracerVel[1];
+  cfg.velocity.z = tracerVel[2];
+  pos.x += cfg.velocity.x * advDt;
+  pos.y += cfg.velocity.y * advDt;
+  pos.z += cfg.velocity.z * advDt;
+  const cloud = cfg.cloudPoints;
+  const cloudPosAttr = cloud?.geometry?.getAttribute?.('position');
+  const cloudArr = cloudPosAttr?.array;
+  const cloudCount = Math.max(0, Math.floor(Number(cfg.cloudCount) || 0));
+  if (cloudArr && cloudCount > 0) {
+    const span = Math.max(1e-3, Number(cfg.spanLength) || 1);
+    const cloudVel = cfg.tmpCloudVel || (cfg.tmpCloudVel = [0, 0, 0]);
+    for (let i = 0; i < cloudCount; i += 1) {
+      const off = i * 3;
+      const cx = cloudArr[off + 0];
+      const cy = cloudArr[off + 1];
+      const cz = cloudArr[off + 2];
+      sampleFlowVelocityAtPoint(cx, cy, cz, cfg, cloudVel);
+      let nx = cx + (cloudVel[0] * advDt);
+      let ny = cy + (cloudVel[1] * advDt);
+      let nz = cz + (cloudVel[2] * advDt);
+      const rr = Math.hypot(nx, ny, nz);
+      if (rr > (span * 1.15)) {
+        const start = cfg.cloudStartPositions;
+        nx = Number(start?.[off + 0]) || 0;
+        ny = Number(start?.[off + 1]) || 0;
+        nz = Number(start?.[off + 2]) || 0;
+        resetCloudTrailForIndex(cfg, i, nx, ny, nz);
+      }
+      cloudArr[off + 0] = nx;
+      cloudArr[off + 1] = ny;
+      cloudArr[off + 2] = nz;
+    }
+    cloudPosAttr.needsUpdate = true;
+  }
+  let nextSample = Number(cfg.trailNextSampleSec);
+  if (!Number.isFinite(nextSample)) nextSample = nowSec + sampleSec;
+  while (nowSec >= nextSample) {
+    pushFlowTracerTrailSample(cfg, pos.x, pos.y, pos.z);
+    nextSample += sampleSec;
+  }
+  cfg.trailNextSampleSec = nextSample;
+  if (cloudArr && cloudCount > 0) {
+    const cloudNext = cfg.cloudTrailNextSampleSec;
+    const cloudPhase = cfg.cloudTrailSamplePhase;
+    if (cloudNext && cloudNext.length >= cloudCount) {
+      for (let i = 0; i < cloudCount; i += 1) {
+        let cloudTs = Number(cloudNext[i]);
+        if (!Number.isFinite(cloudTs) || cloudTs < 1e-9 || cloudTs < prevSec - 5) {
+          const phase = Number(cloudPhase?.[i]) || 0;
+          cloudTs = nowSec + phase;
+        }
+        while (nowSec >= cloudTs) {
+          const off = i * 3;
+          pushCloudTrailSampleForIndex(cfg, i, cloudArr[off + 0], cloudArr[off + 1], cloudArr[off + 2]);
+          cloudTs += sampleSec;
+        }
+        cloudNext[i] = cloudTs;
+      }
+    } else {
+      for (let i = 0; i < cloudCount; i += 1) {
+        const off = i * 3;
+        pushCloudTrailSampleForIndex(cfg, i, cloudArr[off + 0], cloudArr[off + 1], cloudArr[off + 2]);
+      }
+    }
+  }
+  writeFlowTracerTrailGeometry(tracer, cfg);
+  writeCloudTrailGeometry(cfg);
 }
 
 function parseAVL(text) {
@@ -3492,6 +4914,1176 @@ function buildSolverModel(text) {
   return model;
 }
 
+function buildNacaProfileCoords(code, samples = 40) {
+  const digits = String(code || '').padStart(4, '0');
+  const thickness = Number(digits.slice(2, 4)) / 100;
+  const m = Number(digits[0]) / 100;
+  const p = Number(digits[1]) / 10;
+  const xVals = [];
+  for (let i = 0; i <= samples; i += 1) xVals.push(i / samples);
+  const upper = [];
+  const lower = [];
+  xVals.forEach((x) => {
+    const yt = 5 * thickness * (
+      0.2969 * Math.sqrt(Math.max(x, 0))
+      - 0.1260 * x
+      - 0.3516 * x * x
+      + 0.2843 * x * x * x
+      - 0.1015 * x * x * x * x
+    );
+    let yc = 0;
+    let dyc = 0;
+    if (m > 0 && p > 0 && p < 1) {
+      if (x < p) {
+        yc = (m / (p * p)) * (2 * p * x - x * x);
+        dyc = (2 * m / (p * p)) * (p - x);
+      } else {
+        yc = (m / ((1 - p) * (1 - p))) * ((1 - 2 * p) + 2 * p * x - x * x);
+        dyc = (2 * m / ((1 - p) * (1 - p))) * (p - x);
+      }
+    }
+    const theta = Math.atan(dyc);
+    const xu = x - yt * Math.sin(theta);
+    const zu = yc + yt * Math.cos(theta);
+    const xl = x + yt * Math.sin(theta);
+    const zl = yc - yt * Math.cos(theta);
+    upper.push([xu, zu]);
+    lower.push([xl, zl]);
+  });
+  return [...upper.slice().reverse(), ...lower.slice(1)];
+}
+
+function buildProfileSections(coords, samples = 26) {
+  const safe = Array.isArray(coords) ? coords : [];
+  if (safe.length < 2) {
+    const xs = Array.from({ length: samples }, (_, i) => i / (samples - 1));
+    return { upper: xs.map((x) => [x, 0]), lower: xs.map((x) => [x, 0]) };
+  }
+  const { upper, lower } = splitAirfoilSurfaces(safe);
+  const xs = Array.from({ length: samples }, (_, i) => i / (samples - 1));
+  const up = xs.map((x) => [x, interpY(upper, x)]);
+  const lo = xs.map((x) => [x, interpY(lower, x)]);
+  return { upper: up, lower: lo };
+}
+
+function pressureColorAlpha(cp, cmin, cmax) {
+  const tRaw = (cp - cmin) / ((cmax - cmin) || 1);
+  const t = Math.max(0, Math.min(1, tRaw));
+  const blue = new THREE.Color(0x2f7bff);
+  const red = new THREE.Color(0xef4444);
+  const col = t <= 0.5
+    ? blue.clone()
+    : blue.clone().lerp(red, (t - 0.5) / 0.5);
+  const alpha = t <= 0.35 ? (t / 0.35) * 0.9 : 0.9;
+  return { color: col, alpha: Math.max(0, Math.min(0.95, alpha)) };
+}
+
+function enableVertexAlpha(material) {
+  if (!material || material.userData?.vertexAlphaEnabled) return;
+  material.userData = material.userData || {};
+  material.userData.vertexAlphaEnabled = true;
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float alpha;\nvarying float vAlpha;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvAlpha = alpha;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vAlpha;')
+      .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( diffuse, opacity * vAlpha );');
+  };
+  material.customProgramCacheKey = () => 'vertex-alpha-v1';
+  material.needsUpdate = true;
+}
+
+function buildPressureFieldFromExec(result) {
+  const rv = result?.RV;
+  const dcp = result?.DCP;
+  if (!Array.isArray(rv) || !Array.isArray(dcp) || dcp.length <= 1) return null;
+  const idx2 = (i, j, dim1) => i + dim1 * j;
+  const samples = [];
+  let cmin = Infinity;
+  let cmax = -Infinity;
+  for (let iv = 1; iv < dcp.length; iv += 1) {
+    const cp = Number(dcp[iv]);
+    if (!Number.isFinite(cp)) continue;
+    const x = Number(rv[idx2(1, iv, 4)]);
+    const y = Number(rv[idx2(2, iv, 4)]);
+    const z = Number(rv[idx2(3, iv, 4)]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    samples.push({ x, y, z, cp });
+    if (cp < cmin) cmin = cp;
+    if (cp > cmax) cmax = cp;
+  }
+  if (!samples.length) return null;
+  let ymin = samples[0].y;
+  let ymax = samples[0].y;
+  let zmin = samples[0].z;
+  let zmax = samples[0].z;
+  samples.forEach((s) => {
+    if (s.y < ymin) ymin = s.y;
+    if (s.y > ymax) ymax = s.y;
+    if (s.z < zmin) zmin = s.z;
+    if (s.z > zmax) zmax = s.z;
+  });
+  const yspan = Math.max(1e-6, ymax - ymin);
+  const zspan = Math.max(1e-6, zmax - zmin);
+  const cell = Math.max(0.03, (yspan + zspan) / 90);
+  const bins = new Map();
+  samples.forEach((s, idx) => {
+    const iy = Math.floor((s.y - ymin) / cell);
+    const iz = Math.floor((s.z - zmin) / cell);
+    const key = `${iy},${iz}`;
+    if (!bins.has(key)) bins.set(key, []);
+    bins.get(key).push(idx);
+  });
+  return { samples, bins, cell, ymin, zmin, cmin, cmax };
+}
+
+function queryPressureAtPoint(field, x, y, z) {
+  if (!field?.samples?.length) return null;
+  const { bins, cell, ymin, zmin, samples } = field;
+  const iy = Math.floor((y - ymin) / cell);
+  const iz = Math.floor((z - zmin) / cell);
+  let candidateIdx = [];
+  for (let dy = -1; dy <= 1; dy += 1) {
+    for (let dz = -1; dz <= 1; dz += 1) {
+      const key = `${iy + dy},${iz + dz}`;
+      if (bins.has(key)) candidateIdx = candidateIdx.concat(bins.get(key));
+    }
+  }
+  if (!candidateIdx.length) {
+    candidateIdx = Array.from({ length: samples.length }, (_, i) => i);
+  }
+  let best = null;
+  let bestD2 = Infinity;
+  candidateIdx.forEach((idx) => {
+    const s = samples[idx];
+    const dx = x - s.x;
+    const dy = y - s.y;
+    const dz = z - s.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = s;
+    }
+  });
+  return best;
+}
+
+function updatePressureSurfaceColors() {
+  if (!Array.isArray(surfaceSkinMeshes) || !surfaceSkinMeshes.length) return;
+  const field = uiState.showPressure ? uiState.pressureField : null;
+  surfaceSkinMeshes.forEach((mesh) => {
+    const base = mesh.userData?.baseColor instanceof THREE.Color ? mesh.userData.baseColor : new THREE.Color(mesh.userData?.baseColor ?? 0x7dd3fc);
+    const pressureBase = mesh.userData?.pressureBaseColor instanceof THREE.Color ? mesh.userData.pressureBaseColor : new THREE.Color(0xd8dce3);
+    if (mesh.material?.color) {
+      mesh.material.color.copy(field ? pressureBase : base);
+      mesh.material.needsUpdate = true;
+    }
+  });
+
+  if (!Array.isArray(surfacePressureMeshes) || !surfacePressureMeshes.length) return;
+  surfacePressureMeshes.forEach((mesh) => {
+    const geom = mesh.geometry;
+    const pos = geom?.getAttribute?.('position');
+    const colAttr = geom?.getAttribute?.('color');
+    const alphaAttr = geom?.getAttribute?.('alpha');
+    if (!pos || !colAttr || !alphaAttr) return;
+    for (let i = 0; i < pos.count; i += 1) {
+      if (!field) {
+        colAttr.setXYZ(i, 0, 0, 0);
+        alphaAttr.setX(i, 0);
+        continue;
+      }
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const z = pos.getZ(i);
+      const sample = queryPressureAtPoint(field, x, y, z);
+      if (!sample) {
+        colAttr.setXYZ(i, 0, 0, 0);
+        alphaAttr.setX(i, 0);
+        continue;
+      }
+      const mapped = pressureColorAlpha(sample.cp, field.cmin, field.cmax);
+      colAttr.setXYZ(i, mapped.color.r, mapped.color.g, mapped.color.b);
+      alphaAttr.setX(i, mapped.alpha);
+    }
+    colAttr.needsUpdate = true;
+    alphaAttr.needsUpdate = true;
+  });
+}
+
+function applySurfaceRenderMode() {
+  const mode = uiState.surfaceRenderMode;
+  const showSurface = mode === 'surface' || mode === 'both';
+  const showWire = mode === 'wireframe' || mode === 'both';
+  surfaceSkinMeshes.forEach((mesh) => { mesh.visible = showSurface; });
+  const showPressureOverlay = showSurface && uiState.showPressure && Boolean(uiState.pressureField);
+  surfacePressureMeshes.forEach((mesh) => { mesh.visible = showPressureOverlay; });
+  surfaceWireObjects.forEach((obj) => { obj.visible = showWire; });
+  updatePressureSurfaceColors();
+}
+
+function createControlDeflectionMap() {
+  const map = new Map();
+  const delcon = uiState.lastExecResult?.DELCON;
+  const controlMap = uiState.modelCache?.controlMap;
+  if (!delcon || !controlMap?.size) return map;
+  for (const [name, idx] of controlMap.entries()) {
+    const val = Number(delcon[idx]);
+    map.set(name, Number.isFinite(val) ? val : 0);
+  }
+  return map;
+}
+
+function createSectionPointTransform(surface, controlDeflections = new Map()) {
+  const applyTransforms = (p) => {
+    const v = new THREE.Vector3(p[0], p[1], p[2]);
+    v.multiply(new THREE.Vector3(...surface.scale));
+    v.add(new THREE.Vector3(...surface.translate));
+    return [v.x, v.y, v.z];
+  };
+
+  const rotateSectionPoint = (section, point) => {
+    const sectionAinc = Number(section?.ainc ?? 0);
+    const surfaceAinc = Number(surface?.angleDeg ?? 0);
+    const totalAinc = sectionAinc + surfaceAinc;
+    if (!totalAinc) return point;
+    const le = new THREE.Vector3(section.xle, section.yle, section.zle);
+    const v = new THREE.Vector3(point[0], point[1], point[2]).sub(le);
+    v.applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(totalAinc));
+    v.add(le);
+    return [v.x, v.y, v.z];
+  };
+
+  const applyControlDeflections = (section, point) => {
+    if (!section?.controls?.length) return point;
+    let v = new THREE.Vector3(point[0], point[1], point[2]);
+    const le = new THREE.Vector3(section.xle, section.yle, section.zle);
+    for (const ctrl of section.controls) {
+      const baseDef = controlDeflections.get(ctrl.name) ?? 0;
+      if (!baseDef) continue;
+      const gain = Number(ctrl.gain ?? 1);
+      const sgnDup = Number.isFinite(Number(ctrl.sgnDup)) ? Number(ctrl.sgnDup) : 1;
+      const deflectionDeg = baseDef * gain * sgnDup;
+      if (!deflectionDeg) continue;
+      const xhinge = Number(ctrl.xhinge ?? 0.75);
+      const hingeLocalX = section.chord * xhinge;
+      const local = v.clone().sub(le);
+      if (local.x < hingeLocalX) continue;
+      const hinge = new THREE.Vector3(section.xle + hingeLocalX, section.yle, section.zle);
+      let axis = new THREE.Vector3(ctrl.vhinge?.[0] ?? 0, ctrl.vhinge?.[1] ?? 1, ctrl.vhinge?.[2] ?? 0);
+      if (axis.lengthSq() < 1e-12) axis = new THREE.Vector3(0, 1, 0);
+      axis.normalize();
+      v.sub(hinge);
+      v.applyAxisAngle(axis, THREE.MathUtils.degToRad(deflectionDeg));
+      v.add(hinge);
+    }
+    return [v.x, v.y, v.z];
+  };
+
+  return (section, rawPoint) => {
+    const flap = applyControlDeflections(section, rawPoint);
+    const rotated = rotateSectionPoint(section, flap);
+    return applyTransforms(rotated);
+  };
+}
+
+function pushLineSegment(verts, a, b) {
+  verts.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+}
+
+function buildPanelSpacingGroup(model) {
+  if (!THREE || !model?.surfaces?.length) return null;
+  const verts = [];
+  const controlDeflections = createControlDeflectionMap();
+  model.surfaces.forEach((surface) => {
+    if (!surface?.sections?.length || surface.sections.length < 2) return;
+    const transform = createSectionPointTransform(surface, controlDeflections);
+    for (let s = 0; s < surface.sections.length - 1; s += 1) {
+      const a = surface.sections[s];
+      const b = surface.sections[s + 1];
+      const nChord = Math.max(1, Math.round(Number(surface.nChord) || 1));
+      const nSpan = Math.max(1, Math.round(Number(b.nSpan ?? a.nSpan ?? surface.nSpan ?? 1)));
+      const pointAt = (u, c) => {
+        const xA = a.xle + a.chord * c;
+        const xB = b.xle + b.chord * c;
+        const zA = a.zle;
+        const zB = b.zle;
+        const raw = [
+          xA + (xB - xA) * u,
+          a.yle + (b.yle - a.yle) * u,
+          zA + (zB - zA) * u,
+        ];
+        return transform(a, raw);
+      };
+      for (let j = 0; j <= nSpan; j += 1) {
+        const u = j / nSpan;
+        pushLineSegment(verts, pointAt(u, 0), pointAt(u, 1));
+      }
+      for (let i = 0; i <= nChord; i += 1) {
+        const c = i / nChord;
+        pushLineSegment(verts, pointAt(0, c), pointAt(1, c));
+      }
+    }
+  });
+  if (!verts.length) return null;
+  const group = new THREE.Group();
+  group.name = 'panel-spacing';
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.55 });
+  const lines = new THREE.LineSegments(geom, mat);
+  lines.name = 'panel-spacing-lines';
+  group.add(lines);
+  return group;
+}
+
+function buildVortexData(model) {
+  if (!model?.surfaces?.length) return null;
+  const boundVerts = [];
+  const legVerts = [];
+  const segments = [];
+  const controlDeflections = createControlDeflectionMap();
+  const cref = Math.max(0.4, Number(model.header?.cref) || 1);
+  const bref = Math.max(0.8, Number(model.header?.bref) || 2);
+  const legLength = Math.max(1.8 * cref, 0.35 * bref);
+  const sampleTarget = 220;
+  model.surfaces.forEach((surface) => {
+    if (!surface?.sections?.length || surface.sections.length < 2) return;
+    const transform = createSectionPointTransform(surface, controlDeflections);
+    for (let s = 0; s < surface.sections.length - 1; s += 1) {
+      const a = surface.sections[s];
+      const b = surface.sections[s + 1];
+      const nChord = Math.max(1, Math.round(Number(surface.nChord) || 1));
+      const nSpan = Math.max(1, Math.round(Number(b.nSpan ?? a.nSpan ?? surface.nSpan ?? 1)));
+      const sampleStride = Math.max(1, Math.ceil((nChord * nSpan) / sampleTarget));
+      const pointAt = (u, c) => {
+        const xA = a.xle + a.chord * c;
+        const xB = b.xle + b.chord * c;
+        const zA = a.zle;
+        const zB = b.zle;
+        const raw = [
+          xA + (xB - xA) * u,
+          a.yle + (b.yle - a.yle) * u,
+          zA + (zB - zA) * u,
+        ];
+        return transform(a, raw);
+      };
+      for (let j = 0; j < nSpan; j += 1) {
+        const u0 = j / nSpan;
+        const u1 = (j + 1) / nSpan;
+        for (let i = 0; i < nChord; i += 1) {
+          const atTipBoundary = j === 0 || j === (nSpan - 1);
+          if (!atTipBoundary && ((j * nChord) + i) % sampleStride !== 0) continue;
+          const cBound = (i + 0.25) / nChord;
+          const p0 = pointAt(u0, cBound);
+          const p1 = pointAt(u1, cBound);
+          const le0 = pointAt(u0, 0);
+          const te0 = pointAt(u0, 1);
+          const le1 = pointAt(u1, 0);
+          const te1 = pointAt(u1, 1);
+          const d0 = new THREE.Vector3(te0[0] - le0[0], te0[1] - le0[1], te0[2] - le0[2]).normalize();
+          const d1 = new THREE.Vector3(te1[0] - le1[0], te1[1] - le1[1], te1[2] - le1[2]).normalize();
+          const leg0 = [p0[0] + d0.x * legLength, p0[1] + d0.y * legLength, p0[2] + d0.z * legLength];
+          const leg1 = [p1[0] + d1.x * legLength, p1[1] + d1.y * legLength, p1[2] + d1.z * legLength];
+          const gamma = 1 / Math.max(1, nChord);
+          pushLineSegment(boundVerts, p0, p1);
+          pushLineSegment(legVerts, p0, leg0);
+          pushLineSegment(legVerts, p1, leg1);
+          segments.push({ a: p0, b: p1, gamma, kind: 'bound', tip: atTipBoundary });
+          // Signed trailing legs so interior legs tend to cancel while tip-vortex legs remain.
+          segments.push({ a: p1, b: leg1, gamma, kind: 'leg', tip: atTipBoundary });
+          segments.push({ a: p0, b: leg0, gamma: -gamma, kind: 'leg', tip: atTipBoundary });
+        }
+      }
+    }
+  });
+  if (!boundVerts.length && !legVerts.length && !segments.length) return null;
+  return { boundVerts, legVerts, segments };
+}
+
+function buildFlowVortexDataFromExec(result, fallbackSegments = [], displayOffset = null) {
+  const offX = Number(displayOffset?.x) || 0;
+  const offY = Number(displayOffset?.y) || 0;
+  const offZ = Number(displayOffset?.z) || 0;
+  const fallback = Array.isArray(fallbackSegments) ? fallbackSegments : [];
+  const solver = buildSolverHorseshoesFromExec(result);
+  const horseshoesRaw = Array.isArray(solver?.horseshoes) ? solver.horseshoes : [];
+  const horseshoes = horseshoesRaw.map((h) => ({
+    ...h,
+    x1: (Number(h.x1) || 0) + offX,
+    y1: (Number(h.y1) || 0) + offY,
+    z1: (Number(h.z1) || 0) + offZ,
+    x2: (Number(h.x2) || 0) + offX,
+    y2: (Number(h.y2) || 0) + offY,
+    z2: (Number(h.z2) || 0) + offZ,
+  }));
+  const shiftedFallback = fallback.map((seg) => ({
+    ...seg,
+    a: [((Number(seg?.a?.[0]) || 0) + offX), ((Number(seg?.a?.[1]) || 0) + offY), ((Number(seg?.a?.[2]) || 0) + offZ)],
+    b: [((Number(seg?.b?.[0]) || 0) + offX), ((Number(seg?.b?.[1]) || 0) + offY), ((Number(seg?.b?.[2]) || 0) + offZ)],
+  }));
+
+  if (!horseshoes.length) return { source: 'heuristic', segments: shiftedFallback };
+  return {
+    source: 'solver-vortices',
+    horseshoes,
+    beta: solver.beta,
+    iysym: solver.iysym,
+    izsym: solver.izsym,
+    ysym: solver.ysym,
+    zsym: solver.zsym,
+    segments: shiftedFallback,
+  };
+}
+
+function buildVortexGroup(vortexData) {
+  if (!THREE || !vortexData) return null;
+  const { boundVerts = [], legVerts = [] } = vortexData;
+  if (!boundVerts.length && !legVerts.length) return null;
+  const group = new THREE.Group();
+  group.name = 'vortices';
+  if (boundVerts.length) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(boundVerts, 3));
+    const mat = new THREE.LineBasicMaterial({ color: 0xf97316, transparent: true, opacity: 0.95 });
+    const bound = new THREE.LineSegments(geom, mat);
+    bound.name = 'bound-vortices';
+    group.add(bound);
+  }
+  if (legVerts.length) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(legVerts, 3));
+    const mat = new THREE.LineBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.85 });
+    const legs = new THREE.LineSegments(geom, mat);
+    legs.name = 'leg-vortices';
+    group.add(legs);
+  }
+  return group;
+}
+
+function getBaseFlowVector() {
+  const result = uiState.lastExecResult;
+  const vinf = result?.VINF;
+  if (Array.isArray(vinf) && vinf.length >= 3) {
+    const v = new THREE.Vector3(Number(vinf[0]) || 0, Number(vinf[1]) || 0, Number(vinf[2]) || 0);
+    if (v.lengthSq() > 1e-10) return v;
+  }
+  const speed = Math.max(1e-3, Number(els.vel?.value) || 1);
+  const alpha = Number(result?.ALFA ?? 0);
+  const beta = Number(result?.BETA ?? 0);
+  return new THREE.Vector3(
+    Math.cos(alpha) * Math.cos(beta),
+    Math.sin(beta),
+    Math.sin(alpha) * Math.cos(beta),
+  ).multiplyScalar(speed);
+}
+
+function selectFlowTracerStartPoint(bounds) {
+  const offX = Number(aircraft?.position?.x) || 0;
+  const offY = Number(aircraft?.position?.y) || 0;
+  const offZ = Number(aircraft?.position?.z) || 0;
+  const surfaces = Array.isArray(uiState.displayModel?.surfaces) ? uiState.displayModel.surfaces : [];
+  let best = null;
+  surfaces.forEach((surface) => {
+    const sections = Array.isArray(surface?.sections) ? surface.sections : [];
+    if (!sections.length) return;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    sections.forEach((section) => {
+      const x = Number(section?.xle);
+      const y = Number(section?.yle);
+      const z = Number(section?.zle);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+      minZ = Math.min(minZ, z);
+      maxZ = Math.max(maxZ, z);
+    });
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return;
+    const spanY = Math.max(0, maxY - minY);
+    const spanZ = Math.max(0, maxZ - minZ);
+    const score = spanY - (0.35 * spanZ);
+    if (!best || score > best.score || (Math.abs(score - best.score) < 1e-9 && spanY > best.spanY)) {
+      best = {
+        score,
+        spanY,
+        minX,
+        yMid: 0.5 * (minY + maxY),
+        zMid: 0.5 * (minZ + maxZ),
+      };
+    }
+  });
+  if (best) {
+    return {
+      x: best.minX - 0.5 + offX,
+      y: best.yMid + offY,
+      z: best.zMid + offZ,
+    };
+  }
+  const cx = Number(bounds?.center?.x) || 0;
+  const cy = Number(bounds?.center?.y) || 0;
+  const cz = Number(bounds?.center?.z) || 0;
+  const sx = Math.max(0.5, Number(bounds?.size?.x) || 1.0);
+  return {
+    x: (cx - (0.25 * sx) - 0.5) + offX,
+    y: cy + offY,
+    z: cz + offZ,
+  };
+}
+
+function sampleFlowVelocityAtPoint(px, py, pz, cfg, out = null) {
+  const outVec = out || [0, 0, 0];
+  const includeRigidBodyRotation = Boolean(cfg?.includeRigidBodyRotation);
+  const includeFreestream = Boolean(cfg?.includeFreestream);
+  const base = cfg?.base || { x: 0, y: 0, z: 0 };
+  const omega = cfg?.omega || { x: 0, y: 0, z: 0 };
+  const horseshoes = Array.isArray(cfg?.horseshoes) ? cfg.horseshoes : [];
+  const segments = Array.isArray(cfg?.segments) ? cfg.segments : [];
+  const solverParams = cfg?.solverParams || {};
+  const gammaScale = Number.isFinite(Number(cfg?.gammaScale)) ? Number(cfg.gammaScale) : 1;
+  const core2 = Math.max(1e-12, Number(cfg?.core2) || 1e-6);
+  const inducedClamp = Math.max(1e-6, Number(cfg?.inducedClamp) || 1e6);
+  let vx = 0;
+  let vy = 0;
+  let vz = 0;
+  if (includeRigidBodyRotation) {
+    vx += (Number(omega.y) * pz) - (Number(omega.z) * py);
+    vy += (Number(omega.z) * px) - (Number(omega.x) * pz);
+    vz += (Number(omega.x) * py) - (Number(omega.y) * px);
+  }
+  if (includeFreestream) {
+    vx += Number(base.x) || 0;
+    vy += Number(base.y) || 0;
+    vz += Number(base.z) || 0;
+  }
+  const acc = cfg?.tmpInducedAcc || [0, 0, 0];
+  if (cfg && !cfg.tmpInducedAcc) cfg.tmpInducedAcc = acc;
+  acc[0] = 0;
+  acc[1] = 0;
+  acc[2] = 0;
+  if (horseshoes.length) {
+    for (let i = 0; i < horseshoes.length; i += 1) {
+      addInducedVelocityFromHorseshoe(px, py, pz, horseshoes[i], solverParams, acc);
+    }
+  } else if (segments.length) {
+    for (let i = 0; i < segments.length; i += 1) {
+      addInducedVelocityFromSegment(px, py, pz, segments[i], gammaScale, core2, acc);
+    }
+  }
+  const imag = Math.hypot(acc[0], acc[1], acc[2]);
+  if (imag > inducedClamp) {
+    const s = inducedClamp / imag;
+    acc[0] *= s;
+    acc[1] *= s;
+    acc[2] *= s;
+  }
+  vx += acc[0];
+  vy += acc[1];
+  vz += acc[2];
+  outVec[0] = vx;
+  outVec[1] = vy;
+  outVec[2] = vz;
+  return outVec;
+}
+
+function pushFlowTracerTrailSample(cfg, x, y, z) {
+  const cap = Math.max(0, Math.floor(Number(cfg?.trailPointCapacity) || 0));
+  if (!cap) return;
+  if (!cfg.trailPositions || cfg.trailPositions.length < (cap * 3)) {
+    cfg.trailPositions = new Float32Array(cap * 3);
+  }
+  let head = Math.floor(Number(cfg.trailHead));
+  let count = Math.floor(Number(cfg.trailCount) || 0);
+  if (!Number.isFinite(head) || head < 0 || head >= cap) {
+    head = -1;
+    count = 0;
+  }
+  head = (head + 1) % cap;
+  const off = head * 3;
+  cfg.trailPositions[off + 0] = Number(x) || 0;
+  cfg.trailPositions[off + 1] = Number(y) || 0;
+  cfg.trailPositions[off + 2] = Number(z) || 0;
+  cfg.trailHead = head;
+  cfg.trailCount = Math.min(cap, count + 1);
+}
+
+function pushCloudTrailSampleForIndex(cfg, pointIdx, x, y, z) {
+  const pointCount = Math.max(0, Math.floor(Number(cfg?.cloudCount) || 0));
+  const cap = Math.max(0, Math.floor(Number(cfg?.trailPointCapacity) || 0));
+  if (!pointCount || !cap || pointIdx < 0 || pointIdx >= pointCount) return;
+  const heads = cfg.cloudTrailHeads;
+  const counts = cfg.cloudTrailCounts;
+  const pos = cfg.cloudTrailPositions;
+  if (!heads || !counts || !pos) return;
+  let head = Math.floor(Number(heads[pointIdx]));
+  let count = Math.floor(Number(counts[pointIdx] || 0));
+  if (!Number.isFinite(head) || head < 0 || head >= cap) {
+    head = -1;
+    count = 0;
+  }
+  head = (head + 1) % cap;
+  const base = (pointIdx * cap * 3) + (head * 3);
+  pos[base + 0] = Number(x) || 0;
+  pos[base + 1] = Number(y) || 0;
+  pos[base + 2] = Number(z) || 0;
+  heads[pointIdx] = head;
+  counts[pointIdx] = Math.min(cap, count + 1);
+}
+
+function resetCloudTrailForIndex(cfg, pointIdx, x, y, z) {
+  const pointCount = Math.max(0, Math.floor(Number(cfg?.cloudCount) || 0));
+  if (!pointCount || pointIdx < 0 || pointIdx >= pointCount) return;
+  const heads = cfg.cloudTrailHeads;
+  const counts = cfg.cloudTrailCounts;
+  if (!heads || !counts) return;
+  heads[pointIdx] = -1;
+  counts[pointIdx] = 0;
+  pushCloudTrailSampleForIndex(cfg, pointIdx, x, y, z);
+}
+
+function writeCloudTrailGeometry(cfg) {
+  const line = cfg?.cloudTrailLine;
+  const posAttr = line?.geometry?.getAttribute?.('position');
+  const alphaAttr = line?.geometry?.getAttribute?.('alpha');
+  const cloudPosAttr = cfg?.cloudPoints?.geometry?.getAttribute?.('position');
+  if (!posAttr?.array || !alphaAttr?.array || !cloudPosAttr?.array) return;
+  const trailPos = cfg.cloudTrailPositions;
+  const heads = cfg.cloudTrailHeads;
+  const counts = cfg.cloudTrailCounts;
+  const cloudCount = Math.max(0, Math.floor(Number(cfg.cloudCount) || 0));
+  const cap = Math.max(0, Math.floor(Number(cfg.trailPointCapacity) || 0));
+  const sampleSec = Math.max(1e-6, Number(cfg.trailSampleSec) || 1);
+  const durationSec = Math.max(sampleSec, Number(cfg.trailDurationSec) || 30);
+  if (!trailPos || !heads || !counts || !cloudCount || !cap) return;
+  const pos = posAttr.array;
+  const alpha = alphaAttr.array;
+  const cloud = cloudPosAttr.array;
+  let segGlobal = 0;
+  const writeSeg = (sx, sy, sz, ex, ey, ez, a) => {
+    const pOff = segGlobal * 6;
+    const aOff = segGlobal * 2;
+    pos[pOff + 0] = sx;
+    pos[pOff + 1] = sy;
+    pos[pOff + 2] = sz;
+    pos[pOff + 3] = ex;
+    pos[pOff + 4] = ey;
+    pos[pOff + 5] = ez;
+    const aa = Math.max(0, Math.min(0.5, Number(a) || 0));
+    alpha[aOff + 0] = aa;
+    alpha[aOff + 1] = aa;
+    segGlobal += 1;
+  };
+  for (let i = 0; i < cloudCount; i += 1) {
+    const count = Math.min(cap, Math.max(0, Math.floor(Number(counts[i]) || 0)));
+    const maxTrailAgeSec = Math.max(
+      sampleSec,
+      Math.min(durationSec, Math.max(sampleSec, (count - 1) * sampleSec)),
+    );
+    const cx = cloud[(i * 3) + 0];
+    const cy = cloud[(i * 3) + 1];
+    const cz = cloud[(i * 3) + 2];
+    const readSample = (idxFromNewest, out) => {
+      if (idxFromNewest < 0 || idxFromNewest >= count) return false;
+      const head = Math.floor(Number(heads[i]) || 0);
+      const slot = (head - idxFromNewest + cap) % cap;
+      const base = (i * cap * 3) + (slot * 3);
+      out[0] = trailPos[base + 0];
+      out[1] = trailPos[base + 1];
+      out[2] = trailPos[base + 2];
+      return true;
+    };
+    const tmpA = [0, 0, 0];
+    const tmpB = [0, 0, 0];
+    if (count > 0 && readSample(0, tmpA)) {
+      writeSeg(cx, cy, cz, tmpA[0], tmpA[1], tmpA[2], 0.5);
+      for (let k = 0; k < (count - 1); k += 1) {
+        if (!readSample(k, tmpA) || !readSample(k + 1, tmpB)) break;
+        const ageSec = (k + 1) * sampleSec;
+        const fade = Math.max(0, Math.min(1, ageSec / maxTrailAgeSec));
+        writeSeg(tmpA[0], tmpA[1], tmpA[2], tmpB[0], tmpB[1], tmpB[2], 0.5 * (1 - fade));
+      }
+    }
+    for (let k = count; k < cap; k += 1) {
+      writeSeg(cx, cy, cz, cx, cy, cz, 0);
+    }
+  }
+  posAttr.needsUpdate = true;
+  alphaAttr.needsUpdate = true;
+}
+
+function writeFlowTracerTrailGeometry(tracer, cfg) {
+  const trailLine = cfg?.trailLine;
+  const posAttr = trailLine?.geometry?.getAttribute?.('position');
+  const alphaAttr = trailLine?.geometry?.getAttribute?.('alpha');
+  if (!tracer || !cfg || !posAttr?.array || !alphaAttr?.array) return;
+  const pos = posAttr.array;
+  const alpha = alphaAttr.array;
+  const cap = Math.max(0, Math.floor(Number(cfg.trailPointCapacity) || 0));
+  const count = Math.min(cap, Math.max(0, Math.floor(Number(cfg.trailCount) || 0)));
+  const trailPos = cfg.trailPositions;
+  const sampleSec = Math.max(1e-6, Number(cfg.trailSampleSec) || 1);
+  const durationSec = Math.max(sampleSec, Number(cfg.trailDurationSec) || 30);
+  const maxTrailAgeSec = Math.max(
+    sampleSec,
+    Math.min(durationSec, Math.max(sampleSec, (count - 1) * sampleSec)),
+  );
+  const px = Number(tracer.position?.x) || 0;
+  const py = Number(tracer.position?.y) || 0;
+  const pz = Number(tracer.position?.z) || 0;
+  const readSample = (idxFromNewest, out) => {
+    if (!trailPos || idxFromNewest < 0 || idxFromNewest >= count) return false;
+    const head = Math.floor(Number(cfg.trailHead) || 0);
+    const slot = (head - idxFromNewest + cap) % cap;
+    const off = slot * 3;
+    out[0] = trailPos[off + 0];
+    out[1] = trailPos[off + 1];
+    out[2] = trailPos[off + 2];
+    return true;
+  };
+  const tmpA = [0, 0, 0];
+  const tmpB = [0, 0, 0];
+  const maxSegments = cap;
+  const setSegment = (segIdx, sx, sy, sz, ex, ey, ez, segAlpha) => {
+    const pOff = segIdx * 6;
+    const aOff = segIdx * 2;
+    pos[pOff + 0] = sx;
+    pos[pOff + 1] = sy;
+    pos[pOff + 2] = sz;
+    pos[pOff + 3] = ex;
+    pos[pOff + 4] = ey;
+    pos[pOff + 5] = ez;
+    const a = Math.max(0, Math.min(0.5, Number(segAlpha) || 0));
+    alpha[aOff + 0] = a;
+    alpha[aOff + 1] = a;
+  };
+
+  let seg = 0;
+  if (count > 0 && readSample(0, tmpA)) {
+    const newestOpacity = 0.5;
+    setSegment(seg, px, py, pz, tmpA[0], tmpA[1], tmpA[2], newestOpacity);
+    seg += 1;
+    for (let i = 0; i < (count - 1) && seg < maxSegments; i += 1, seg += 1) {
+      if (!readSample(i, tmpA) || !readSample(i + 1, tmpB)) break;
+      const ageSec = seg * sampleSec;
+      const fade = Math.max(0, Math.min(1, ageSec / maxTrailAgeSec));
+      const opacity = 0.5 * (1 - fade); // 50% opaque -> 100% transparent
+      setSegment(seg, tmpA[0], tmpA[1], tmpA[2], tmpB[0], tmpB[1], tmpB[2], opacity);
+    }
+  }
+  for (; seg < maxSegments; seg += 1) {
+    setSegment(seg, px, py, pz, px, py, pz, 0);
+  }
+  posAttr.needsUpdate = true;
+  alphaAttr.needsUpdate = true;
+}
+
+function addInducedVelocityFromSegment(px, py, pz, segment, gammaScale, core2, acc) {
+  const ax = segment.a[0];
+  const ay = segment.a[1];
+  const az = segment.a[2];
+  const bx = segment.b[0];
+  const by = segment.b[1];
+  const bz = segment.b[2];
+  const r1x = px - ax;
+  const r1y = py - ay;
+  const r1z = pz - az;
+  const r2x = px - bx;
+  const r2y = py - by;
+  const r2z = pz - bz;
+
+  const cx = r1y * r2z - r1z * r2y;
+  const cy = r1z * r2x - r1x * r2z;
+  const cz = r1x * r2y - r1y * r2x;
+  const c2 = (cx * cx) + (cy * cy) + (cz * cz) + core2;
+  if (!Number.isFinite(c2) || c2 < 1e-14) return;
+
+  const r1 = Math.hypot(r1x, r1y, r1z);
+  const r2 = Math.hypot(r2x, r2y, r2z);
+  if (r1 < 1e-7 || r2 < 1e-7) return;
+
+  const ux = (r1x / r1) - (r2x / r2);
+  const uy = (r1y / r1) - (r2y / r2);
+  const uz = (r1z / r1) - (r2z / r2);
+  const r0x = bx - ax;
+  const r0y = by - ay;
+  const r0z = bz - az;
+  const dot = (r0x * ux) + (r0y * uy) + (r0z * uz);
+  const coef = (gammaScale * Number(segment.gamma || 0) * dot) / (4 * Math.PI * c2);
+  if (!Number.isFinite(coef)) return;
+  acc[0] += cx * coef;
+  acc[1] += cy * coef;
+  acc[2] += cz * coef;
+}
+
+function addInducedVelocityFromVorvelc(
+  px, py, pz,
+  lbound,
+  x1, y1, z1,
+  x2, y2, z2,
+  beta,
+  rcore,
+  gammaScale,
+  acc,
+) {
+  addInducedVelocityFromVorvelcKernel(
+    px, py, pz,
+    lbound,
+    x1, y1, z1,
+    x2, y2, z2,
+    beta,
+    rcore,
+    gammaScale,
+    acc,
+  );
+}
+
+function addInducedVelocityFromHorseshoe(px, py, pz, horse, solverParams, acc) {
+  addInducedVelocityFromHorseshoeKernel(px, py, pz, horse, solverParams, acc);
+}
+
+function halton(index, base) {
+  let i = Math.max(1, Math.floor(index));
+  let f = 1;
+  let r = 0;
+  while (i > 0) {
+    f /= base;
+    r += f * (i % base);
+    i = Math.floor(i / base);
+  }
+  return r;
+}
+
+function buildShuffledIndexArray(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const arr = new Uint32Array(n);
+  for (let i = 0; i < n; i += 1) arr[i] = i;
+  for (let i = n - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
+
+function enableLineVertexAlpha(material) {
+  if (!material || material.userData?.vertexAlphaEnabled) return;
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float alpha;\nvarying float vAlpha;')
+      .replace('#include <color_vertex>', '#include <color_vertex>\n  vAlpha = alpha;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vAlpha;')
+      .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( diffuse, opacity * vAlpha );');
+  };
+  material.userData.vertexAlphaEnabled = true;
+  material.needsUpdate = true;
+}
+
+function computeArrowHeadPoints(sx, sy, sz, ex, ey, ez, headBackScale = 0.35, headWidthScale = 0.22) {
+  const dx = ex - sx;
+  const dy = ey - sy;
+  const dz = ez - sz;
+  const len = Math.hypot(dx, dy, dz);
+  if (len < 1e-12) {
+    return {
+      lx: ex, ly: ey, lz: ez,
+      rx: ex, ry: ey, rz: ez,
+    };
+  }
+  const ux = dx / len;
+  const uy = dy / len;
+  const uz = dz / len;
+  const headBack = len * headBackScale;
+  const headWidth = len * headWidthScale;
+
+  let rx0 = 0;
+  let ry0 = 0;
+  let rz0 = 1;
+  if (Math.abs(uz) > 0.85) {
+    rx0 = 0;
+    ry0 = 1;
+    rz0 = 0;
+  }
+
+  let sxv = (uy * rz0) - (uz * ry0);
+  let syv = (uz * rx0) - (ux * rz0);
+  let szv = (ux * ry0) - (uy * rx0);
+  let sLen = Math.hypot(sxv, syv, szv);
+  if (sLen < 1e-9) {
+    sxv = 1;
+    syv = 0;
+    szv = 0;
+    sLen = 1;
+  }
+  sxv /= sLen;
+  syv /= sLen;
+  szv /= sLen;
+
+  const hx = ex - (ux * headBack);
+  const hy = ey - (uy * headBack);
+  const hz = ez - (uz * headBack);
+
+  return {
+    lx: hx + (sxv * headWidth),
+    ly: hy + (syv * headWidth),
+    lz: hz + (szv * headWidth),
+    rx: hx - (sxv * headWidth),
+    ry: hy - (syv * headWidth),
+    rz: hz - (szv * headWidth),
+  };
+}
+
+function buildFlowFieldGroup(bounds, flowVortexData = null) {
+  if (!THREE || !bounds) return null;
+  const group = new THREE.Group();
+  group.name = 'flow-field';
+  const base = getBaseFlowVector();
+  if (base.lengthSq() < 1e-12) return null;
+  const size = bounds.size.clone();
+  const maxDim = Math.max(size.x, size.y, size.z, 1e-3);
+  const spanLength = Math.max(
+    1e-3,
+    Math.abs(Number(uiState.modelHeader?.bref ?? uiState.modelCache?.header?.bref ?? bounds.size.y ?? maxDim)),
+  );
+  const inputFlowData = flowVortexData && typeof flowVortexData === 'object'
+    ? flowVortexData
+    : { source: 'heuristic', segments: Array.isArray(flowVortexData) ? flowVortexData : [] };
+  const horseshoes = Array.isArray(inputFlowData.horseshoes) ? inputFlowData.horseshoes : [];
+  const hasSolverVortices = horseshoes.length > 0;
+  const inputSegments = Array.isArray(inputFlowData.segments) ? inputFlowData.segments : [];
+  const tipLegSegments = inputSegments.filter((seg) => seg?.tip && seg?.kind === 'leg');
+  const segments = hasSolverVortices ? [] : (tipLegSegments.length ? tipLegSegments : inputSegments);
+  const flowMode = FLOW_FIELD_MODES.includes(uiState.flowFieldMode) ? uiState.flowFieldMode : FLOW_FIELD_MODES[0];
+  const flowDeltaOnly = flowMode !== 'full';
+  const includeRigidBodyRotation = flowMode !== 'induced';
+  const includeFreestream = flowMode === 'full';
+  const w = uiState.lastExecResult?.WROT;
+  const rotX = Number(w?.[0]) || 0; // p*b/(2V)
+  const rotY = Number(w?.[1]) || 0; // q*c/(2V)
+  const rotZ = Number(w?.[2]) || 0; // r*b/(2V)
+  const baseMag = Math.max(base.length(), 1e-6);
+  const brefRef = Math.max(1e-6, Math.abs(Number(uiState.modelHeader?.bref ?? uiState.modelCache?.header?.bref ?? 1)));
+  const crefRef = Math.max(1e-6, Math.abs(Number(uiState.modelHeader?.cref ?? uiState.modelCache?.header?.cref ?? 1)));
+  const omegaX = rotX * (2 * baseMag / brefRef);
+  const omegaY = rotY * (2 * baseMag / crefRef);
+  const omegaZ = rotZ * (2 * baseMag / brefRef);
+  const core2 = Math.pow(0.03 * maxDim, 2);
+  const gammaScale = baseMag * Math.max(0.08 * maxDim, 0.12);
+  const inducedClamp = baseMag * 1.4;
+  const solverParams = {
+    beta: Math.abs(Number(inputFlowData.beta) || 0) > 1e-8 ? Number(inputFlowData.beta) : 1,
+    iysym: Number(inputFlowData.iysym) || 0,
+    izsym: Number(inputFlowData.izsym) || 0,
+    ysym: Number(inputFlowData.ysym) || 0,
+    zsym: Number(inputFlowData.zsym) || 0,
+  };
+  const start = selectFlowTracerStartPoint(bounds);
+  const tracerGeom = new THREE.BufferGeometry();
+  tracerGeom.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3));
+  const tracerSize = 2.2;
+  const tracerMat = new THREE.PointsMaterial({
+    color: 0xbfdbfe,
+    size: tracerSize,
+    sizeAttenuation: false,
+    transparent: true,
+    opacity: 0.98,
+    map: getFlowPointSpriteTexture(),
+    alphaTest: 0.08,
+    depthWrite: false,
+  });
+  const tracer = new THREE.Points(tracerGeom, tracerMat);
+  tracer.name = 'flow-tracer';
+  tracer.renderOrder = 6;
+  tracer.position.set(start.x, start.y, start.z);
+  const cloudCount = 960;
+  const cloudPos = new Float32Array(cloudCount * 3);
+  let seq = 1;
+  let ci = 0;
+  const maxAttempts = cloudCount * 24;
+  while (ci < cloudCount && seq <= maxAttempts) {
+    const xNorm = (2 * halton(seq, 2)) - 1;
+    const yNorm = (2 * halton(seq, 3)) - 1;
+    const zNorm = (2 * halton(seq, 5)) - 1;
+    seq += 1;
+    const r2 = (xNorm * xNorm) + (yNorm * yNorm) + (zNorm * zNorm);
+    if (r2 > 1) continue;
+    cloudPos[(ci * 3) + 0] = xNorm * spanLength;
+    cloudPos[(ci * 3) + 1] = yNorm * spanLength;
+    cloudPos[(ci * 3) + 2] = zNorm * spanLength;
+    ci += 1;
+  }
+  const cloudGeom = new THREE.BufferGeometry();
+  cloudGeom.setAttribute('position', new THREE.BufferAttribute(cloudPos, 3));
+  const cloudMat = new THREE.PointsMaterial({
+    color: 0x93c5fd,
+    size: 3.2,
+    sizeAttenuation: false,
+    transparent: true,
+    opacity: 0.78,
+    map: getFlowPointSpriteTexture(),
+    alphaTest: 0.08,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const cloudPoints = new THREE.Points(cloudGeom, cloudMat);
+  cloudPoints.name = 'flow-tracer-cloud';
+  cloudPoints.renderOrder = 4;
+  const trailSampleSec = 0.5;
+  const trailDurationSec = Math.max(trailSampleSec, 5 * (brefRef / 15));
+  const trailPointCapacity = Math.floor(trailDurationSec / trailSampleSec) + 1; // include t=0 sample
+  const cloudTrailSegmentCapacity = Math.max(1, ci * trailPointCapacity);
+  const cloudTrailGeom = new THREE.BufferGeometry();
+  const cloudTrailPos = new Float32Array(cloudTrailSegmentCapacity * 2 * 3);
+  const cloudTrailCol = new Float32Array(cloudTrailSegmentCapacity * 2 * 3);
+  const cloudTrailAlpha = new Float32Array(cloudTrailSegmentCapacity * 2);
+  const cloudTrailColor = new THREE.Color(0x93c5fd);
+  for (let i = 0; i < (cloudTrailSegmentCapacity * 2); i += 1) {
+    const off = i * 3;
+    cloudTrailCol[off + 0] = cloudTrailColor.r;
+    cloudTrailCol[off + 1] = cloudTrailColor.g;
+    cloudTrailCol[off + 2] = cloudTrailColor.b;
+  }
+  cloudTrailGeom.setAttribute('position', new THREE.BufferAttribute(cloudTrailPos, 3));
+  cloudTrailGeom.setAttribute('color', new THREE.BufferAttribute(cloudTrailCol, 3));
+  cloudTrailGeom.setAttribute('alpha', new THREE.BufferAttribute(cloudTrailAlpha, 1));
+  const cloudTrailMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 1 });
+  enableLineVertexAlpha(cloudTrailMat);
+  const cloudTrailLine = new THREE.LineSegments(cloudTrailGeom, cloudTrailMat);
+  cloudTrailLine.name = 'flow-tracer-cloud-trail';
+  cloudTrailLine.renderOrder = 3;
+  const trailSegmentCapacity = trailPointCapacity;
+  const trailGeom = new THREE.BufferGeometry();
+  const trailPos = new Float32Array(trailSegmentCapacity * 2 * 3);
+  const trailCol = new Float32Array(trailSegmentCapacity * 2 * 3);
+  const trailAlpha = new Float32Array(trailSegmentCapacity * 2);
+  const trailColor = new THREE.Color(0x93c5fd);
+  for (let i = 0; i < (trailSegmentCapacity * 2); i += 1) {
+    const cOff = i * 3;
+    trailCol[cOff + 0] = trailColor.r;
+    trailCol[cOff + 1] = trailColor.g;
+    trailCol[cOff + 2] = trailColor.b;
+  }
+  trailGeom.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+  trailGeom.setAttribute('color', new THREE.BufferAttribute(trailCol, 3));
+  trailGeom.setAttribute('alpha', new THREE.BufferAttribute(trailAlpha, 1));
+  const trailMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 1 });
+  enableLineVertexAlpha(trailMat);
+  const trailLine = new THREE.LineSegments(trailGeom, trailMat);
+  trailLine.name = 'flow-tracer-trail';
+  trailLine.renderOrder = 5;
+  const cloudTrailSamplePhase = new Float32Array(Math.max(1, ci));
+  for (let i = 0; i < ci; i += 1) {
+    // Stagger trail sampling so traces do not all update on the same frame.
+    cloudTrailSamplePhase[i] = halton(i + 1, 7) * trailSampleSec;
+  }
+  tracer.userData.flowTracer = {
+    start: { ...start },
+    velocity: { x: 0, y: 0, z: 0 },
+    lastTimeSec: null,
+    includeRigidBodyRotation,
+    includeFreestream,
+    base: { x: base.x, y: base.y, z: base.z },
+    omega: { x: omegaX, y: omegaY, z: omegaZ },
+    horseshoes,
+    segments,
+    solverParams,
+    gammaScale,
+    core2,
+    inducedClamp,
+    spanLength,
+    trailDurationSec,
+    trailSampleSec,
+    trailPointCapacity,
+    trailPositions: new Float32Array(trailPointCapacity * 3),
+    trailHead: -1,
+    trailCount: 0,
+    trailNextSampleSec: null,
+    trailLine,
+    cloudPoints,
+    cloudCount: ci,
+    cloudStartPositions: cloudPos.slice(),
+    cloudTrailLine,
+    cloudTrailPositions: new Float32Array(Math.max(1, ci * trailPointCapacity * 3)),
+    cloudTrailSamplePhase,
+    cloudTrailNextSampleSec: new Float64Array(Math.max(1, ci)),
+    cloudTrailHeads: (() => {
+      const arr = new Int16Array(Math.max(1, ci));
+      for (let i = 0; i < arr.length; i += 1) arr[i] = -1;
+      return arr;
+    })(),
+    cloudTrailCounts: new Uint8Array(Math.max(1, ci)),
+    speedScale: flowMode === 'full' ? 1 : 100,
+  };
+  group.add(cloudTrailLine);
+  group.add(cloudPoints);
+  group.add(trailLine);
+  group.add(tracer);
+
+  group.userData.flowSource = hasSolverVortices ? (inputFlowData.source || 'solver-strips') : 'heuristic';
+  group.userData.flowVortexCount = hasSolverVortices ? horseshoes.length : segments.length;
+  group.userData.flowDeltaOnly = flowDeltaOnly;
+  group.userData.flowIncludesRigidBodyRotation = includeRigidBodyRotation;
+  group.userData.flowMode = flowMode;
+  group.userData.flowArrowheads = false;
+  group.userData.flowTrails = true;
+  group.userData.flowTracer = true;
+  return group;
+}
+
+function removeAuxOverlays() {
+  if (panelSpacingGroup) {
+    panelSpacingGroup.parent?.remove?.(panelSpacingGroup);
+    panelSpacingGroup = null;
+  }
+  if (vortexGroup) {
+    vortexGroup.parent?.remove?.(vortexGroup);
+    vortexGroup = null;
+  }
+  if (flowFieldGroup) {
+    flowFieldGroup.parent?.remove?.(flowFieldGroup);
+    flowFieldGroup = null;
+  }
+}
+
+function applyAuxOverlayVisibility() {
+  if (panelSpacingGroup) panelSpacingGroup.visible = Boolean(uiState.showPanelSpacing);
+  if (vortexGroup) vortexGroup.visible = Boolean(uiState.showVortices);
+  if (flowFieldGroup) {
+    flowFieldGroup.visible = Boolean(uiState.showFlowField);
+    if (!uiState.showFlowField) resetFlowTracerPosition(flowFieldGroup);
+  }
+}
+
+function rebuildAuxOverlays(bounds = null) {
+  if (!aircraft || !uiState.displayModel) return;
+  removeAuxOverlays();
+  panelSpacingGroup = buildPanelSpacingGroup(uiState.displayModel);
+  const vortexData = buildVortexData(uiState.displayModel);
+  vortexGroup = buildVortexGroup(vortexData);
+  const effectiveBounds = bounds || computeBounds(aircraft);
+  const flowOffset = {
+    x: Number(aircraft.position?.x) || 0,
+    y: Number(aircraft.position?.y) || 0,
+    z: Number(aircraft.position?.z) || 0,
+  };
+  const flowVortexData = buildFlowVortexDataFromExec(uiState.lastExecResult, vortexData?.segments || [], flowOffset);
+  flowFieldGroup = buildFlowFieldGroup(effectiveBounds, flowVortexData);
+  if (panelSpacingGroup) aircraft.add(panelSpacingGroup);
+  if (vortexGroup) aircraft.add(vortexGroup);
+  if (flowFieldGroup && scene) scene.add(flowFieldGroup);
+  if (flowFieldGroup) resetFlowTracerPosition(flowFieldGroup);
+  flowFieldAnimLastMs = 0;
+  applyAuxOverlayVisibility();
+}
+
 function buildSurfaceMesh(surface, color) {
   const group = new THREE.Group();
   if (surface.sections.length < 2) return group;
@@ -3506,6 +6098,7 @@ function buildSurfaceMesh(surface, color) {
   }
 
   const verts = [];
+  const profileVerts = [];
   const controlVerts = new Map();
   const camberLines = [];
   const airfoilOutlines = [];
@@ -3567,6 +6160,31 @@ function buildSurfaceMesh(surface, color) {
     const flap = applyControlDeflections(section, rawPoint);
     const rotated = rotateSectionPoint(section, flap);
     return applyTransforms(rotated);
+  };
+
+  const buildSectionProfilePoints = (section) => {
+    let coords = section.airfoilCoords;
+    if (!coords && section.airfoilFile) {
+      const resolved = resolveProvidedAirfoilKey(section.airfoilFile);
+      if (resolved) coords = airfoilCache.get(resolved) || null;
+    }
+    if ((!coords || !coords.length) && section.naca) {
+      coords = buildNacaProfileCoords(section.naca, 40);
+    }
+    const profile = buildProfileSections(coords || [], 28);
+    const toPoint = ([x, z]) => transformSectionPoint(section, [
+      section.xle + x * section.chord,
+      section.yle,
+      section.zle + z * section.chord,
+    ]);
+    return {
+      upper: profile.upper.map(toPoint),
+      lower: profile.lower.map(toPoint),
+    };
+  };
+
+  const pushProfileQuad = (a, b, c, d) => {
+    profileVerts.push(...a, ...b, ...c, ...a, ...c, ...d);
   };
 
   const addControlQuad = (name, le1, le2, te2, te1) => {
@@ -3658,6 +6276,38 @@ function buildSurfaceMesh(surface, color) {
     });
   }
 
+  const sectionProfiles = surface.sections.map((section) => buildSectionProfilePoints(section));
+  for (let s = 0; s < sectionProfiles.length - 1; s += 1) {
+    const pa = sectionProfiles[s];
+    const pb = sectionProfiles[s + 1];
+    const upperN = Math.min(pa.upper.length, pb.upper.length);
+    const lowerN = Math.min(pa.lower.length, pb.lower.length);
+    for (let i = 0; i < upperN - 1; i += 1) {
+      pushProfileQuad(pa.upper[i], pb.upper[i], pb.upper[i + 1], pa.upper[i + 1]);
+    }
+    for (let i = 0; i < lowerN - 1; i += 1) {
+      pushProfileQuad(pa.lower[i], pa.lower[i + 1], pb.lower[i + 1], pb.lower[i]);
+    }
+    if (upperN > 1 && lowerN > 1) {
+      pushProfileQuad(pa.upper[0], pb.upper[0], pb.lower[0], pa.lower[0]);
+      pushProfileQuad(pa.upper[upperN - 1], pa.lower[lowerN - 1], pb.lower[lowerN - 1], pb.upper[upperN - 1]);
+    }
+
+    if (typeof surface.yduplicate === 'number') {
+      const mirror = (p) => [p[0], 2 * surface.yduplicate - p[1], p[2]];
+      for (let i = 0; i < upperN - 1; i += 1) {
+        pushProfileQuad(mirror(pa.upper[i]), mirror(pb.upper[i]), mirror(pb.upper[i + 1]), mirror(pa.upper[i + 1]));
+      }
+      for (let i = 0; i < lowerN - 1; i += 1) {
+        pushProfileQuad(mirror(pa.lower[i]), mirror(pa.lower[i + 1]), mirror(pb.lower[i + 1]), mirror(pb.lower[i]));
+      }
+      if (upperN > 1 && lowerN > 1) {
+        pushProfileQuad(mirror(pa.upper[0]), mirror(pb.upper[0]), mirror(pb.lower[0]), mirror(pa.lower[0]));
+        pushProfileQuad(mirror(pa.upper[upperN - 1]), mirror(pa.lower[lowerN - 1]), mirror(pb.lower[lowerN - 1]), mirror(pb.upper[upperN - 1]));
+      }
+    }
+  }
+
   surface.sections.forEach((section) => {
     let coords = section.airfoilCoords;
     if (!coords && section.airfoilFile) {
@@ -3685,6 +6335,7 @@ function buildSurfaceMesh(surface, color) {
     opacity: 0.9,
   });
   const outlineLine = new THREE.LineSegments(outlineGeom, outlineMat);
+  outlineLine.userData.renderKind = 'wire';
   group.add(outlineLine);
 
   controlVerts.forEach((ctrlVerts, name) => {
@@ -3701,6 +6352,7 @@ function buildSurfaceMesh(surface, color) {
     ctrlGeom.setAttribute('position', new THREE.Float32BufferAttribute(ctrlEdges, 3));
     const ctrlLine = new THREE.LineSegments(ctrlGeom, controlMat);
     ctrlLine.name = `control:${name}`;
+    ctrlLine.userData.renderKind = 'wire';
     group.add(ctrlLine);
   });
 
@@ -3713,6 +6365,7 @@ function buildSurfaceMesh(surface, color) {
     hingeGeom.setAttribute('position', new THREE.Float32BufferAttribute(hingeVerts, 3));
     const hingeLine = new THREE.LineSegments(hingeGeom, hingeMat);
     hingeLine.computeLineDistances();
+    hingeLine.userData.renderKind = 'wire';
     group.add(hingeLine);
   }
 
@@ -3721,6 +6374,7 @@ function buildSurfaceMesh(surface, color) {
     const camGeom = new THREE.BufferGeometry();
     camGeom.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
     const camLine = new THREE.Line(camGeom, sectionMat);
+    camLine.userData.renderKind = 'wire';
     group.add(camLine);
   });
 
@@ -3729,8 +6383,54 @@ function buildSurfaceMesh(surface, color) {
     const foilGeom = new THREE.BufferGeometry();
     foilGeom.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
     const foilLine = new THREE.Line(foilGeom, sectionMat);
+    foilLine.userData.renderKind = 'wire';
     group.add(foilLine);
   });
+
+  if (profileVerts.length) {
+    const skinGeom = new THREE.BufferGeometry();
+    skinGeom.setAttribute('position', new THREE.Float32BufferAttribute(profileVerts, 3));
+    skinGeom.computeVertexNormals();
+    const baseCol = new THREE.Color(color);
+    const pressureBaseCol = new THREE.Color(0xd8dce3);
+    const skinMat = new THREE.MeshStandardMaterial({
+      color: baseCol,
+      side: THREE.DoubleSide,
+      metalness: 0.12,
+      roughness: 0.5,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const skinMesh = new THREE.Mesh(skinGeom, skinMat);
+    skinMesh.name = 'surface-skin';
+    skinMesh.userData.renderKind = 'skin';
+    skinMesh.userData.baseColor = baseCol;
+    skinMesh.userData.pressureBaseColor = pressureBaseCol;
+    group.add(skinMesh);
+
+    const overlayGeom = skinGeom.clone();
+    const overlayColor = new Float32Array((profileVerts.length / 3) * 3);
+    const overlayAlpha = new Float32Array(profileVerts.length / 3);
+    overlayGeom.setAttribute('color', new THREE.BufferAttribute(overlayColor, 3));
+    overlayGeom.setAttribute('alpha', new THREE.BufferAttribute(overlayAlpha, 1));
+    const overlayMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      metalness: 0.0,
+      roughness: 0.65,
+      transparent: true,
+      opacity: 1.0,
+      depthWrite: false,
+    });
+    enableVertexAlpha(overlayMat);
+    const overlayMesh = new THREE.Mesh(overlayGeom, overlayMat);
+    overlayMesh.name = 'surface-pressure-overlay';
+    overlayMesh.userData.renderKind = 'skin-overlay';
+    overlayMesh.visible = false;
+    overlayMesh.renderOrder = 3;
+    group.add(overlayMesh);
+  }
 
   const labelCanvas = document.createElement('canvas');
   const ctx = labelCanvas.getContext('2d');
@@ -3755,6 +6455,7 @@ function buildSurfaceMesh(surface, color) {
   const labelPos = applyTransforms([center.x / denom, center.y / denom, center.z / denom]);
   sprite.position.set(labelPos[0], labelPos[1], labelPos[2] + 0.2);
   sprite.scale.set(1.6, 0.8, 1);
+  sprite.userData.renderKind = 'wire';
   group.add(sprite);
 
   return group;
@@ -3778,13 +6479,12 @@ function buildAircraftFromAVL(model) {
   return group;
 }
 
-function addReferenceMarker(target, header, center, maxDim) {
+function addReferenceMarker(target, header, maxDim) {
   if (!THREE || !target || !header) return;
   const xref = Number(header.xref);
   const yref = Number(header.yref);
   const zref = Number(header.zref);
   if (!Number.isFinite(xref) || !Number.isFinite(yref) || !Number.isFinite(zref)) return;
-  const refCenter = center || new THREE.Vector3(0, 0, 0);
   const size = Number.isFinite(maxDim) && maxDim > 0 ? maxDim : 1.0;
   const radius = Math.max(0.03, Math.min(0.22, size * 0.012));
 
@@ -3799,33 +6499,45 @@ function addReferenceMarker(target, header, center, maxDim) {
   const marker = new THREE.Mesh(geom, mat);
   marker.name = 'reference-marker';
   marker.renderOrder = 4;
-  marker.position.set(xref - refCenter.x, yref - refCenter.y, zref - refCenter.z);
+  // Marker is attached to aircraft local space; aircraft translation already recenters the model.
+  marker.position.set(xref, yref, zref);
   target.add(marker);
 }
 
 function rebuildAircraftVisual(shouldFit = false) {
   if (!scene || !uiState.displayModel) return;
+  modeAnimation = null;
   const newAircraft = buildAircraftFromAVL(uiState.displayModel);
   if (aircraft) scene.remove(aircraft);
   aircraft = newAircraft;
   scene.add(aircraft);
+  surfaceSkinMeshes = [];
+  surfacePressureMeshes = [];
+  surfaceWireObjects = [];
+  aircraft.traverse((obj) => {
+    if (obj?.isMesh && obj.name === 'surface-skin') surfaceSkinMeshes.push(obj);
+    if (obj?.isMesh && obj.name === 'surface-pressure-overlay') surfacePressureMeshes.push(obj);
+    if (obj?.userData?.renderKind === 'wire') surfaceWireObjects.push(obj);
+  });
   updateBank(Number(els.bank.value));
   const bounds = computeBounds(aircraft);
   if (bounds) {
     aircraft.position.sub(bounds.center);
     viewerState.bounds = bounds;
     viewerState.fitDistance = bounds.maxDim * 1.6 + 4.0;
-    addReferenceMarker(aircraft, uiState.modelHeader, bounds.center, bounds.maxDim);
+    addReferenceMarker(aircraft, uiState.modelHeader, bounds.maxDim);
     if (shouldFit) {
       rebuildGrid(bounds.maxDim);
       applyGridMode();
       if (axesHelper) axesHelper.position.set(0, 0, 0);
     }
   } else {
-    addReferenceMarker(aircraft, uiState.modelHeader, null, null);
+    addReferenceMarker(aircraft, uiState.modelHeader, null);
   }
   if (shouldFit) fitCameraToObject(aircraft);
   updateLoadingVisualization();
+  applySurfaceRenderMode();
+  rebuildAuxOverlays(bounds || null);
 }
 
 let scene;
@@ -3835,6 +6547,40 @@ let controls;
 let aircraft;
 let gridHelper;
 let axesHelper;
+let surfaceSkinMeshes = [];
+let surfacePressureMeshes = [];
+let surfaceWireObjects = [];
+let panelSpacingGroup = null;
+let vortexGroup = null;
+let flowFieldGroup = null;
+let flowFieldAnimLastMs = 0;
+let modeAnimation = null;
+let eigenTouchZoom = { active: false, lastDist: 0 };
+let flowProjectTmp = null;
+let flowPointSpriteTexture = null;
+
+function getFlowPointSpriteTexture() {
+  if (!THREE) return null;
+  if (flowPointSpriteTexture) return flowPointSpriteTexture;
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const c = size * 0.5;
+  const grad = ctx.createRadialGradient(c, c, 0, c, c, c);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.45, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(0.75, 'rgba(255,255,255,0.25)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.clearRect(0, 0, size, size);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  flowPointSpriteTexture = new THREE.CanvasTexture(canvas);
+  flowPointSpriteTexture.needsUpdate = true;
+  return flowPointSpriteTexture;
+}
 
 function updateViewerButtons() {
   if (!els.viewerPan || !els.viewerView || !els.viewerGrid) return;
@@ -3849,6 +6595,35 @@ function updateViewerButtons() {
   }
   if (els.viewerLoad) {
     els.viewerLoad.classList.toggle('active', uiState.showLoading);
+  }
+  if (els.viewerSurface) {
+    const mode = uiState.surfaceRenderMode;
+    els.viewerSurface.classList.toggle('active', mode !== 'wireframe');
+    if (mode === 'wireframe') els.viewerSurface.title = 'Render: wireframe only';
+    else if (mode === 'both') els.viewerSurface.title = 'Render: surface + wireframe';
+    else els.viewerSurface.title = 'Render: surface only';
+  }
+  if (els.viewerPressure) {
+    els.viewerPressure.classList.toggle('active', uiState.showPressure);
+    els.viewerPressure.title = uiState.showPressure ? 'Pressure shading on' : 'Pressure shading off';
+  }
+  if (els.viewerPanelSpacing) {
+    els.viewerPanelSpacing.classList.toggle('active', uiState.showPanelSpacing);
+    els.viewerPanelSpacing.title = uiState.showPanelSpacing ? 'Panel spacing on' : 'Panel spacing off';
+  }
+  if (els.viewerVortices) {
+    els.viewerVortices.classList.toggle('active', uiState.showVortices);
+    els.viewerVortices.title = uiState.showVortices ? 'Bound + leg vortices on' : 'Bound + leg vortices off';
+  }
+  if (els.viewerFlow) {
+    els.viewerFlow.classList.toggle('active', uiState.showFlowField);
+    const mode = FLOW_FIELD_MODES.includes(uiState.flowFieldMode) ? uiState.flowFieldMode : FLOW_FIELD_MODES[0];
+    const modeLabel = mode === 'induced'
+      ? 'induced only'
+      : (mode === 'induced+rotation' ? 'induced + body-rotation' : 'full flow');
+    els.viewerFlow.title = uiState.showFlowField
+      ? `Flow: ${modeLabel} (tap to cycle)`
+      : `Flow off (next: ${modeLabel})`;
   }
 }
 
@@ -4296,6 +7071,7 @@ function buildExecState(model) {
 
     PI: Math.fround(Math.PI),
     DTR: Math.fround(Math.PI / 180.0),
+    UNITL: 1.0,
     IYSYM: model.header.iysym ?? 0,
     IZSYM: model.header.izsym ?? 0,
     YSYM: 0.0,
@@ -4318,6 +7094,7 @@ function buildExecState(model) {
     LBFORCE: false,
     LTRFORCE: false,
     LNFLD_WV: false,
+    LMASS: Boolean(uiState.massPropsFilename),
     LFLOAD: new Uint8Array(NSURF + 1),
 
     ALFA: 0.0,
@@ -4329,6 +7106,8 @@ function buildExecState(model) {
     VINF_A: new Float32Array(3),
     VINF_B: new Float32Array(3),
     WROT: new Float32Array(3),
+    AMASS: new Float32Array(9),
+    AINER: new Float32Array(9),
     XYZREF: new Float32Array(3),
     SREF: Math.fround(Number.isFinite(model.header.sref) ? model.header.sref : 1.0),
     CREF: Math.fround(Number.isFinite(model.header.cref) ? model.header.cref : 1.0),
@@ -4570,15 +7349,22 @@ function buildExecState(model) {
   state.PARVAL[idx2(IPRHO, IR, IPTOT)] = Math.fround(Number(els.rho.value));
   state.PARVAL[idx2(IPGEE, IR, IPTOT)] = Math.fround(Number(els.gee.value));
   {
-    const massVal = Number(els.mass?.value || 0);
+    const massVal = Number(uiState.massProps?.mass ?? els.mass?.value ?? 0);
     const massUse = massVal > 0 ? massVal : 1.0;
     state.PARVAL[idx2(IPMASS, IR, IPTOT)] = Math.fround(massUse);
   }
   state.PARVAL[idx2(IPCL, IR, IPTOT)] = Math.fround(Number(els.cl?.value || 0));
   state.PARVAL[idx2(IPPHI, IR, IPTOT)] = Math.fround(Number(els.bank?.value || 0));
-  state.PARVAL[idx2(IPXCG, IR, IPTOT)] = Math.fround(Number.isFinite(model.header.xref) ? model.header.xref : 0.0);
-  state.PARVAL[idx2(IPYCG, IR, IPTOT)] = Math.fround(Number.isFinite(model.header.yref) ? model.header.yref : 0.0);
-  state.PARVAL[idx2(IPZCG, IR, IPTOT)] = Math.fround(Number.isFinite(model.header.zref) ? model.header.zref : 0.0);
+  state.PARVAL[idx2(IPXCG, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.xcg) ? uiState.massProps.xcg : (Number.isFinite(model.header.xref) ? model.header.xref : 0.0));
+  state.PARVAL[idx2(IPYCG, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ycg) ? uiState.massProps.ycg : (Number.isFinite(model.header.yref) ? model.header.yref : 0.0));
+  state.PARVAL[idx2(IPZCG, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.zcg) ? uiState.massProps.zcg : (Number.isFinite(model.header.zref) ? model.header.zref : 0.0));
+  state.PARVAL[idx2(IPIXX, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ixx) ? uiState.massProps.ixx : 0.0);
+  state.PARVAL[idx2(IPIYY, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.iyy) ? uiState.massProps.iyy : 0.0);
+  state.PARVAL[idx2(IPIZZ, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.izz) ? uiState.massProps.izz : 0.0);
+  // AVL stores products of inertia with opposite sign internally.
+  state.PARVAL[idx2(IPIXY, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ixy) ? -uiState.massProps.ixy : 0.0);
+  state.PARVAL[idx2(IPIZX, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ixz) ? -uiState.massProps.ixz : 0.0);
+  state.PARVAL[idx2(IPIYZ, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.iyz) ? -uiState.massProps.iyz : 0.0);
   state.PARVAL[idx2(IPCD0, IR, IPTOT)] = 0.0;
   // Seed alpha to a small positive value to avoid singular trim steps.
   state.ALFA = Math.fround(2.0 * state.DTR);
@@ -4590,6 +7376,12 @@ function buildExecState(model) {
   state.ICON[idx2(IVROTX, IR, IVMAX)] = ICMOMX;
   state.ICON[idx2(IVROTY, IR, IVMAX)] = ICMOMY;
   state.ICON[idx2(IVROTZ, IR, IVMAX)] = ICMOMZ;
+  for (let n = 1; n <= NDMAX; n += 1) {
+    const iv = IVTOT + n;
+    const ic = ICTOT + n;
+    state.ICON[idx2(iv, IR, IVMAX)] = ic;
+    state.CONVAL[idx2(ic, IR, ICMAX)] = 0.0;
+  }
 
   for (let n = 1; n <= NCONTROL; n += 1) {
     state.LCONDEF[n] = 1;
@@ -4737,6 +7529,15 @@ function runExecFromText(text) {
       CFBDY: state.CFBDY ? Array.from({ length: state.NBODY }, (_, ib) => surfVec(state.CFBDY, ib)) : null,
       CMBDY: state.CMBDY ? Array.from({ length: state.NBODY }, (_, ib) => surfVec(state.CMBDY, ib)) : null,
       CHINGE: hinge,
+      BETM: state.BETM,
+      IYSYM: state.IYSYM,
+      IZSYM: state.IZSYM,
+      YSYM: state.YSYM,
+      ZSYM: state.ZSYM,
+      NVOR: state.NVOR,
+      GAM: state.GAM ? Array.from(state.GAM.slice(0, state.NVOR + 1)) : null,
+      RV1: state.RV1 ? Array.from(state.RV1.slice(0, 4 * (state.NVOR + 1))) : null,
+      RV2: state.RV2 ? Array.from(state.RV2.slice(0, 4 * (state.NVOR + 1))) : null,
       PARVAL: state.PARVAL,
       WROT: state.WROT,
       DELCON: state.DELCON,
@@ -4806,6 +7607,29 @@ function buildForcesElementLines(result) {
 
 function applyExecResults(result) {
   uiState.lastExecResult = result;
+  const computedEigenModes = computeEigenModesFromExec(result);
+  const activeCaseIdx = activeRunCaseIndex();
+  if (activeCaseIdx >= 0 && Array.isArray(uiState.runCases) && uiState.runCases.length) {
+    if (!uiState.eigenModesByRunCase || typeof uiState.eigenModesByRunCase !== 'object') {
+      uiState.eigenModesByRunCase = {};
+    }
+    uiState.eigenModesByRunCase[activeCaseIdx] = computedEigenModes.map((m) => ({ ...m }));
+    const merged = [];
+    for (let i = 0; i < uiState.runCases.length; i += 1) {
+      const modesForCase = uiState.eigenModesByRunCase[i];
+      if (!Array.isArray(modesForCase) || !modesForCase.length) continue;
+      modesForCase.forEach((m) => merged.push({ ...m, runCaseIndex: i }));
+    }
+    uiState.eigenModes = merged;
+  } else {
+    uiState.eigenModesByRunCase = {};
+    uiState.eigenModes = computedEigenModes.map((m) => ({ ...m, runCaseIndex: -1 }));
+  }
+  if (uiState.selectedEigenMode >= uiState.eigenModes.length) {
+    uiState.selectedEigenMode = -1;
+  }
+  drawEigenPlot();
+  uiState.pressureField = buildPressureFieldFromExec(result);
   rebuildAircraftVisual(false);
   updateLoadingVisualization();
   const schedule = (fn) => {
@@ -4847,15 +7671,15 @@ function applyExecResults(result) {
   const rad = parval ? parval[idx2(IPRAD, IR, 30)] : null;
   const fac = parval ? parval[idx2(IPFAC, IR, 30)] : null;
 
-  if (Number.isFinite(result.ALFA) && els.outAlpha) els.outAlpha.textContent = `${fmtSignedAligned(result.ALFA / (Math.PI / 180), 2)} deg`;
-  if (Number.isFinite(result.BETA) && els.outBeta) els.outBeta.textContent = `${fmtSignedAligned(result.BETA / (Math.PI / 180), 2)} deg`;
+  if (Number.isFinite(result.ALFA) && els.outAlpha) els.outAlpha.textContent = fmtSignedAligned(result.ALFA / (Math.PI / 180), 2);
+  if (Number.isFinite(result.BETA) && els.outBeta) els.outBeta.textContent = fmtSignedAligned(result.BETA / (Math.PI / 180), 2);
   if (Number.isFinite(result.CLTOT) && els.outCL) els.outCL.textContent = fmtSignedAligned(result.CLTOT, 5);
   if (Number.isFinite(result.CDTOT) && els.outCD) els.outCD.textContent = fmtSignedAligned(result.CDTOT, 5);
-  if (Number.isFinite(vee) && els.outV) els.outV.textContent = `${fmt(vee, 2)} m/s`;
-  if (Number.isFinite(phi) && els.outBank) els.outBank.textContent = `${fmt(phi, 2)} deg`;
-  if (Number.isFinite(rad) && els.outRad) els.outRad.textContent = rad > 0 ? `${fmt(rad, 2)} m` : 'level';
+  if (Number.isFinite(vee) && els.outV) els.outV.textContent = fmt(vee, 2);
+  if (Number.isFinite(phi) && els.outBank) els.outBank.textContent = fmt(phi, 2);
+  if (Number.isFinite(rad) && els.outRad) els.outRad.textContent = rad > 0 ? fmt(rad, 2) : 'level';
   if (Number.isFinite(fac) && els.outFac) els.outFac.textContent = fmt(fac, 3);
-  if (Number.isFinite(the) && els.outThe) els.outThe.textContent = `${fmt(the, 2)} deg`;
+  if (Number.isFinite(the) && els.outThe) els.outThe.textContent = fmt(the, 2);
   if (els.outMach) {
     const mach = Number(uiState.modelHeader?.mach);
     els.outMach.textContent = Number.isFinite(mach) ? fmtSignedAligned(mach, 3) : '-';
@@ -5040,17 +7864,21 @@ function fitCameraToObject(obj) {
 
 function animate() {
   requestAnimationFrame(animate);
+  updateModeAnimation();
+  updateFlowFieldAnimation();
   if (controls) controls.update();
   if (renderer && scene && camera) renderer.render(scene, camera);
 }
 
 function handleResize() {
-  if (!renderer || !camera) return;
+  syncEditorPanelPlacement();
+  if (!renderer || !camera || !els.viewer) return;
   const width = els.viewer.clientWidth;
   const height = els.viewer.clientHeight;
   renderer.setSize(width, height);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
+  drawEigenPlot();
 }
 
 window.addEventListener('resize', handleResize);
@@ -5060,6 +7888,7 @@ async function bootApp() {
   initPanelCollapse();
   renderRunCasesList();
   updateRunCasesMeta();
+  renderMassProps(makeDefaultMassProps());
   await loadDefaultAVL();
   try {
     const model = buildSolverModel(els.fileText.value || '');
@@ -5067,6 +7896,7 @@ async function bootApp() {
   } catch {
     rebuildConstraintUI({ controlMap: new Map() });
   }
+  await loadDefaultRunAndMass();
   if (els.constraintTable) {
     logDebug(`Constraint table rows: ${els.constraintTable.children.length}`);
   } else {
@@ -5080,6 +7910,7 @@ async function bootApp() {
     logDebug('App ready (3D viewer disabled).');
   }
   updateTrefftz(Number(els.cl.value));
+  drawEigenPlot();
   resetTrimSeed();
   applyTrim({ useSeed: false });
 }

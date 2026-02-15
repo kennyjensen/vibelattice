@@ -5,7 +5,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { RUNCHK, SYSMAT, APPMAT, SYSSHO } from './amode.js';
+import { RUNCHK, SYSMAT, APPMAT, SYSSHO, EIGSOL } from './amode.js';
 
 export async function loadAmodeWasm(options = {}) {
   const wasmPath = options.wasmPath
@@ -32,11 +32,21 @@ export async function loadAmodeWasm(options = {}) {
         const { ASYS, BSYS, RSYS } = currentState.__amode;
         lastResult = SYSSHO(currentState, ASYS, BSYS, RSYS, n);
       },
+      eigsol_js: (ir, etol, nsys) => {
+        const { ASYS } = currentState.__amode;
+        lastResult = EIGSOL(currentState, ir, etol, ASYS, nsys);
+      },
     },
   };
 
   const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
-  const { RUNCHK: RUNCHK_WASM, SYSMAT: SYSMAT_WASM, APPMAT: APPMAT_WASM, SYSSHO: SYSSHO_WASM } = instance.exports;
+  const {
+    RUNCHK: RUNCHK_WASM,
+    SYSMAT: SYSMAT_WASM,
+    APPMAT: APPMAT_WASM,
+    SYSSHO: SYSSHO_WASM,
+    EIGSOL: EIGSOL_WASM,
+  } = instance.exports;
 
   function bind(state) {
     currentState = state;
@@ -73,5 +83,12 @@ export async function loadAmodeWasm(options = {}) {
     return lastResult;
   }
 
-  return { RUNCHK_wasm, SYSMAT_wasm, APPMAT_wasm, SYSSHO_wasm };
+  function EIGSOL_wasm(state, ir, etol, asys, nsys) {
+    bind(state);
+    if (asys && currentState.__amode) currentState.__amode.ASYS.set(asys);
+    EIGSOL_WASM(ir, etol, nsys);
+    return lastResult;
+  }
+
+  return { RUNCHK_wasm, SYSMAT_wasm, APPMAT_wasm, SYSSHO_wasm, EIGSOL_wasm };
 }

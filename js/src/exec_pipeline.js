@@ -585,6 +585,7 @@ export function buildExecState(model, options = {}) {
 
     PI: Math.fround(Math.PI),
     DTR: Math.fround(Math.PI / 180.0),
+    UNITL: Math.fround(1.0),
     IYSYM: model.header.iysym ?? 0,
     IZSYM: model.header.izsym ?? 0,
     YSYM: 0.0,
@@ -607,6 +608,7 @@ export function buildExecState(model, options = {}) {
     LBFORCE: false,
     LTRFORCE: false,
     LNFLD_WV: false,
+    LMASS: Boolean(opts.massLoaded),
     LFLOAD: new Uint8Array(NSURF + 1),
 
     ALFA: 0.0,
@@ -618,6 +620,8 @@ export function buildExecState(model, options = {}) {
     VINF_A: new Float32Array(3),
     VINF_B: new Float32Array(3),
     WROT: new Float32Array(3),
+    AMASS: new Float32Array(9),
+    AINER: new Float32Array(9),
     XYZREF: new Float32Array(3),
     SREF: Math.fround(model.header.sref ?? 1.0),
     CREF: Math.fround(model.header.cref ?? 1.0),
@@ -885,6 +889,12 @@ export function buildExecState(model, options = {}) {
   state.ICON[idx2(IVROTX, IR, IVMAX)] = ICMOMX;
   state.ICON[idx2(IVROTY, IR, IVMAX)] = ICMOMY;
   state.ICON[idx2(IVROTZ, IR, IVMAX)] = ICMOMZ;
+  for (let n = 1; n <= NDMAX; n += 1) {
+    const iv = IVTOT + n;
+    const ic = ICTOT + n;
+    state.ICON[idx2(iv, IR, IVMAX)] = ic;
+    state.CONVAL[idx2(ic, IR, ICMAX)] = 0.0;
+  }
 
   for (let n = 1; n <= NCONTROL; n += 1) {
     state.LCONDEF[n] = 1;

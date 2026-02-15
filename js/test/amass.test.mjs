@@ -150,6 +150,45 @@ function fillAppget(state) {
   }
 }
 
+function makeOneBasedGeometryState() {
+  const compact = makeState();
+  fillAppget(compact);
+
+  const one = makeState();
+  one.NSTRIP = compact.NSTRIP;
+  one.CHORD = new Float32Array(one.NSTRIP + 1);
+  one.WSTRIP = new Float32Array(one.NSTRIP + 1);
+  one.ENSY = new Float32Array(one.NSTRIP + 1);
+  one.ENSZ = new Float32Array(one.NSTRIP + 1);
+  one.CHORD1 = new Float32Array(one.NSTRIP + 1);
+  one.CHORD2 = new Float32Array(one.NSTRIP + 1);
+  one.RLE1 = new Float32Array(4 * (one.NSTRIP + 1));
+  one.RLE2 = new Float32Array(4 * (one.NSTRIP + 1));
+  one.RLE = new Float32Array(4 * (one.NSTRIP + 1));
+
+  for (let j = 0; j < one.NSTRIP; j += 1) {
+    const jj = j + 1;
+    one.CHORD[jj] = compact.CHORD[j];
+    one.WSTRIP[jj] = compact.WSTRIP[j];
+    one.ENSY[jj] = compact.ENSY[j];
+    one.ENSZ[jj] = compact.ENSZ[j];
+    one.CHORD1[jj] = compact.CHORD1[j];
+    one.CHORD2[jj] = compact.CHORD2[j];
+    // Match AVL runtime storage: 4-stride vectors with components in 1..3.
+    one.RLE1[jj * 4 + 1] = compact.RLE1[j * 3 + 0];
+    one.RLE1[jj * 4 + 2] = compact.RLE1[j * 3 + 1];
+    one.RLE1[jj * 4 + 3] = compact.RLE1[j * 3 + 2];
+    one.RLE2[jj * 4 + 1] = compact.RLE2[j * 3 + 0];
+    one.RLE2[jj * 4 + 2] = compact.RLE2[j * 3 + 1];
+    one.RLE2[jj * 4 + 3] = compact.RLE2[j * 3 + 2];
+    one.RLE[jj * 4 + 1] = compact.RLE[j * 3 + 0];
+    one.RLE[jj * 4 + 2] = compact.RLE[j * 3 + 1];
+    one.RLE[jj * 4 + 3] = compact.RLE[j * 3 + 2];
+  }
+
+  return { compact, one };
+}
+
 const massFile = [
   '# comment',
   'Lunit = 2.0 m',
@@ -226,6 +265,14 @@ test('amass.f JS port matches Fortran reference', () => {
   assertCloseArray([state.GEE0, state.RHO0], [ref.masget.gee0, ref.masget.rho0]);
   assertCloseArray([state.UNITL, state.UNITM, state.UNITT], [ref.masget.unitl, ref.masget.unitm, ref.masget.unitt]);
   assert.equal(state.LMASS ? 1 : 0, ref.masget.lmass);
+});
+
+test('APPGET supports both compact and AVL-style 1-based strip storage', () => {
+  const { compact, one } = makeOneBasedGeometryState();
+  APPGET(compact);
+  APPGET(one);
+  assertCloseArray(Array.from(one.AMASS), Array.from(compact.AMASS));
+  assertCloseArray(Array.from(one.AINER), Array.from(compact.AINER));
 });
 
 test('amass.f WASM port matches Fortran reference (numeric)', async (t) => {

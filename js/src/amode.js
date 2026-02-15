@@ -6,6 +6,7 @@
 // Port of AVL amode.f (selected non-interactive routines) with float32 math.
 
 import { M3INV, ROTENS3, RATEKI3 } from './autil.js';
+import { eigSolveRgFromAsys } from './eispack_rg.js';
 
 const f32 = Math.fround;
 
@@ -669,8 +670,282 @@ export function SYSSHO(state, ASYS, BSYS, RSYS, NSYS) {
   return lines.join('\n');
 }
 
-export function EIGSOL() {
-  return { KEIG: 0 };
+function cAbs(re, im) {
+  return Math.hypot(re, im);
+}
+
+function cDiv(ar, ai, br, bi) {
+  const den = br * br + bi * bi + 1e-30;
+  return { re: (ar * br + ai * bi) / den, im: (ai * br - ar * bi) / den };
+}
+
+function cMul(ar, ai, br, bi) {
+  return { re: ar * br - ai * bi, im: ar * bi + ai * br };
+}
+
+function cSub(ar, ai, br, bi) {
+  return { re: ar - br, im: ai - bi };
+}
+
+function qrDecompReal(n, a) {
+  const q = new Float64Array(n * n);
+  const r = new Float64Array(n * n);
+  const v = new Float64Array(n);
+  for (let j = 0; j < n; j += 1) {
+    for (let i = 0; i < n; i += 1) v[i] = a[i * n + j];
+    for (let k = 0; k < j; k += 1) {
+      let dot = 0;
+      for (let i = 0; i < n; i += 1) dot += q[i * n + k] * v[i];
+      r[k * n + j] = dot;
+      for (let i = 0; i < n; i += 1) v[i] -= dot * q[i * n + k];
+    }
+    let norm = 0;
+    for (let i = 0; i < n; i += 1) norm += v[i] * v[i];
+    norm = Math.sqrt(norm);
+    if (norm < 1e-20) norm = 1e-20;
+    r[j * n + j] = norm;
+    for (let i = 0; i < n; i += 1) q[i * n + j] = v[i] / norm;
+  }
+  return { q, r };
+}
+
+function matMulReal(n, a, b) {
+  const out = new Float64Array(n * n);
+  for (let i = 0; i < n; i += 1) {
+    for (let j = 0; j < n; j += 1) {
+      let s = 0;
+      for (let k = 0; k < n; k += 1) s += a[i * n + k] * b[k * n + j];
+      out[i * n + j] = s;
+    }
+  }
+  return out;
+}
+
+function solveComplexLinear(n, aReIn, aImIn, bReIn, bImIn) {
+  const aRe = Float64Array.from(aReIn);
+  const aIm = Float64Array.from(aImIn);
+  const bRe = Float64Array.from(bReIn);
+  const bIm = Float64Array.from(bImIn);
+
+  for (let k = 0; k < n; k += 1) {
+    let piv = k;
+    let pivMag = cAbs(aRe[k * n + k], aIm[k * n + k]);
+    for (let i = k + 1; i < n; i += 1) {
+      const mag = cAbs(aRe[i * n + k], aIm[i * n + k]);
+      if (mag > pivMag) {
+        pivMag = mag;
+        piv = i;
+      }
+    }
+    if (piv !== k) {
+      for (let j = k; j < n; j += 1) {
+        const i1 = k * n + j;
+        const i2 = piv * n + j;
+        [aRe[i1], aRe[i2]] = [aRe[i2], aRe[i1]];
+        [aIm[i1], aIm[i2]] = [aIm[i2], aIm[i1]];
+      }
+      [bRe[k], bRe[piv]] = [bRe[piv], bRe[k]];
+      [bIm[k], bIm[piv]] = [bIm[piv], bIm[k]];
+    }
+    const pkRe = aRe[k * n + k];
+    const pkIm = aIm[k * n + k];
+    if (cAbs(pkRe, pkIm) < 1e-20) {
+      aRe[k * n + k] = 1e-20;
+      aIm[k * n + k] = 0;
+    }
+    for (let i = k + 1; i < n; i += 1) {
+      const d = cDiv(aRe[i * n + k], aIm[i * n + k], aRe[k * n + k], aIm[k * n + k]);
+      for (let j = k; j < n; j += 1) {
+        const ij = i * n + j;
+        const kj = k * n + j;
+        const m = cMul(d.re, d.im, aRe[kj], aIm[kj]);
+        aRe[ij] -= m.re;
+        aIm[ij] -= m.im;
+      }
+      const mb = cMul(d.re, d.im, bRe[k], bIm[k]);
+      bRe[i] -= mb.re;
+      bIm[i] -= mb.im;
+    }
+  }
+
+  const xRe = new Float64Array(n);
+  const xIm = new Float64Array(n);
+  for (let i = n - 1; i >= 0; i -= 1) {
+    let sr = bRe[i];
+    let si = bIm[i];
+    for (let j = i + 1; j < n; j += 1) {
+      const m = cMul(aRe[i * n + j], aIm[i * n + j], xRe[j], xIm[j]);
+      sr -= m.re;
+      si -= m.im;
+    }
+    const d = cDiv(sr, si, aRe[i * n + i], aIm[i * n + i]);
+    xRe[i] = d.re;
+    xIm[i] = d.im;
+  }
+  return { xRe, xIm };
+}
+
+function eigSolveComplexQR(aIn, n, maxIter = 1800, tol = 1e-10) {
+  const aRe = new Float64Array(n * n);
+  for (let i = 0; i < n; i += 1) {
+    for (let j = 0; j < n; j += 1) {
+      aRe[i * n + j] = aIn[idx2(i + 1, j + 1, n + 1)] ?? 0.0;
+    }
+  }
+
+  for (let iter = 0; iter < maxIter; iter += 1) {
+    for (let i = 1; i < n; i += 1) {
+      const sub = Math.abs(aRe[i * n + (i - 1)]);
+      const d = Math.abs(aRe[(i - 1) * n + (i - 1)]) + Math.abs(aRe[i * n + i]);
+      if (sub < tol * Math.max(1, d)) aRe[i * n + (i - 1)] = 0;
+    }
+    let mu = aRe[(n - 1) * n + (n - 1)];
+    if (n >= 2) {
+      const a = aRe[(n - 2) * n + (n - 2)];
+      const b = aRe[(n - 2) * n + (n - 1)];
+      const c = aRe[(n - 1) * n + (n - 2)];
+      const d = aRe[(n - 1) * n + (n - 1)];
+      const tr = a + d;
+      const det = a * d - b * c;
+      const disc = tr * tr - 4 * det;
+      if (disc >= 0) {
+        const rdisc = Math.sqrt(disc);
+        const l1 = 0.5 * (tr + rdisc);
+        const l2 = 0.5 * (tr - rdisc);
+        mu = Math.abs(l1 - d) < Math.abs(l2 - d) ? l1 : l2;
+      }
+    }
+    const s = Float64Array.from(aRe);
+    for (let i = 0; i < n; i += 1) s[i * n + i] -= mu;
+    const { q, r } = qrDecompReal(n, s);
+    const rq = matMulReal(n, r, q);
+    for (let i = 0; i < n; i += 1) rq[i * n + i] += mu;
+    aRe.set(rq);
+    let off = 0;
+    for (let i = 1; i < n; i += 1) for (let j = 0; j < i; j += 1) off = Math.max(off, Math.abs(aRe[i * n + j]));
+    if (off < tol) break;
+  }
+
+  const wr = new Float64Array(n);
+  const wi = new Float64Array(n);
+  let k = n - 1;
+  while (k >= 0) {
+    if (k > 0 && Math.abs(aRe[k * n + (k - 1)]) > 1e-7) {
+      const a = aRe[(k - 1) * n + (k - 1)];
+      const b = aRe[(k - 1) * n + k];
+      const c = aRe[k * n + (k - 1)];
+      const d = aRe[k * n + k];
+      const tr = a + d;
+      const det = a * d - b * c;
+      const disc = tr * tr - 4 * det;
+      if (disc >= 0) {
+        const rdisc = Math.sqrt(disc);
+        wr[k - 1] = 0.5 * (tr + rdisc);
+        wr[k] = 0.5 * (tr - rdisc);
+        wi[k - 1] = 0;
+        wi[k] = 0;
+      } else {
+        wr[k - 1] = 0.5 * tr;
+        wr[k] = 0.5 * tr;
+        wi[k - 1] = 0.5 * Math.sqrt(-disc);
+        wi[k] = -wi[k - 1];
+      }
+      k -= 2;
+    } else {
+      wr[k] = aRe[k * n + k];
+      wi[k] = 0;
+      k -= 1;
+    }
+  }
+
+  const vrRe = new Float64Array(n * n);
+  const vrIm = new Float64Array(n * n);
+  for (let k = 0; k < n; k += 1) {
+    const lamRe = wr[k];
+    const lamIm = wi[k];
+    const mRe = new Float64Array(n * n);
+    const mIm = new Float64Array(n * n);
+    for (let i = 0; i < n; i += 1) {
+      for (let j = 0; j < n; j += 1) {
+        const ij = i * n + j;
+        mRe[ij] = aIn[idx2(i + 1, j + 1, n + 1)] ?? 0.0;
+        mIm[ij] = 0.0;
+      }
+      mRe[i * n + i] -= lamRe;
+      mIm[i * n + i] -= lamIm;
+      mRe[i * n + i] += 1e-9;
+    }
+    const bRe = new Float64Array(n);
+    const bIm = new Float64Array(n);
+    bRe[k % n] = 1.0;
+    let xr = bRe;
+    let xi = bIm;
+    for (let it = 0; it < 8; it += 1) {
+      const s = solveComplexLinear(n, mRe, mIm, xr, xi);
+      xr = s.xRe;
+      xi = s.xIm;
+      let norm = 0;
+      for (let i = 0; i < n; i += 1) norm += xr[i] * xr[i] + xi[i] * xi[i];
+      norm = Math.sqrt(norm) || 1;
+      for (let i = 0; i < n; i += 1) {
+        xr[i] /= norm;
+        xi[i] /= norm;
+      }
+    }
+    for (let i = 0; i < n; i += 1) {
+      vrRe[i * n + k] = xr[i];
+      vrIm[i * n + k] = xi[i];
+    }
+  }
+  return { wr, wi, vrRe, vrIm };
+}
+
+export function EIGSOL(state, IR = 1, ETOL = 1e-4, ASYS = null, NSYS = null) {
+  const nsys = NSYS || 12;
+  const asys = ASYS || new Float32Array((state.JEMAX + 1) * (state.JEMAX + 1));
+  const vee = Number(state.PARVAL?.[idx2(state.IPVEE, IR, state.IPTOT)] || 0);
+  const brefd = Number((state.BREF || 0) * (state.UNITL || 1));
+  const etolsq = (ETOL * vee / Math.max(1e-12, brefd)) ** 2;
+  const eig = eigSolveRgFromAsys(asys, nsys, state.JEMAX + 1);
+
+  const evals = [];
+  const evecs = [];
+  for (let j = 0; j < nsys; j += 1) {
+    const er = Number(eig.wr[j] || 0);
+    const ei = Number(eig.wi[j] || 0);
+    const emagsq = er * er + ei * ei;
+    if (emagsq < etolsq) continue;
+    evals.push({ re: er, im: ei });
+
+    const vr = new Float32Array(nsys);
+    const vi = new Float32Array(nsys);
+
+    if (ei === 0.0) {
+      for (let i = 0; i < nsys; i += 1) {
+        vr[i] = eig.vr[i * nsys + j];
+        vi[i] = 0.0;
+      }
+    } else if (ei > 0.0) {
+      const jp1 = Math.min(j + 1, nsys - 1);
+      for (let i = 0; i < nsys; i += 1) {
+        vr[i] = eig.vr[i * nsys + j];
+        vi[i] = eig.vr[i * nsys + jp1];
+      }
+    } else {
+      const jm1 = Math.max(j - 1, 0);
+      for (let i = 0; i < nsys; i += 1) {
+        vr[i] = eig.vr[i * nsys + jm1];
+        vi[i] = -eig.vr[i * nsys + j];
+      }
+    }
+
+    evecs.push({ re: vr, im: vi });
+  }
+  if (!state.__amodeEig) state.__amodeEig = {};
+  state.__amodeEig[IR] = { evals, evecs, ierr: eig.ierr || 0 };
+  if (!state.NEIGEN) state.NEIGEN = [];
+  state.NEIGEN[IR] = evals.length;
+  return { KEIG: evals.length, EVAL: evals, EVEC: evecs, IERR: eig.ierr || 0 };
 }
 
 export function MODE() {
