@@ -592,6 +592,52 @@ textarea.code {
   color: #fbbf24;
 }
 
+.template-params-inline {
+  margin-top: 10px;
+}
+
+.template-params-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.template-param-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.template-param-name {
+  color: var(--ink);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.template-param-slider {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  accent-color: #66d9ef;
+}
+
+.template-param-value {
+  color: var(--ink);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  text-align: right;
+  min-width: 42px;
+  white-space: nowrap;
+}
+
 .subhead {
   font-size: 0.82rem;
   text-transform: uppercase;

@@ -137,6 +137,8 @@ const els = {
   massIxy: document.getElementById('massIxy'),
   massIxz: document.getElementById('massIxz'),
   massIyz: document.getElementById('massIyz'),
+  templateParamsPanel: document.getElementById('templateParamsPanel'),
+  templateParamsList: document.getElementById('templateParamsList'),
 };
 
 const uiState = {
@@ -169,6 +171,9 @@ const uiState = {
   selectedRunCaseIndex: -1,
   massProps: null,
   massPropsFilename: null,
+  templateParams: [],
+  resolvedText: '',
+  templateParamSignature: '',
 };
 
 const viewerState = {
@@ -216,7 +221,19 @@ const FILE_EDITOR_FONT = {
   minPx: 8,
   maxPx: 13,
 };
+const TEMPLATE_LITERAL_RE = /\$\{([^}]*)\}/g;
+const TEMPLATE_FLOAT_DECIMALS_MAX = 6;
+const TEMPLATE_EXPLICIT_DEFAULT_RANGE_FACTOR = 10;
+const TEMPLATE_RESCALE_TARGET_STEPS = 14;
+const TEMPLATE_RESCALE_LONG_PRESS_MS = 420;
+const TEMPLATE_POSITIVE_FIELD_INDICES = {
+  headerMach: new Set([0]),
+  headerRef: new Set([0, 1, 2]),
+  surfaceSpacing: new Set([0, 2]),
+  sectionData: new Set([3, 5]),
+};
 let fileMeasureCtx = null;
+let templateParamApplyTimer = null;
 
 function escapeHtml(text) {
   return text
@@ -330,6 +347,845 @@ function setFileTextValue(text) {
   fitFileEditorFontSize();
   renderFileHighlight();
   syncFileEditorScroll();
+}
+
+function clampNumber(value, min, max) {
+  if (!Number.isFinite(value)) return value;
+  let lo = Number(min);
+  let hi = Number(max);
+  if (!Number.isFinite(lo)) lo = value;
+  if (!Number.isFinite(hi)) hi = value;
+  if (lo > hi) {
+    const tmp = lo;
+    lo = hi;
+    hi = tmp;
+  }
+  return Math.min(hi, Math.max(lo, value));
+}
+
+function parseTemplateNumberToken(token) {
+  const raw = String(token ?? '').trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  const expIdx = Math.max(raw.indexOf('e'), raw.indexOf('E'));
+  const mantissa = expIdx >= 0 ? raw.slice(0, expIdx) : raw;
+  const dotIdx = mantissa.indexOf('.');
+  const decimals = dotIdx >= 0 ? Math.max(0, mantissa.length - dotIdx - 1) : 0;
+  const isIntegerToken = /^[+-]?\d+$/.test(mantissa) && expIdx < 0;
+  return {
+    value,
+    kind: isIntegerToken ? 'int' : 'float',
+    decimals,
+  };
+}
+
+function templateFloatStep(min, max, decimals = null) {
+  if (Number.isFinite(decimals) && decimals > 0) {
+    return Number((10 ** (-Math.min(TEMPLATE_FLOAT_DECIMALS_MAX, Math.round(decimals)))).toFixed(8));
+  }
+  const span = Math.abs(Number(max) - Number(min));
+  if (!Number.isFinite(span) || span <= 0) return 0.01;
+  return Number(Math.max(0.001, span / 400).toFixed(8));
+}
+
+function formatTemplateFloat(value, decimals = 3) {
+  if (!Number.isFinite(value)) return '0.0';
+  const d = Math.max(1, Math.min(TEMPLATE_FLOAT_DECIMALS_MAX, Math.round(decimals)));
+  const fixed = Number(value).toFixed(d);
+  return fixed.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '.0');
+}
+
+function formatTemplateParamValue(param, value = param?.value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return param?.kind === 'int' ? '0' : '0.0';
+  if (param?.kind === 'int') return String(Math.round(n));
+  const decimals = Number.isFinite(Number(param?.decimals)) ? Number(param.decimals) : 3;
+  return formatTemplateFloat(n, decimals);
+}
+
+function skipTemplateSpaces(expr, start = 0) {
+  let i = start;
+  while (i < expr.length && /\s/.test(expr[i])) i += 1;
+  return i;
+}
+
+function parseTemplateExpression(exprRaw) {
+  const expr = String(exprRaw || '');
+  const refs = [];
+  const tokens = [];
+  let i = 0;
+  const len = expr.length;
+  const pushRef = (name, defaultMeta = null) => {
+    refs.push({
+      name,
+      defaultMeta,
+      kind: defaultMeta?.kind || null,
+      decimals: defaultMeta?.decimals || 0,
+    });
+  };
+  while (i < len) {
+    i = skipTemplateSpaces(expr, i);
+    if (i >= len) break;
+    const ch = expr[i];
+    if (ch === '(') {
+      tokens.push({ type: 'lparen' });
+      i += 1;
+      continue;
+    }
+    if (ch === ')') {
+      tokens.push({ type: 'rparen' });
+      i += 1;
+      continue;
+    }
+    if (ch === '+' || ch === '-' || ch === '*' || ch === '/') {
+      tokens.push({ type: 'op', op: ch });
+      i += 1;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let j = i + 1;
+      while (j < len && /[A-Za-z0-9_]/.test(expr[j])) j += 1;
+      const name = expr.slice(i, j);
+      i = skipTemplateSpaces(expr, j);
+      let defaultMeta = null;
+      if (expr.startsWith('??', i) || expr[i] === ':') {
+        i += expr.startsWith('??', i) ? 2 : 1;
+        i = skipTemplateSpaces(expr, i);
+        const startNum = i;
+        if (expr[i] === '+' || expr[i] === '-') i += 1;
+        while (i < len && /[0-9.]/.test(expr[i])) i += 1;
+        if (i < len && (expr[i] === 'e' || expr[i] === 'E')) {
+          i += 1;
+          if (expr[i] === '+' || expr[i] === '-') i += 1;
+          while (i < len && /[0-9]/.test(expr[i])) i += 1;
+        }
+        const rawNum = expr.slice(startNum, i).trim();
+        defaultMeta = parseTemplateNumberToken(rawNum);
+        if (!defaultMeta) return null;
+      }
+      pushRef(name, defaultMeta);
+      tokens.push({
+        type: 'ident',
+        name,
+      });
+      continue;
+    }
+    if (/[0-9.]/.test(ch)) {
+      const startNum = i;
+      while (i < len && /[0-9.]/.test(expr[i])) i += 1;
+      if (i < len && (expr[i] === 'e' || expr[i] === 'E')) {
+        i += 1;
+        if (expr[i] === '+' || expr[i] === '-') i += 1;
+        while (i < len && /[0-9]/.test(expr[i])) i += 1;
+      }
+      const rawNum = expr.slice(startNum, i);
+      const meta = parseTemplateNumberToken(rawNum);
+      if (!meta) return null;
+      tokens.push({
+        type: 'number',
+        value: meta.value,
+        kind: meta.kind,
+        decimals: meta.decimals,
+      });
+      continue;
+    }
+    return null;
+  }
+  if (!tokens.length) return null;
+
+  const precedence = {
+    '+': 1,
+    '-': 1,
+    '*': 2,
+    '/': 2,
+    'u+': 3,
+    'u-': 3,
+  };
+  const rightAssoc = {
+    'u+': true,
+    'u-': true,
+  };
+  const output = [];
+  const ops = [];
+  let prev = 'start';
+  for (const token of tokens) {
+    if (token.type === 'number' || token.type === 'ident') {
+      output.push(token);
+      prev = 'value';
+      continue;
+    }
+    if (token.type === 'lparen') {
+      ops.push({ type: 'lparen' });
+      prev = 'lparen';
+      continue;
+    }
+    if (token.type === 'rparen') {
+      let found = false;
+      while (ops.length) {
+        const top = ops.pop();
+        if (top.type === 'lparen') {
+          found = true;
+          break;
+        }
+        output.push(top);
+      }
+      if (!found) return null;
+      prev = 'value';
+      continue;
+    }
+    if (token.type === 'op') {
+      let op = token.op;
+      if ((op === '+' || op === '-') && (prev === 'start' || prev === 'op' || prev === 'lparen')) {
+        op = op === '+' ? 'u+' : 'u-';
+      }
+      const currPrec = precedence[op] ?? -1;
+      if (currPrec < 0) return null;
+      while (ops.length) {
+        const top = ops[ops.length - 1];
+        if (top.type !== 'op') break;
+        const topPrec = precedence[top.op] ?? -1;
+        if (topPrec < 0) break;
+        const right = Boolean(rightAssoc[op]);
+        if ((!right && topPrec >= currPrec) || (right && topPrec > currPrec)) {
+          output.push(ops.pop());
+        } else {
+          break;
+        }
+      }
+      ops.push({ type: 'op', op });
+      prev = 'op';
+      continue;
+    }
+    return null;
+  }
+  while (ops.length) {
+    const top = ops.pop();
+    if (top.type === 'lparen') return null;
+    output.push(top);
+  }
+  if (!output.length || prev === 'op' || prev === 'lparen') return null;
+  const hasDivision = output.some((token) => token.type === 'op' && token.op === '/');
+  const hasFloatLiteral = output.some((token) => token.type === 'number' && token.kind === 'float');
+  const literalDecimals = output.reduce((max, token) => {
+    if (token.type === 'number' && token.kind === 'float') return Math.max(max, token.decimals || 0);
+    return max;
+  }, 0);
+  return {
+    rpn: output,
+    refs,
+    hasDivision,
+    hasFloatLiteral,
+    literalDecimals,
+  };
+}
+
+function mergeTemplateGroup(groups, name, defaultMeta = null) {
+  let group = groups.get(name);
+  if (!group) {
+    group = {
+      name,
+      order: groups.size,
+      hasExplicitDefault: false,
+      explicitDefault: 1,
+      kind: null,
+      decimals: 0,
+    };
+    groups.set(name, group);
+  }
+  if (!defaultMeta) return;
+  if (!group.hasExplicitDefault) {
+    group.hasExplicitDefault = true;
+    group.explicitDefault = defaultMeta.value;
+  }
+  if (defaultMeta.kind === 'float') {
+    group.kind = 'float';
+    group.decimals = Math.max(group.decimals, defaultMeta.decimals || 0);
+  } else if (!group.kind) {
+    group.kind = 'int';
+  }
+}
+
+function tokenizeTemplateAwareLine(line) {
+  const src = String(line || '');
+  const tokens = [];
+  const len = src.length;
+  let i = 0;
+  while (i < len) {
+    while (i < len && /\s/.test(src[i])) i += 1;
+    if (i >= len) break;
+    const start = i;
+    while (i < len) {
+      const ch = src[i];
+      if (/\s/.test(ch)) break;
+      if (ch === '$' && src[i + 1] === '{') {
+        i += 2;
+        while (i < len && src[i] !== '}') i += 1;
+        if (i < len && src[i] === '}') i += 1;
+        continue;
+      }
+      i += 1;
+    }
+    tokens.push(src.slice(start, i));
+  }
+  return tokens;
+}
+
+function collectTemplateRefsFromToken(tokenText) {
+  const refs = [];
+  const text = String(tokenText || '');
+  if (!text.includes('${')) return refs;
+  const re = new RegExp(TEMPLATE_LITERAL_RE.source, 'g');
+  let match = re.exec(text);
+  while (match) {
+    const body = String(match[1] || '').trim();
+    if (body) {
+      const parsed = parseTemplateExpression(body);
+      if (parsed?.refs?.length) {
+        parsed.refs.forEach((ref) => {
+          if (ref?.name) refs.push(ref.name);
+        });
+      }
+    }
+    match = re.exec(text);
+  }
+  return refs;
+}
+
+function markTemplateParamPolicies(policyMap, tokens, positiveFieldIndices = null) {
+  if (!Array.isArray(tokens) || !tokens.length) return;
+  const positive = positiveFieldIndices instanceof Set ? positiveFieldIndices : new Set();
+  tokens.forEach((token, tokenIdx) => {
+    const refs = collectTemplateRefsFromToken(token);
+    if (!refs.length) return;
+    const inPositiveField = positive.has(tokenIdx);
+    refs.forEach((name) => {
+      const key = String(name || '').trim();
+      if (!key) return;
+      let row = policyMap.get(key);
+      if (!row) {
+        row = { positiveHits: 0, otherHits: 0 };
+        policyMap.set(key, row);
+      }
+      if (inPositiveField) row.positiveHits += 1;
+      else row.otherHits += 1;
+    });
+  });
+}
+
+function collectTemplateParamLocationPolicies(rawText) {
+  const policies = new Map();
+  const lines = String(rawText || '').split(/\r?\n/);
+  const isComment = (line) => {
+    const t = String(line || '').trim();
+    return !t || t.startsWith('#') || t.startsWith('!') || t.startsWith('%');
+  };
+  const contextByKeyword = new Map([
+    ['COMP', new Set()],
+    ['YDUP', new Set()],
+    ['SCAL', new Set()],
+    ['TRAN', new Set()],
+    ['ANGL', new Set()],
+    ['SECT', TEMPLATE_POSITIVE_FIELD_INDICES.sectionData],
+    ['CONT', new Set()],
+  ]);
+
+  let headerIndex = 0;
+  let pendingContext = null;
+  let expectSurfaceName = false;
+  let expectSurfaceSpacing = false;
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx += 1) {
+    const raw = lines[lineIdx];
+    if (isComment(raw)) continue;
+    const trimmed = String(raw || '').trim();
+    const tokens = tokenizeTemplateAwareLine(trimmed);
+    if (!tokens.length) continue;
+    const firstToken = String(tokens[0] || '').toUpperCase();
+    const key4 = firstToken.slice(0, 4);
+
+    if (headerIndex < 5) {
+      if (headerIndex === 1) {
+        markTemplateParamPolicies(policies, tokens, TEMPLATE_POSITIVE_FIELD_INDICES.headerMach);
+      } else if (headerIndex === 3) {
+        markTemplateParamPolicies(policies, tokens, TEMPLATE_POSITIVE_FIELD_INDICES.headerRef);
+      } else {
+        markTemplateParamPolicies(policies, tokens, null);
+      }
+      headerIndex += 1;
+      continue;
+    }
+
+    if (expectSurfaceName) {
+      markTemplateParamPolicies(policies, tokens, null);
+      expectSurfaceName = false;
+      expectSurfaceSpacing = true;
+      continue;
+    }
+
+    if (expectSurfaceSpacing) {
+      markTemplateParamPolicies(policies, tokens, TEMPLATE_POSITIVE_FIELD_INDICES.surfaceSpacing);
+      expectSurfaceSpacing = false;
+      continue;
+    }
+
+    if (pendingContext) {
+      markTemplateParamPolicies(policies, tokens, pendingContext);
+      pendingContext = null;
+      continue;
+    }
+
+    if (key4 === 'SURF') {
+      const valueTokens = tokens.slice(1);
+      if (valueTokens.length) markTemplateParamPolicies(policies, valueTokens, null);
+      expectSurfaceName = true;
+      expectSurfaceSpacing = false;
+      pendingContext = null;
+      continue;
+    }
+
+    if (contextByKeyword.has(key4)) {
+      const positiveSet = contextByKeyword.get(key4);
+      const valueTokens = tokens.slice(1);
+      if (valueTokens.length) markTemplateParamPolicies(policies, valueTokens, positiveSet);
+      else pendingContext = positiveSet;
+      continue;
+    }
+
+    markTemplateParamPolicies(policies, tokens, null);
+  }
+
+  const resolved = new Map();
+  policies.forEach((row, name) => {
+    const positiveHits = Number(row?.positiveHits || 0);
+    const otherHits = Number(row?.otherHits || 0);
+    resolved.set(name, {
+      positiveOnly: positiveHits > 0 && otherHits === 0,
+      positiveHits,
+      otherHits,
+    });
+  });
+  return resolved;
+}
+
+function isStrictlyPositiveTemplateParam(param) {
+  return Boolean(param?.positiveOnly);
+}
+
+function getTemplateParamMinStep(param) {
+  if (param?.kind === 'int') return 1;
+  const decimals = Number.isFinite(Number(param?.decimals))
+    ? Math.max(1, Math.min(TEMPLATE_FLOAT_DECIMALS_MAX, Math.round(Number(param.decimals))))
+    : 3;
+  const decimalStep = 10 ** (-decimals);
+  const currentStep = Number(param?.step);
+  if (Number.isFinite(currentStep) && currentStep > 0) return Math.max(decimalStep, currentStep);
+  return decimalStep;
+}
+
+function getTemplateParamPositiveFloor(param) {
+  if (param?.kind === 'int') return 1;
+  const decimals = Number.isFinite(Number(param?.decimals))
+    ? Math.max(1, Math.min(TEMPLATE_FLOAT_DECIMALS_MAX, Math.round(Number(param.decimals))))
+    : 3;
+  const decimalStep = 10 ** (-decimals);
+  const step = Number(param?.step);
+  if (Number.isFinite(step) && step > 0) return Math.max(decimalStep, step);
+  return decimalStep;
+}
+
+function buildTemplateParamList(rawText) {
+  const text = String(rawText || '');
+  const prevMap = new Map();
+  for (const param of (uiState.templateParams || [])) {
+    if (param?.name) prevMap.set(param.name, param);
+  }
+  const locationPolicies = collectTemplateParamLocationPolicies(text);
+  const groups = new Map();
+  const re = new RegExp(TEMPLATE_LITERAL_RE.source, 'g');
+  let match = re.exec(text);
+  while (match) {
+    const body = String(match[1] || '').trim();
+    if (!body) {
+      match = re.exec(text);
+      continue;
+    }
+    const parsed = parseTemplateExpression(body);
+    if (!parsed) {
+      match = re.exec(text);
+      continue;
+    }
+    parsed.refs.forEach((ref) => mergeTemplateGroup(groups, ref.name, ref.defaultMeta || null));
+    match = re.exec(text);
+  }
+
+  const params = [];
+  const ordered = Array.from(groups.values()).sort((a, b) => a.order - b.order);
+  for (const group of ordered) {
+    const locationPolicy = locationPolicies.get(group.name);
+    const positiveOnly = Boolean(locationPolicy?.positiveOnly);
+    const hasExplicitDefault = Boolean(group.hasExplicitDefault);
+    const defaultValue = hasExplicitDefault ? Number(group.explicitDefault) : 1;
+    const kind = group.kind || (hasExplicitDefault
+      ? (Number.isInteger(defaultValue) ? 'int' : 'float')
+      : 'int');
+    const decimals = kind === 'float'
+      ? Math.max(1, Math.min(TEMPLATE_FLOAT_DECIMALS_MAX, group.decimals || 3))
+      : 0;
+    let min = -10;
+    let max = 10;
+    if (hasExplicitDefault) {
+      const low = -TEMPLATE_EXPLICIT_DEFAULT_RANGE_FACTOR * defaultValue;
+      const high = TEMPLATE_EXPLICIT_DEFAULT_RANGE_FACTOR * defaultValue;
+      min = Math.min(low, high);
+      max = Math.max(low, high);
+    }
+    if (min > max) {
+      const tmp = min;
+      min = max;
+      max = tmp;
+    }
+    let step = kind === 'int' ? 1 : templateFloatStep(min, max, hasExplicitDefault ? decimals : null);
+    const prev = prevMap.get(group.name);
+    let value = defaultValue;
+    let touched = false;
+    let rangeCustomized = false;
+    if (prev && prev.rangeCustomized && prev.kind === kind && Boolean(prev.positiveOnly) === positiveOnly) {
+      const prevDefault = Number(prev.defaultValue);
+      if (Number.isFinite(prevDefault) && Math.abs(prevDefault - defaultValue) < 1e-9) {
+        const prevMin = Number(prev.min);
+        const prevMax = Number(prev.max);
+        const prevStep = Number(prev.step);
+        if (Number.isFinite(prevMin) && Number.isFinite(prevMax) && Number.isFinite(prevStep) && prevStep > 0 && prevMax > prevMin) {
+          min = prevMin;
+          max = prevMax;
+          step = prevStep;
+          rangeCustomized = true;
+        }
+      }
+    }
+    if (prev && Number.isFinite(Number(prev.value))) {
+      value = Number(prev.value);
+      touched = Boolean(prev.touched);
+      if (!touched && Number.isFinite(Number(prev.defaultValue)) && Math.abs(Number(prev.defaultValue) - defaultValue) > 1e-9) {
+        value = defaultValue;
+      }
+    }
+    if (positiveOnly) {
+      const positiveFloor = getTemplateParamPositiveFloor({ kind, decimals, step });
+      min = Math.max(positiveFloor, min);
+      if (!Number.isFinite(max) || max <= min) {
+        max = min + (kind === 'int' ? Math.max(1, Math.round(step || 1)) : Math.max(step, positiveFloor));
+      }
+    }
+    if (kind === 'int') value = Math.round(value);
+    value = clampNumber(value, min, max);
+    params.push({
+      name: group.name,
+      kind,
+      defaultValue,
+      min,
+      max,
+      step,
+      decimals,
+      value,
+      touched,
+      hasExplicitDefault,
+      rangeCustomized,
+      positiveOnly,
+    });
+  }
+  return params;
+}
+
+function buildTemplateParamSignature(params = []) {
+  return params.map((param) => [
+    param.name,
+    param.kind,
+    formatTemplateParamValue(param, param.defaultValue),
+    formatTemplateParamValue(param, param.min),
+    formatTemplateParamValue(param, param.max),
+    Number(param.step).toFixed(8),
+    String(param.decimals || 0),
+    param.rangeCustomized ? 'custom' : 'base',
+    param.positiveOnly ? 'strictpos' : 'signed',
+  ].join('|')).join('||');
+}
+
+function getTemplateParamRow(name) {
+  if (!els.templateParamsList || !name) return null;
+  return els.templateParamsList.querySelector(`.template-param-row[data-template-param="${name}"]`);
+}
+
+function updateTemplateParamControlValues() {
+  if (!els.templateParamsList) return;
+  const params = Array.isArray(uiState.templateParams) ? uiState.templateParams : [];
+  params.forEach((param) => {
+    const row = getTemplateParamRow(param.name);
+    if (!row) return;
+    const slider = row.querySelector('input[type="range"]');
+    const valueEl = row.querySelector('.template-param-value');
+    if (slider) {
+      slider.min = String(param.min);
+      slider.max = String(param.max);
+      slider.step = String(param.step);
+      slider.value = String(param.value);
+    }
+    if (valueEl) valueEl.textContent = formatTemplateParamValue(param, param.value);
+  });
+}
+
+function rescaleTemplateParamAroundCurrent(name) {
+  const key = String(name || '').trim();
+  if (!key) return false;
+  const params = Array.isArray(uiState.templateParams) ? uiState.templateParams : [];
+  const param = params.find((item) => item?.name === key);
+  if (!param) return false;
+  const beforeValue = Number(param.value);
+  let center = Number.isFinite(beforeValue) ? beforeValue : Number(param.defaultValue);
+  if (!Number.isFinite(center)) center = 0;
+  if (param.kind === 'int') center = Math.round(center);
+  let step = getTemplateParamMinStep(param);
+  if (!Number.isFinite(step) || step <= 0) step = param.kind === 'int' ? 1 : 0.01;
+  if (param.kind === 'int') step = 1;
+  const positiveOnly = isStrictlyPositiveTemplateParam(param);
+  const positiveFloor = positiveOnly ? getTemplateParamPositiveFloor({ kind: param.kind, decimals: param.decimals, step }) : 0;
+  if (positiveOnly && center < positiveFloor) center = positiveFloor;
+  const halfSpan = step * (TEMPLATE_RESCALE_TARGET_STEPS / 2);
+  let min = center - halfSpan;
+  let max = center + halfSpan;
+  if (positiveOnly && min < positiveFloor) {
+    min = positiveFloor;
+    max = min + (step * TEMPLATE_RESCALE_TARGET_STEPS);
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+    min = positiveOnly ? positiveFloor : 0;
+    max = step * TEMPLATE_RESCALE_TARGET_STEPS;
+    if (positiveOnly && max <= min) max = min + step;
+  }
+  if (param.kind === 'int') {
+    min = Math.round(min);
+    max = Math.round(max);
+    if (max <= min) max = min + TEMPLATE_RESCALE_TARGET_STEPS;
+  }
+  param.min = min;
+  param.max = max;
+  param.step = step;
+  param.rangeCustomized = true;
+  param.value = clampNumber(Number(param.value), min, max);
+  if (param.kind === 'int') param.value = Math.round(param.value);
+  updateTemplateParamControlValues();
+  const changedValue = Math.abs(Number(param.value) - beforeValue) > (param.kind === 'int' ? 0.5 : 1e-9);
+  if (changedValue) queueTemplateParamApply();
+  return true;
+}
+
+function queueTemplateParamApply() {
+  if (templateParamApplyTimer) clearTimeout(templateParamApplyTimer);
+  templateParamApplyTimer = setTimeout(() => {
+    templateParamApplyTimer = null;
+    if (!els.fileText) return;
+    uiState.text = els.fileText.value;
+    loadGeometryFromText(uiState.text, false);
+    resetTrimSeed();
+    scheduleAutoTrim();
+  }, 80);
+}
+
+function renderTemplateParamControls() {
+  if (!els.templateParamsPanel || !els.templateParamsList) return;
+  const params = Array.isArray(uiState.templateParams) ? uiState.templateParams : [];
+  if (!params.length) {
+    els.templateParamsPanel.classList.add('hidden');
+    els.templateParamsList.innerHTML = '';
+    return;
+  }
+
+  els.templateParamsPanel.classList.remove('hidden');
+  const frag = document.createDocumentFragment();
+  params.forEach((param) => {
+    const paramName = String(param.name || '');
+    const row = document.createElement('div');
+    row.className = 'template-param-row';
+    row.setAttribute('data-template-param', paramName);
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'template-param-name';
+    nameEl.textContent = paramName;
+    nameEl.title = 'Double-click or long-press to rescale';
+    row.appendChild(nameEl);
+
+    const slider = document.createElement('input');
+    slider.className = 'template-param-slider';
+    slider.type = 'range';
+    slider.min = String(param.min);
+    slider.max = String(param.max);
+    slider.step = String(param.step);
+    slider.value = String(param.value);
+    slider.setAttribute('data-template-param-name', paramName);
+    row.appendChild(slider);
+
+    const valueEl = document.createElement('div');
+    valueEl.className = 'template-param-value';
+    valueEl.textContent = formatTemplateParamValue(param, param.value);
+    row.appendChild(valueEl);
+
+    const getCurrentParam = () => {
+      const list = Array.isArray(uiState.templateParams) ? uiState.templateParams : [];
+      return list.find((item) => item?.name === paramName) || null;
+    };
+
+    const updateFromSlider = () => {
+      const current = getCurrentParam();
+      if (!current) return;
+      const nextRaw = Number(slider.value);
+      if (!Number.isFinite(nextRaw)) return;
+      const next = current.kind === 'int'
+        ? Math.round(clampNumber(nextRaw, current.min, current.max))
+        : clampNumber(nextRaw, current.min, current.max);
+      if (Math.abs(next - Number(current.value)) < (current.kind === 'int' ? 0.5 : 1e-9)) {
+        valueEl.textContent = formatTemplateParamValue(current, current.value);
+        return;
+      }
+      current.value = next;
+      current.touched = true;
+      slider.value = String(next);
+      valueEl.textContent = formatTemplateParamValue(current, current.value);
+      queueTemplateParamApply();
+    };
+
+    slider.addEventListener('input', updateFromSlider);
+    slider.addEventListener('change', updateFromSlider);
+
+    let longPressTimer = null;
+    const clearLongPress = () => {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+    };
+    const triggerRescale = () => {
+      clearLongPress();
+      rescaleTemplateParamAroundCurrent(paramName);
+    };
+    nameEl.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      triggerRescale();
+    });
+    nameEl.addEventListener('pointerdown', () => {
+      clearLongPress();
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        rescaleTemplateParamAroundCurrent(paramName);
+      }, TEMPLATE_RESCALE_LONG_PRESS_MS);
+    });
+    nameEl.addEventListener('pointerup', clearLongPress);
+    nameEl.addEventListener('pointerleave', clearLongPress);
+    nameEl.addEventListener('pointercancel', clearLongPress);
+    nameEl.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      clearLongPress();
+    });
+
+    frag.appendChild(row);
+  });
+  els.templateParamsList.replaceChildren(frag);
+}
+
+function syncTemplateParamsFromText(rawText) {
+  const params = buildTemplateParamList(rawText);
+  const signature = buildTemplateParamSignature(params);
+  const shouldRebuild = signature !== uiState.templateParamSignature;
+  uiState.templateParams = params;
+  uiState.templateParamSignature = signature;
+  if (shouldRebuild) renderTemplateParamControls();
+  else updateTemplateParamControlValues();
+}
+
+function evaluateTemplateExpression(parsed, paramMap) {
+  if (!parsed?.rpn?.length) return null;
+  const stack = [];
+  for (const token of parsed.rpn) {
+    if (token.type === 'number') {
+      stack.push(Number(token.value));
+      continue;
+    }
+    if (token.type === 'ident') {
+      const param = paramMap.get(token.name);
+      if (param && Number.isFinite(Number(param.value))) {
+        stack.push(Number(param.value));
+        continue;
+      }
+      const fallbackRef = parsed.refs.find((ref) => ref.name === token.name && ref.defaultMeta);
+      if (fallbackRef?.defaultMeta && Number.isFinite(Number(fallbackRef.defaultMeta.value))) {
+        stack.push(Number(fallbackRef.defaultMeta.value));
+      } else {
+        stack.push(1);
+      }
+      continue;
+    }
+    if (token.type === 'op') {
+      if (token.op === 'u+' || token.op === 'u-') {
+        const a = Number(stack.pop());
+        if (!Number.isFinite(a)) return null;
+        stack.push(token.op === 'u-' ? -a : a);
+        continue;
+      }
+      const b = Number(stack.pop());
+      const a = Number(stack.pop());
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+      if (token.op === '+') stack.push(a + b);
+      else if (token.op === '-') stack.push(a - b);
+      else if (token.op === '*') stack.push(a * b);
+      else if (token.op === '/') stack.push(a / b);
+      else return null;
+      continue;
+    }
+    return null;
+  }
+  if (stack.length !== 1) return null;
+  const value = Number(stack[0]);
+  if (!Number.isFinite(value)) return null;
+  let floatLike = Boolean(parsed.hasDivision || parsed.hasFloatLiteral);
+  let maxDecimals = Number(parsed.literalDecimals || 0);
+  if (!floatLike) {
+    for (const ref of parsed.refs) {
+      const param = paramMap.get(ref.name);
+      if (param?.kind === 'float') {
+        floatLike = true;
+        maxDecimals = Math.max(maxDecimals, Number(param.decimals || 0));
+      } else if (ref.defaultMeta?.kind === 'float') {
+        floatLike = true;
+        maxDecimals = Math.max(maxDecimals, Number(ref.defaultMeta.decimals || 0));
+      }
+    }
+  } else {
+    for (const ref of parsed.refs) {
+      const param = paramMap.get(ref.name);
+      if (param?.kind === 'float') maxDecimals = Math.max(maxDecimals, Number(param.decimals || 0));
+      else if (ref.defaultMeta?.kind === 'float') maxDecimals = Math.max(maxDecimals, Number(ref.defaultMeta.decimals || 0));
+    }
+  }
+  return {
+    value,
+    floatLike,
+    decimals: Math.max(1, Math.min(TEMPLATE_FLOAT_DECIMALS_MAX, maxDecimals || 3)),
+  };
+}
+
+function resolveTemplateParamsInText(rawText) {
+  const text = String(rawText || '');
+  const paramMap = new Map((uiState.templateParams || []).map((param) => [param.name, param]));
+  const re = new RegExp(TEMPLATE_LITERAL_RE.source, 'g');
+  return text.replace(re, (full, bodyRaw) => {
+    const body = String(bodyRaw || '').trim();
+    if (!body) return full;
+    const parsed = parseTemplateExpression(body);
+    if (!parsed) return full;
+    const result = evaluateTemplateExpression(parsed, paramMap);
+    if (!result) return full;
+    if (!result.floatLike) return String(Math.round(result.value));
+    return formatTemplateFloat(result.value, result.decimals);
+  });
 }
 
 function hasHorizontalOverflow(container, itemSelector) {
@@ -2641,9 +3497,10 @@ els.fileText.addEventListener('input', () => {
   fitFileEditorFontSize();
   renderFileHighlight();
   syncFileEditorScroll();
+  uiState.text = els.fileText.value;
+  syncTemplateParamsFromText(uiState.text);
   clearTimeout(fileUpdateTimer);
   fileUpdateTimer = setTimeout(() => {
-    uiState.text = els.fileText.value;
     loadGeometryFromText(uiState.text, true);
   }, 250);
 });
@@ -2748,7 +3605,8 @@ function makeTrimState(controlMap = null) {
 
   const map = controlMap || uiState.controlMap;
   if (!map) {
-    const model = parseAVL(uiState.text || '');
+    syncTemplateParamsFromText(uiState.text || '');
+    const model = buildSolverModel(resolveTemplateParamsInText(uiState.text || ''));
     applyConstraintRowsToState(state, model.controlMap);
   } else {
     applyConstraintRowsToState(state, map);
@@ -3459,6 +4317,54 @@ if (typeof window !== 'undefined') {
           z: Number(camera.up?.z) || 0,
         } : null,
       };
+    },
+    getTemplateParams() {
+      return Array.isArray(uiState.templateParams)
+        ? uiState.templateParams.map((param) => ({
+          name: param.name,
+          kind: param.kind,
+          defaultValue: Number(param.defaultValue),
+          value: Number(param.value),
+          min: Number(param.min),
+          max: Number(param.max),
+          step: Number(param.step),
+          decimals: Number(param.decimals || 0),
+          hasExplicitDefault: Boolean(param.hasExplicitDefault),
+          positiveOnly: Boolean(param.positiveOnly),
+        }))
+        : [];
+    },
+    setTemplateParamValue(name, value, applyNow = true) {
+      const key = String(name || '').trim();
+      if (!key) return false;
+      const params = Array.isArray(uiState.templateParams) ? uiState.templateParams : [];
+      const param = params.find((item) => item?.name === key);
+      if (!param) return false;
+      const nextRaw = Number(value);
+      if (!Number.isFinite(nextRaw)) return false;
+      const next = param.kind === 'int'
+        ? Math.round(clampNumber(nextRaw, param.min, param.max))
+        : clampNumber(nextRaw, param.min, param.max);
+      if (!Number.isFinite(next)) return false;
+      param.value = next;
+      param.touched = true;
+      updateTemplateParamControlValues();
+      if (applyNow) {
+        if (templateParamApplyTimer) clearTimeout(templateParamApplyTimer);
+        templateParamApplyTimer = null;
+        uiState.text = els.fileText?.value || uiState.text || '';
+        loadGeometryFromText(uiState.text, false);
+        resetTrimSeed();
+        scheduleAutoTrim();
+      }
+      return true;
+    },
+    getResolvedAvlText() {
+      const rawText = els.fileText?.value || uiState.text || '';
+      syncTemplateParamsFromText(rawText);
+      const resolvedText = resolveTemplateParamsInText(rawText);
+      uiState.resolvedText = resolvedText;
+      return resolvedText;
     },
     setFlowSolverData(data) {
       const payload = (data && typeof data === 'object') ? data : {};
@@ -6925,9 +7831,13 @@ function updateLoadingVisualization() {
 
 function loadGeometryFromText(text, shouldFit = true) {
   if (!scene) return;
-  const parsed = parseAVL(text || '');
+  const rawText = String(text || '');
+  syncTemplateParamsFromText(rawText);
+  const resolvedText = resolveTemplateParamsInText(rawText);
+  uiState.resolvedText = resolvedText;
+  const parsed = parseAVL(resolvedText);
   uiState.modelHeader = parsed.header || null;
-  const solverModel = buildSolverModel(text || '');
+  const solverModel = buildSolverModel(resolvedText);
   renderFileHeaderSummary(uiState.modelHeader, solverModel);
   uiState.controlMap = solverModel.controlMap;
   uiState.modelCache = solverModel;
@@ -7424,7 +8334,11 @@ function buildGeometry(state, model) {
 function runExecFromText(text) {
   const t0 = performance.now();
   logDebug('EXEC start');
-  const model = buildSolverModel(text);
+  const rawText = String(text || '');
+  syncTemplateParamsFromText(rawText);
+  const resolvedText = resolveTemplateParamsInText(rawText);
+  uiState.resolvedText = resolvedText;
+  const model = buildSolverModel(resolvedText);
   uiState.execSurfaceNames = buildExecSurfaceNames(model);
   const state = buildExecState(model);
   try {
@@ -7897,8 +8811,9 @@ async function bootApp() {
   updateRunCasesMeta();
   renderMassProps(makeDefaultMassProps());
   await loadDefaultAVL();
+  syncTemplateParamsFromText(els.fileText.value || '');
   try {
-    const model = buildSolverModel(els.fileText.value || '');
+    const model = buildSolverModel(resolveTemplateParamsInText(els.fileText.value || ''));
     rebuildConstraintUI(model);
   } catch {
     rebuildConstraintUI({ controlMap: new Map() });
