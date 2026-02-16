@@ -1,4 +1,4 @@
-import { EXEC, preloadAoperLinSolveWasm, preloadAsetupWasm, preloadAeroWasm, preloadAicWasmBridge, preloadAsetpLuWasmBridge } from './aoper.js';
+import { EXEC } from './aoper.js';
 import { TRMSET_CORE } from './atrim.js';
 import { SYSMAT, EIGSOL } from '../src/amode.js';
 import { APPGET } from '../src/amass.js';
@@ -221,22 +221,13 @@ onmessage = async (evt) => {
     } catch (err) {
       log(`EXEC precheck failed: ${err?.message ?? err}`);
     }
-    state.USE_WASM_SOLVE = Boolean(useWasm);
-    state.USE_WASM_GAM = Boolean(useWasm);
-    state.USE_WASM_AERO = Boolean(useWasm);
-    state.USE_WASM_AIC = Boolean(useWasm);
-    state.USE_WASM_LU = Boolean(useWasm);
-    if (useWasm) {
-      try {
-        await preloadAoperLinSolveWasm();
-        await preloadAsetupWasm();
-        await preloadAeroWasm();
-        await preloadAicWasmBridge();
-        await preloadAsetpLuWasmBridge();
-      } catch (err) {
-        log(`EXEC wasm solve preload failed: ${err?.message ?? err}`);
-      }
-    }
+    // Keep EXEC on JS kernels for now; wasm EXEC path currently fails drag parity for plane.run.
+    // `useWasm` is still honored for eigenmode solve below.
+    state.USE_WASM_SOLVE = false;
+    state.USE_WASM_GAM = false;
+    state.USE_WASM_AERO = false;
+    state.USE_WASM_AIC = false;
+    state.USE_WASM_LU = false;
     EXEC(state, 20, 0, 1);
     const dt = Date.now() - t0;
     log(`Worker EXEC done (${dt} ms)`);

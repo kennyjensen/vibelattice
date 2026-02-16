@@ -168,6 +168,7 @@ const uiState = {
   eigenViewport: null,
   runCases: [],
   runCasesFilename: null,
+  needsRunCaseConstraintSync: false,
   selectedRunCaseIndex: -1,
   massProps: null,
   massPropsFilename: null,
@@ -2160,6 +2161,14 @@ function activeRunCaseIndex() {
   return 0;
 }
 
+function activeRunCaseEntry() {
+  const idx = activeRunCaseIndex();
+  if (idx < 0) return null;
+  if (!Array.isArray(uiState.runCases) || idx >= uiState.runCases.length) return null;
+  const entry = uiState.runCases[idx];
+  return entry && typeof entry === 'object' ? entry : null;
+}
+
 function clearEigenModeRunCaseCache() {
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
@@ -2382,8 +2391,15 @@ function persistSelectedRunCaseFromUI() {
   if (idx < 0 || idx >= uiState.runCases.length) return;
   const existing = uiState.runCases[idx] || {};
   const captured = captureRunCaseFromUI(caseNameOrFallback(existing, idx));
-  captured.color = caseColorOrFallback(existing, idx);
-  uiState.runCases[idx] = captured;
+  uiState.runCases[idx] = {
+    ...existing,
+    ...captured,
+    color: caseColorOrFallback(existing, idx),
+    inputs: {
+      ...(existing.inputs && typeof existing.inputs === 'object' ? existing.inputs : {}),
+      ...(captured.inputs && typeof captured.inputs === 'object' ? captured.inputs : {}),
+    },
+  };
 }
 
 function selectRunCase(index, { apply = true } = {}) {
@@ -2495,6 +2511,7 @@ function renderRunCasesList() {
 }
 
 function captureRunCaseFromUI(nameHint = '') {
+  const massProps = uiState.massProps || readMassPropsFromUI();
   const rows = readConstraintRows().map((row) => ({
     variable: String(row.variable || ''),
     constraint: String(row.constraint || 'none'),
@@ -2515,6 +2532,15 @@ function captureRunCaseFromUI(nameHint = '') {
       velLoop: Number(els.velLoop?.value || 0),
       radLoop: Number(els.radLoop?.value || 0),
       facLoop: Number(els.facLoop?.value || 0),
+      xcg: Number(massProps?.xcg || 0),
+      ycg: Number(massProps?.ycg || 0),
+      zcg: Number(massProps?.zcg || 0),
+      ixx: Number(massProps?.ixx || 0),
+      iyy: Number(massProps?.iyy || 0),
+      izz: Number(massProps?.izz || 0),
+      ixy: Number(massProps?.ixy || 0),
+      iyz: Number(massProps?.iyz || 0),
+      izx: Number(massProps?.ixz || 0),
     },
     constraints: rows,
   };
@@ -2535,7 +2561,11 @@ function applyRunCaseToUI(entry) {
     setNumericInput(el, num, digits);
   };
   if (els.flightMode) {
-    const mode = String(inputs.flightMode || 'level');
+    let mode = String(inputs.flightMode || '').trim().toLowerCase();
+    if (mode !== 'level' && mode !== 'looping') {
+      const rad = Number(inputs.radLoop);
+      mode = Number.isFinite(rad) && Math.abs(rad) > 1e-9 ? 'looping' : 'level';
+    }
     if (mode === 'level' || mode === 'looping') {
       els.flightMode.value = mode;
     }
@@ -2551,6 +2581,33 @@ function applyRunCaseToUI(entry) {
   setIfFinite(els.velLoop, inputs.velLoop, 2);
   setIfFinite(els.radLoop, inputs.radLoop, 2);
   setIfFinite(els.facLoop, inputs.facLoop, 3);
+
+  const updateMassProp = (obj, key, value) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return false;
+    if (!Number.isFinite(Number(obj[key])) || Math.abs(Number(obj[key]) - num) > 1e-12) {
+      obj[key] = num;
+      return true;
+    }
+    return false;
+  };
+  const nextMassProps = { ...(uiState.massProps || readMassPropsFromUI() || makeDefaultMassProps()) };
+  let massChanged = false;
+  massChanged = updateMassProp(nextMassProps, 'mass', inputs.mass) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'xcg', inputs.xcg) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'ycg', inputs.ycg) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'zcg', inputs.zcg) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'ixx', inputs.ixx) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'iyy', inputs.iyy) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'izz', inputs.izz) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'ixy', inputs.ixy) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'iyz', inputs.iyz) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'ixz', inputs.ixz) || massChanged;
+  massChanged = updateMassProp(nextMassProps, 'ixz', inputs.izx) || massChanged;
+  if (massChanged) {
+    uiState.massProps = nextMassProps;
+    renderMassProps(nextMassProps);
+  }
 
   const byVar = new Map();
   (entry.constraints || []).forEach((row) => {
@@ -2606,8 +2663,20 @@ function parseAvlRunCasesText(text) {
   const lines = String(text || '').split(/\r?\n/);
   const cases = [];
   let current = null;
+  const finalizeCase = (entry) => {
+    if (!entry || typeof entry !== 'object') return;
+    if (!entry.inputs || typeof entry.inputs !== 'object') entry.inputs = {};
+    const modeRaw = String(entry.inputs.flightMode || '').trim().toLowerCase();
+    if (modeRaw !== 'level' && modeRaw !== 'looping') {
+      const rad = Number(entry.inputs.radLoop);
+      entry.inputs.flightMode = (Number.isFinite(rad) && Math.abs(rad) > 1e-9) ? 'looping' : 'level';
+    }
+  };
   const startCase = (nameRaw) => {
-    if (current) cases.push(current);
+    if (current) {
+      finalizeCase(current);
+      cases.push(current);
+    }
     current = {
       name: String(nameRaw || '').trim().replace(/^[-\s]+|[-\s]+$/g, ''),
       inputs: {},
@@ -2677,13 +2746,27 @@ function parseAvlRunCasesText(text) {
     else if (keyNorm === 'loadfac') current.inputs.facLoop = value;
     else if (keyNorm === 'cl') current.inputs.cl = value;
     else if (keyNorm === 'mass') current.inputs.mass = value;
+    else if (keyNorm === 'cdo' || keyNorm === 'cd0') current.inputs.cd0 = value;
+    else if (keyNorm === 'mach') current.inputs.mach = value;
+    else if (keyNorm === 'xcg') current.inputs.xcg = value;
+    else if (keyNorm === 'ycg') current.inputs.ycg = value;
+    else if (keyNorm === 'zcg') current.inputs.zcg = value;
+    else if (keyNorm === 'ixx') current.inputs.ixx = value;
+    else if (keyNorm === 'iyy') current.inputs.iyy = value;
+    else if (keyNorm === 'izz') current.inputs.izz = value;
+    else if (keyNorm === 'ixy') current.inputs.ixy = value;
+    else if (keyNorm === 'iyz') current.inputs.iyz = value;
+    else if (keyNorm === 'izx') current.inputs.izx = value;
     else if (keyNorm === 'alpha' && !hasMappedVariable('alpha')) current.constraints.push({ variable: 'alpha', constraint: 'alpha', numeric: value });
     else if (keyNorm === 'beta' && !hasMappedVariable('beta')) current.constraints.push({ variable: 'beta', constraint: 'beta', numeric: value });
     else if (keyNorm === 'pb/2v' && !hasMappedVariable('p')) current.constraints.push({ variable: 'p', constraint: 'p', numeric: value });
     else if (keyNorm === 'qc/2v' && !hasMappedVariable('q')) current.constraints.push({ variable: 'q', constraint: 'q', numeric: value });
     else if (keyNorm === 'rb/2v' && !hasMappedVariable('r')) current.constraints.push({ variable: 'r', constraint: 'r', numeric: value });
   }
-  if (current) cases.push(current);
+  if (current) {
+    finalizeCase(current);
+    cases.push(current);
+  }
 
   const normalized = cases.map((entry, idx) => normalizeRunCase(entry, idx));
   return normalized.filter((entry) => entry && (entry.name || entry.constraints.length || Object.keys(entry.inputs || {}).length));
@@ -2719,6 +2802,7 @@ function applyLoadedRunCases(parsed, filename, source = 'Loaded') {
   uiState.runCases = parsed.cases;
   uiState.selectedRunCaseIndex = parsed.selectedIndex;
   uiState.runCasesFilename = filename;
+  uiState.needsRunCaseConstraintSync = true;
   renderRunCasesList();
   updateRunCasesMeta(`${source} ${parsed.cases.length} run case(s) from ${filename}`);
   applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
@@ -2743,6 +2827,7 @@ function resetAuxPanelsForNewAvl() {
   uiState.runCases = [];
   uiState.selectedRunCaseIndex = -1;
   uiState.runCasesFilename = null;
+  uiState.needsRunCaseConstraintSync = false;
   renderRunCasesList();
   updateRunCasesMeta();
   uiState.eigenModesByRunCase = {};
@@ -3829,6 +3914,7 @@ function updateTrefftz(cl) {
       window.__trefftzTestHook.gridY = [];
       window.__trefftzTestHook.zeroLine = null;
       window.__trefftzTestHook.mapAxis = null;
+      window.__trefftzTestHook.trefftzRightAxis = null;
     }
     uiState.trefftzLayoutVersion = (uiState.trefftzLayoutVersion || 0) + 1;
     if (window.__trefftzTestHook) {
@@ -3927,8 +4013,8 @@ function updateTrefftz(cl) {
     let cmax = 0.0;
     let wmin = 0.0;
     let wmax = 0.0;
-    let wmin8 = 0.0;
-    let wmax8 = 0.0;
+    let wminData = Infinity;
+    let wmaxData = -Infinity;
 
     strips.forEach(([y, _z, cnc, clVal, clPerp, dw]) => {
       if (y < ymin) ymin = y;
@@ -3937,12 +4023,13 @@ function updateTrefftz(cl) {
       fmax = Math.max(fmax, cnc, 0.0);
       cmin = Math.min(cmin, clPerp, clVal, 0.0);
       cmax = Math.max(cmax, clPerp, clVal, 0.0);
-      wmin8 += Math.pow(Math.min(-dw, 0.0), 8);
-      wmax8 += Math.pow(Math.max(-dw, 0.0), 8);
+      const ai = -dw;
+      wminData = Math.min(wminData, ai);
+      wmaxData = Math.max(wmaxData, ai);
     });
 
-    if (wmin8 !== 0) wmin = -Math.pow(Math.abs(wmin8) / strips.length, 0.125);
-    if (wmax8 !== 0) wmax = Math.pow(Math.abs(wmax8) / strips.length, 0.125);
+    if (Number.isFinite(wminData)) wmin = wminData;
+    if (Number.isFinite(wmaxData)) wmax = wmaxData;
     cmin = Math.min(fmin / (cref || 1.0), cmin);
     cmax = Math.max(fmax / (cref || 1.0), cmax);
 
@@ -3953,6 +4040,12 @@ function updateTrefftz(cl) {
     if (!Number.isFinite(cmin) || !Number.isFinite(cmax) || Math.abs(cmax - cmin) < 1e-5) {
       cmin = 0.0;
       cmax = 0.1;
+    }
+    {
+      const cSpanRaw = Math.abs(cmax - cmin);
+      const cPad = Math.max(0.05, 0.1 * (cSpanRaw > 1e-6 ? cSpanRaw : Math.max(Math.abs(cmax), 0.1)));
+      if (cmin >= 0) cmin = -cPad;
+      if (cmax <= 0) cmax = cPad;
     }
     if (cmax - cmin < 0.1) {
       const mid = (cmin + cmax) / 2;
@@ -3969,10 +4062,8 @@ function updateTrefftz(cl) {
       wmax = mid + 0.05;
     }
 
-    const spanC = cmax - cmin || 1e-6;
     const wminRaw = Math.min(wmin, 0);
     const wmaxRaw = Math.max(wmax, 0);
-    let wSpan = Math.max(wmaxRaw - wminRaw, 1e-6);
     let wminAdj = wminRaw;
     let wmaxAdj = wmaxRaw;
 
@@ -4028,35 +4119,38 @@ function updateTrefftz(cl) {
       leftTickVals.push(fmt(cVal, 1));
       bottomTickVals.push(fmt(ymin + t * (ymax - ymin), 1));
     }
-    let zeroIdx = 0;
-    let zeroDist = Infinity;
-    leftTickNums.forEach((val, idx) => {
-      const dist = Math.abs(val);
-      if (dist < zeroDist) {
-        zeroDist = dist;
-        zeroIdx = idx;
-      }
-    });
+    const cSpan = Math.max(cmax - cmin, 1e-6);
+    let zeroIdx = Math.round(((0 - cmin) / cSpan) * ticks);
+    zeroIdx = Math.max(1, Math.min(ticks - 1, zeroIdx));
     leftTickNums[zeroIdx] = 0;
     leftTickVals[zeroIdx] = '0.0';
 
     const zeroFrac = zeroIdx / ticks;
-    if (zeroFrac > 0 && zeroFrac < 1) {
-      wSpan = Math.max(
-        wSpan,
-        -wminRaw / zeroFrac,
-        wmaxRaw / (1 - zeroFrac),
-      );
-    } else {
-      wSpan = Math.max(Math.abs(wminRaw), Math.abs(wmaxRaw), wSpan);
-    }
-    wSpan *= 1.05;
-    wminAdj = -zeroFrac * wSpan;
-    wmaxAdj = wminAdj + wSpan;
+    const zeroFracUsed = zeroFrac;
+    const minSpanNeg = wminRaw < 0 ? Math.abs(wminRaw) / zeroFracUsed : 0.0;
+    const minSpanPos = wmaxRaw > 0 ? Math.abs(wmaxRaw) / (1 - zeroFracUsed) : 0.0;
+    const wSpan = Math.max(0.1, minSpanNeg, minSpanPos) * 1.05;
+    wminAdj = -zeroFracUsed * wSpan;
+    wmaxAdj = (1 - zeroFracUsed) * wSpan;
+
+    const rightTickNums = [];
     for (let i = 0; i <= ticks; i += 1) {
       const t = i / ticks;
       const wVal = wminAdj + t * (wmaxAdj - wminAdj);
-      rightTickVals.push(i === zeroIdx ? '0.00' : fmt(wVal, 2));
+      rightTickNums.push(wVal);
+      rightTickVals.push(fmt(wVal, 2));
+    }
+    let rightZeroIdx = 0;
+    let rightZeroDist = Infinity;
+    rightTickNums.forEach((val, idx) => {
+      const dist = Math.abs(val);
+      if (dist < rightZeroDist) {
+        rightZeroDist = dist;
+        rightZeroIdx = idx;
+      }
+    });
+    if (rightTickVals[rightZeroIdx]) {
+      rightTickVals[rightZeroIdx] = '0.00';
     }
     const maxLeftTickW = Math.max(...leftTickVals.map((v) => ctx.measureText(v).width));
     const maxRightTickW = Math.max(...rightTickVals.map((v) => ctx.measureText(v).width));
@@ -4100,7 +4194,7 @@ function updateTrefftz(cl) {
     };
     const xFor = (y) => x0 + ((y - ymin) / (ymax - ymin)) * plotW;
     const yForC = (val) => axisY(val, cmin, cmax);
-    const yForW = (val) => axisYWithZero(val, wminAdj, wmaxAdj, zeroFrac);
+    const yForW = (val) => axisY(val, wminAdj, wmaxAdj);
 
     let ticksLayer = panel?.querySelector?.('.trefftz-ticks');
     if (!ticksLayer) {
@@ -4241,18 +4335,28 @@ function updateTrefftz(cl) {
     }
 
     if (window.__trefftzTestHook) {
+      const zeroWLine = yForW(0);
       window.__trefftzTestHook.gridY = gridYPositions;
       window.__trefftzTestHook.zeroLine = zeroLine;
       window.__trefftzTestHook.mapAxis = {
         axisY,
         axisYWithZero,
       };
+      window.__trefftzTestHook.trefftzRightAxis = {
+        wminRaw,
+        wmaxRaw,
+        wminAdj,
+        wmaxAdj,
+        zeroFrac,
+        zeroFracUsed,
+        zeroWLine,
+      };
     }
 
     if (!uiState.trefftzZeroLogged) {
       uiState.trefftzZeroLogged = true;
-      const zeroW = yForW(0);
-      logDebug(`Trefftz lines: y0=${fmt(y0, 2)} y1=${fmt(y1, 2)} zeroCL=${fmt(zeroLine, 2)} zeroAI=${fmt(zeroW, 2)}`);
+      const zeroWLine = yForW(0);
+      logDebug(`Trefftz lines: y0=${fmt(y0, 2)} y1=${fmt(y1, 2)} zeroCL=${fmt(zeroLine, 2)} zeroAI=${fmt(zeroWLine, 2)}`);
     }
 
   }
@@ -4287,7 +4391,35 @@ if (typeof window !== 'undefined') {
     getEigenViewport() {
       return uiState.eigenViewport ? { ...uiState.eigenViewport } : null;
     },
+    getRunCases() {
+      return Array.isArray(uiState.runCases)
+        ? uiState.runCases.map((entry) => ({
+          ...entry,
+          inputs: entry?.inputs && typeof entry.inputs === 'object' ? { ...entry.inputs } : {},
+          constraints: Array.isArray(entry?.constraints) ? entry.constraints.map((row) => ({ ...row })) : [],
+        }))
+        : [];
+    },
+    getSelectedRunCaseIndex() {
+      return Number(uiState.selectedRunCaseIndex);
+    },
+    getLastExecSummary() {
+      const result = uiState.lastExecResult;
+      if (!result || typeof result !== 'object') return null;
+      const idx2 = (i, j, dim1) => i + dim1 * j;
+      const par = result.PARVAL;
+      const hasPar = Array.isArray(par) || (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView?.(par));
+      const machPar = hasPar ? Number(par[idx2(11, 1, 30)]) : Number.NaN;
+      return {
+        CDTOT: Number(result.CDTOT),
+        CDVTOT: Number(result.CDVTOT),
+        machPar: Number.isFinite(machPar) ? machPar : null,
+      };
+    },
     getViewerOverlayState() {
+      const panelLinePos = panelSpacingGroup?.getObjectByName?.('panel-spacing-lines')?.geometry?.getAttribute?.('position');
+      const vortexBoundPos = vortexGroup?.getObjectByName?.('bound-vortices')?.geometry?.getAttribute?.('position');
+      const vortexLegPos = vortexGroup?.getObjectByName?.('leg-vortices')?.geometry?.getAttribute?.('position');
       return {
         showPanelSpacing: Boolean(uiState.showPanelSpacing),
         showVortices: Boolean(uiState.showVortices),
@@ -4299,6 +4431,70 @@ if (typeof window !== 'undefined') {
         vorticesVisible: Boolean(vortexGroup?.visible),
         flowVisible: Boolean(flowFieldGroup?.visible),
         flowMode: uiState.flowFieldMode,
+        panelSpacingLineSegments: Math.floor((Number(panelLinePos?.count) || 0) / 2),
+        vortexBoundSegments: Math.floor((Number(vortexBoundPos?.count) || 0) / 2),
+        vortexLegSegments: Math.floor((Number(vortexLegPos?.count) || 0) / 2),
+      };
+    },
+    getVortexLegSymmetryStats(options = {}) {
+      const segments = Array.isArray(latestVortexData?.segments) ? latestVortexData.segments : [];
+      const minX = Number.isFinite(Number(options.minX)) ? Number(options.minX) : 5.3;
+      const maxX = Number.isFinite(Number(options.maxX)) ? Number(options.maxX) : 7.2;
+      const minZ = Number.isFinite(Number(options.minZ)) ? Number(options.minZ) : 0.2;
+      const maxZ = Number.isFinite(Number(options.maxZ)) ? Number(options.maxZ) : 1.1;
+      const minAbsY = Number.isFinite(Number(options.minAbsY)) ? Number(options.minAbsY) : 0.25;
+      const maxAbsY = Number.isFinite(Number(options.maxAbsY)) ? Number(options.maxAbsY) : 2.4;
+      const sum = {
+        left: { n: 0, x: 0, y: 0, z: 0 },
+        right: { n: 0, x: 0, y: 0, z: 0 },
+      };
+      segments.forEach((seg) => {
+        if (String(seg?.kind || '') !== 'leg') return;
+        const a = Array.isArray(seg?.a) ? seg.a : null;
+        const b = Array.isArray(seg?.b) ? seg.b : null;
+        if (!a || !b || a.length < 3 || b.length < 3) return;
+        const x0 = Number(a[0]);
+        const y0 = Number(a[1]);
+        const z0 = Number(a[2]);
+        const x1 = Number(b[0]);
+        const y1 = Number(b[1]);
+        const z1 = Number(b[2]);
+        if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(z0)
+          || !Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(z1)) return;
+        if (x0 < minX || x0 > maxX || z0 < minZ || z0 > maxZ) return;
+        if (Math.abs(y0) < minAbsY || Math.abs(y0) > maxAbsY) return;
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+        const dz = z1 - z0;
+        const mag = Math.hypot(dx, dy, dz);
+        if (!(mag > 1e-9)) return;
+        const side = y0 < 0 ? 'left' : 'right';
+        sum[side].n += 1;
+        sum[side].x += dx / mag;
+        sum[side].y += dy / mag;
+        sum[side].z += dz / mag;
+      });
+      const normalize = (entry) => {
+        if (!entry.n) return null;
+        const mx = entry.x / entry.n;
+        const my = entry.y / entry.n;
+        const mz = entry.z / entry.n;
+        const m = Math.hypot(mx, my, mz);
+        if (!(m > 1e-9)) return null;
+        return { n: entry.n, x: mx / m, y: my / m, z: mz / m };
+      };
+      const left = normalize(sum.left);
+      const right = normalize(sum.right);
+      let angleDeg = null;
+      if (left && right) {
+        const dot = Math.max(-1, Math.min(1, left.x * right.x + left.y * right.y + left.z * right.z));
+        angleDeg = Math.acos(dot) * (180 / Math.PI);
+      }
+      return {
+        left,
+        right,
+        angleDeg,
+        filters: { minX, maxX, minZ, maxZ, minAbsY, maxAbsY },
       };
     },
     getViewerViewState() {
@@ -6113,6 +6309,19 @@ function pushLineSegment(verts, a, b) {
   verts.push(a[0], a[1], a[2], b[0], b[1], b[2]);
 }
 
+function resolveSectionSpanPanels(surface, sectionA, sectionB) {
+  const candidates = [
+    Number(sectionB?.nSpan),
+    Number(sectionA?.nSpan),
+    Number(surface?.nSpan),
+  ];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const val = candidates[i];
+    if (Number.isFinite(val) && val > 0) return Math.max(1, Math.round(val));
+  }
+  return 1;
+}
+
 function buildPanelSpacingGroup(model) {
   if (!THREE || !model?.surfaces?.length) return null;
   const verts = [];
@@ -6124,7 +6333,7 @@ function buildPanelSpacingGroup(model) {
       const a = surface.sections[s];
       const b = surface.sections[s + 1];
       const nChord = Math.max(1, Math.round(Number(surface.nChord) || 1));
-      const nSpan = Math.max(1, Math.round(Number(b.nSpan ?? a.nSpan ?? surface.nSpan ?? 1)));
+      const nSpan = resolveSectionSpanPanels(surface, a, b);
       const pointAt = (u, c) => {
         const xA = a.xle + a.chord * c;
         const xB = b.xle + b.chord * c;
@@ -6168,6 +6377,8 @@ function buildVortexData(model) {
   const cref = Math.max(0.4, Number(model.header?.cref) || 1);
   const bref = Math.max(0.8, Number(model.header?.bref) || 2);
   const legLength = Math.max(1.8 * cref, 0.35 * bref);
+  // AVL's horseshoe trailing legs are aligned with body +X.
+  const wakeDir = { x: 1, y: 0, z: 0 };
   const sampleTarget = 220;
   model.surfaces.forEach((surface) => {
     if (!surface?.sections?.length || surface.sections.length < 2) return;
@@ -6176,7 +6387,7 @@ function buildVortexData(model) {
       const a = surface.sections[s];
       const b = surface.sections[s + 1];
       const nChord = Math.max(1, Math.round(Number(surface.nChord) || 1));
-      const nSpan = Math.max(1, Math.round(Number(b.nSpan ?? a.nSpan ?? surface.nSpan ?? 1)));
+      const nSpan = resolveSectionSpanPanels(surface, a, b);
       const sampleStride = Math.max(1, Math.ceil((nChord * nSpan) / sampleTarget));
       const pointAt = (u, c) => {
         const xA = a.xle + a.chord * c;
@@ -6199,14 +6410,8 @@ function buildVortexData(model) {
           const cBound = (i + 0.25) / nChord;
           const p0 = pointAt(u0, cBound);
           const p1 = pointAt(u1, cBound);
-          const le0 = pointAt(u0, 0);
-          const te0 = pointAt(u0, 1);
-          const le1 = pointAt(u1, 0);
-          const te1 = pointAt(u1, 1);
-          const d0 = new THREE.Vector3(te0[0] - le0[0], te0[1] - le0[1], te0[2] - le0[2]).normalize();
-          const d1 = new THREE.Vector3(te1[0] - le1[0], te1[1] - le1[1], te1[2] - le1[2]).normalize();
-          const leg0 = [p0[0] + d0.x * legLength, p0[1] + d0.y * legLength, p0[2] + d0.z * legLength];
-          const leg1 = [p1[0] + d1.x * legLength, p1[1] + d1.y * legLength, p1[2] + d1.z * legLength];
+          const leg0 = [p0[0] + wakeDir.x * legLength, p0[1] + wakeDir.y * legLength, p0[2] + wakeDir.z * legLength];
+          const leg1 = [p1[0] + wakeDir.x * legLength, p1[1] + wakeDir.y * legLength, p1[2] + wakeDir.z * legLength];
           const gamma = 1 / Math.max(1, nChord);
           pushLineSegment(boundVerts, p0, p1);
           pushLineSegment(legVerts, p0, leg0);
@@ -6988,6 +7193,7 @@ function rebuildAuxOverlays(bounds = null) {
   removeAuxOverlays();
   panelSpacingGroup = buildPanelSpacingGroup(uiState.displayModel);
   const vortexData = buildVortexData(uiState.displayModel);
+  latestVortexData = vortexData;
   vortexGroup = buildVortexGroup(vortexData);
   const effectiveBounds = bounds || computeBounds(aircraft);
   const flowOffset = {
@@ -7473,6 +7679,7 @@ let surfacePressureMeshes = [];
 let surfaceWireObjects = [];
 let panelSpacingGroup = null;
 let vortexGroup = null;
+let latestVortexData = null;
 let flowFieldGroup = null;
 let flowFieldAnimLastMs = 0;
 let modeAnimation = null;
@@ -7842,6 +8049,13 @@ function loadGeometryFromText(text, shouldFit = true) {
   uiState.controlMap = solverModel.controlMap;
   uiState.modelCache = solverModel;
   rebuildConstraintUI(solverModel);
+  if (uiState.needsRunCaseConstraintSync) {
+    const idx = activeRunCaseIndex();
+    if (idx >= 0 && Array.isArray(uiState.runCases) && idx < uiState.runCases.length) {
+      applyRunCaseToUI(uiState.runCases[idx]);
+    }
+    uiState.needsRunCaseConstraintSync = false;
+  }
   const withDup = applyYDuplicate(parsed);
   const withY = (typeof applyYSymmetry === 'function') ? applyYSymmetry(withDup) : withDup;
   const model = (typeof applyZSymmetry === 'function') ? applyZSymmetry(withY) : withY;
@@ -7923,6 +8137,14 @@ function buildExecState(model) {
   const IPCMA = 29;
   const IPCMU = 30;
   const IPTOT = 30;
+
+  const runCase = activeRunCaseEntry();
+  const runInputs = runCase && typeof runCase.inputs === 'object' ? runCase.inputs : null;
+  const runMach = Number(runInputs?.mach);
+  const headerMach = Number(model.header?.mach);
+  const machUse = (Number.isFinite(runMach) && runMach >= 0)
+    ? runMach
+    : (Number.isFinite(headerMach) ? headerMach : 0.0);
 
   const dupCount = model.surfaces.reduce((sum, surf) => (
     sum + (typeof surf.yduplicate === 'number' ? 1 : 0)
@@ -8016,8 +8238,8 @@ function buildExecState(model) {
 
     ALFA: 0.0,
     BETA: 0.0,
-    MACH: Math.fround(model.header.mach ?? 0.0),
-    AMACH: Math.fround(model.header.mach ?? 0.0),
+    MACH: Math.fround(machUse),
+    AMACH: Math.fround(machUse),
     BETM: 0.0,
     VINF: new Float32Array(3),
     VINF_A: new Float32Array(3),
@@ -8282,7 +8504,10 @@ function buildExecState(model) {
   state.PARVAL[idx2(IPIXY, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ixy) ? -uiState.massProps.ixy : 0.0);
   state.PARVAL[idx2(IPIZX, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ixz) ? -uiState.massProps.ixz : 0.0);
   state.PARVAL[idx2(IPIYZ, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.iyz) ? -uiState.massProps.iyz : 0.0);
-  state.PARVAL[idx2(IPCD0, IR, IPTOT)] = 0.0;
+  {
+    const cd0 = Number(runInputs?.cd0);
+    state.PARVAL[idx2(IPCD0, IR, IPTOT)] = Math.fround(Number.isFinite(cd0) ? cd0 : 0.0);
+  }
   // Seed alpha to a small positive value to avoid singular trim steps.
   state.ALFA = Math.fround(2.0 * state.DTR);
   state.BETA = 0.0;
@@ -8480,7 +8705,7 @@ function runExecFromText(text) {
   execRequestId += 1;
   const useWasm = Boolean(els.useWasmExec?.checked);
   if (useWasm) {
-    logDebug('EXEC using WASM kernels.');
+    logDebug('EXEC wasm toggle enabled; using JS EXEC kernels for drag parity.');
   }
   worker.postMessage({ state, requestId: execRequestId, useWasm });
   const dt = performance.now() - t0;
@@ -8602,7 +8827,8 @@ function applyExecResults(result) {
   if (Number.isFinite(fac) && els.outFac) els.outFac.textContent = fmt(fac, 3);
   if (Number.isFinite(the) && els.outThe) els.outThe.textContent = fmt(the, 2);
   if (els.outMach) {
-    const mach = Number(uiState.modelHeader?.mach);
+    const machPar = parval ? Number(parval[idx2(11, IR, 30)]) : Number.NaN;
+    const mach = Number.isFinite(machPar) ? machPar : Number(uiState.modelHeader?.mach);
     els.outMach.textContent = Number.isFinite(mach) ? fmtSignedAligned(mach, 3) : '-';
   }
   if (result.WROT) {

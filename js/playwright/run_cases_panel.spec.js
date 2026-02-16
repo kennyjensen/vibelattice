@@ -153,9 +153,24 @@ test('startup auto-loads plane.run/plane.mass with default plane, and loading a 
     await expect(page.locator('#runCaseList .run-case-item')).toHaveCount(1);
     await expect(page.locator('#runCasesMeta')).toContainText('plane.run');
     await expect(page.locator('#massPropsMeta')).toContainText('plane.mass');
+    await expect(page.locator('.constraint-row[data-var=\"alpha\"] .constraint-select')).toHaveValue('cl');
+    await expect(page.locator('.constraint-row[data-var=\"ctrl:aileron\"] .constraint-select')).toHaveValue('cmx');
+    await expect(page.locator('.constraint-row[data-var=\"ctrl:elevator\"] .constraint-select')).toHaveValue('cmy');
+    await expect(page.locator('.constraint-row[data-var=\"ctrl:rudder\"] .constraint-select')).toHaveValue('cmz');
     const rhoAfterDefaults = Number(await page.locator('#rho').inputValue());
     expect(rhoAfterDefaults).toBeGreaterThan(0);
     expect(rhoAfterDefaults).toBeLessThan(0.001);
+
+    await page.click('#trimBtn');
+    await page.waitForFunction(() => {
+      const s = window.__trefftzTestHook?.getLastExecSummary?.();
+      return s && Number.isFinite(s.CDTOT) && Number.isFinite(s.CDVTOT);
+    });
+    const cdiRaw = await page.evaluate(() => {
+      const s = window.__trefftzTestHook?.getLastExecSummary?.();
+      return Number(s?.CDTOT) - Number(s?.CDVTOT);
+    });
+    expect(cdiRaw).toBeGreaterThan(0.001);
 
     const avlPath = path.resolve('third_party/avl/runs/plane.avl');
     await page.setInputFiles('#fileInput', avlPath);

@@ -407,7 +407,7 @@
         <button id="downloadForcesElement" type="button">Download element forces</button>
         <pre id="outForcesBody">-</pre>
       </div>
-      <div class="panel output">
+      <div id="debugPanel" class="panel output" hidden>
         <div class="panel-title">Debug</div>
         <div class="panel-body">
           <div class="row">
@@ -503,6 +503,13 @@ rudder  1.0  0.0  0. 0. 0.  1
 
   <script>
     (function () {
+      const params = new URLSearchParams(window.location.search);
+      const debugRaw = params.get('debug');
+      const debugToken = String(debugRaw ?? '').trim().toLowerCase();
+      const debugEnabled = debugRaw != null && (debugToken === '' || ['1', 'true', 'yes', 'on'].includes(debugToken));
+      const debugPanel = document.getElementById('debugPanel');
+      if (debugPanel) debugPanel.hidden = !debugEnabled;
+
       const el = document.getElementById('debugLog');
       const format = (msg) => `[BOOT ${new Date().toLocaleTimeString()}] ${msg}`;
       const log = (msg) => {

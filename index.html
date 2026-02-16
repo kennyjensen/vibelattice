@@ -1,6 +1,15 @@
 <!doctype html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-Q6EYYWH9QE"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-Q6EYYWH9QE');
+</script>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>VibeLattice</title>
@@ -407,7 +416,7 @@
         <button id="downloadForcesElement" type="button">Download element forces</button>
         <pre id="outForcesBody">-</pre>
       </div>
-      <div class="panel output">
+      <div id="debugPanel" class="panel output" hidden>
         <div class="panel-title">Debug</div>
         <div class="panel-body">
           <div class="row">
@@ -503,6 +512,13 @@ rudder  1.0  0.0  0. 0. 0.  1
 
   <script>
     (function () {
+      const params = new URLSearchParams(window.location.search);
+      const debugRaw = params.get('debug');
+      const debugToken = String(debugRaw ?? '').trim().toLowerCase();
+      const debugEnabled = debugRaw != null && (debugToken === '' || ['1', 'true', 'yes', 'on'].includes(debugToken));
+      const debugPanel = document.getElementById('debugPanel');
+      if (debugPanel) debugPanel.hidden = !debugEnabled;
+
       const el = document.getElementById('debugLog');
       const format = (msg) => `[BOOT ${new Date().toLocaleTimeString()}] ${msg}`;
       const log = (msg) => {
