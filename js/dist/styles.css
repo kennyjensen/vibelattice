@@ -75,15 +75,33 @@ body {
 .github-star {
   display: inline-flex;
   align-items: center;
+  gap: 8px;
+}
+
+.github-star-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
 }
 
 .github-star-desktop {
   margin-left: auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.github-star-desktop .github-star-note {
+  text-align: right;
 }
 
 .github-star-mobile {
   display: none;
   justify-content: flex-start;
+  align-items: center;
+  flex-direction: row;
+  gap: 10px;
   padding: 2px 2px 0;
 }
 
@@ -1527,6 +1545,12 @@ textarea.code {
 
   .github-star-mobile {
     display: inline-flex;
+  }
+
+  .github-star-mobile .github-star-note {
+    text-align: left;
+    white-space: normal;
+    max-width: 190px;
   }
 
   .title-sub {
