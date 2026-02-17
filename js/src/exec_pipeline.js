@@ -11,9 +11,20 @@ import { MAKESURF, ENCALC, SDUPL } from './amake.js';
 import { GETCAM } from './airutil.js';
 import { AKIMA, NRMLIZ } from './sgutil.js';
 
+function stripInlineComment(line) {
+  const text = String(line || '');
+  const hashIdx = text.indexOf('#');
+  const bangIdx = text.indexOf('!');
+  let cutIdx = -1;
+  if (hashIdx >= 0) cutIdx = hashIdx;
+  if (bangIdx >= 0 && (cutIdx < 0 || bangIdx < cutIdx)) cutIdx = bangIdx;
+  return cutIdx >= 0 ? text.slice(0, cutIdx) : text;
+}
+
 function parseNumbers(line) {
-  return line
-    .trim()
+  const clean = stripInlineComment(line).trim();
+  if (!clean) return [];
+  return clean
     .split(/\s+/)
     .map((v) => Number(v))
     .filter((v) => Number.isFinite(v));

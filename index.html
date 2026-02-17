@@ -69,6 +69,9 @@
                 <input id="fileInput" type="file" accept=".avl,.run,.dat,.txt,text/plain,application/octet-stream,*/*" multiple hidden />
               </label>
               <button id="saveBtn" class="btn" type="button">Save AVL</button>
+              <select id="loadExampleSelect" class="btn aircraft-example-select" aria-label="Load Example">
+                <option value="">Load Example</option>
+              </select>
             </div>
           </div>
           <div class="file-meta" id="fileMeta">No file loaded.</div>
@@ -422,7 +425,7 @@
           <div class="row">
             <button id="trimBtn" class="btn primary" type="button">Trim</button>
             <label class="toggle">
-              <input id="useWasmExec" type="checkbox" checked />
+              <input id="useWasmExec" type="checkbox" />
               Use WASM for EXEC
             </label>
             <button id="clearDebug" class="btn ghost" type="button">Clear</button>

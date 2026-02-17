@@ -313,9 +313,18 @@ export function EXEC(state, NITER, INFO, IR) {
   if (state.USE_WASM_AERO && wasmAero) {
     try {
       const vinf = wasmAero.VINFAB(state);
-      if (vinf?.VINF) state.VINF = Float32Array.from(vinf.VINF);
-      if (vinf?.VINF_A) state.VINF_A = Float32Array.from(vinf.VINF_A);
-      if (vinf?.VINF_B) state.VINF_B = Float32Array.from(vinf.VINF_B);
+      const okVec3 = (v) => v
+        && typeof v.length === 'number'
+        && v.length >= 3
+        && Number.isFinite(v[0])
+        && Number.isFinite(v[1])
+        && Number.isFinite(v[2]);
+      if (!okVec3(vinf?.VINF) || !okVec3(vinf?.VINF_A) || !okVec3(vinf?.VINF_B)) {
+        throw new Error('non-finite VINFAB result');
+      }
+      state.VINF = Float32Array.from(vinf.VINF);
+      state.VINF_A = Float32Array.from(vinf.VINF_A);
+      state.VINF_B = Float32Array.from(vinf.VINF_B);
     } catch {
       state.USE_WASM_AERO = false;
       VINFAB(state);

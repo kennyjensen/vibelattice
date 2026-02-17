@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import wabtInit from 'wabt';
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
@@ -16,6 +17,11 @@ async function buildOne(name) {
   await fs.mkdir(outDir, { recursive: true });
   await fs.writeFile(wasmPath, Buffer.from(buffer));
   console.log(`Wrote ${wasmPath}`);
+}
+
+function buildAmodeNative() {
+  const script = path.join(__dirname, 'build_amode_native.js');
+  execFileSync(process.execPath, [script], { cwd: rootDir, stdio: 'inherit' });
 }
 
 await buildOne('autil');
@@ -46,4 +52,4 @@ await buildOne('asetup');
 await buildOne('aoper');
 await buildOne('aoper_exec_port');
 await buildOne('aoutmrf');
-await buildOne('amode');
+buildAmodeNative();

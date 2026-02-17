@@ -144,8 +144,12 @@ function solveAicColumn(state, col) {
       col,
       state.__WASM_AICN.dim,
       state.__WASM_AICN.n,
+      state.__WASM_AICN.bPtr,
     );
-    col.set(solved);
+    const limit = Math.min(state.NVOR, col.length - 1, solved.length - 1);
+    for (let i = 1; i <= limit; i += 1) {
+      col[i] = solved[i];
+    }
     return;
   }
   BAKSUB_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, col);
@@ -236,8 +240,8 @@ export function SETUP(state) {
       if (state.USE_WASM_LU && wasmLu) {
         const dim = state.NVMAX + 1;
         const n = state.NVOR;
-        const { aPtr, indxPtr } = wasmLu.factorInPlace(state.AICN, dim, n);
-        state.__WASM_AICN = { aPtr, indxPtr, dim, n };
+        const { aPtr, indxPtr, bPtr } = wasmLu.uploadFactorization(state.AICN, state.IAPIV, dim, n);
+        state.__WASM_AICN = { aPtr, indxPtr, bPtr, dim, n };
       }
       return state;
     }
@@ -289,13 +293,12 @@ export function SETUP(state) {
     }
 
     MUNGEA(state);
+    LUDCMP_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, state.WORK);
     if (state.USE_WASM_LU && wasmLu) {
       const dim = state.NVMAX + 1;
       const n = state.NVOR;
-      const { aPtr, indxPtr } = wasmLu.factorInPlace(state.AICN, dim, n);
-      state.__WASM_AICN = { aPtr, indxPtr, dim, n };
-    } else {
-      LUDCMP_COL(state.NVMAX + 1, state.NVOR, state.AICN, state.IAPIV, state.WORK);
+      const { aPtr, indxPtr, bPtr } = wasmLu.uploadFactorization(state.AICN, state.IAPIV, dim, n);
+      state.__WASM_AICN = { aPtr, indxPtr, bPtr, dim, n };
     }
     state.LAIC = true;
   }

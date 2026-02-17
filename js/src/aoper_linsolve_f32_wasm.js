@@ -55,19 +55,39 @@ export async function loadAoperLinSolveF32Wasm(options = {}) {
     const aPtr = allocator.alloc(A.length * 4, 4);
     ensureMemory(aPtr + A.length * 4);
     const indxPtr = allocator.alloc((n + 1) * 4, 4);
+    ensureMemory(indxPtr + (n + 1) * 4);
     const workPtr = allocator.alloc((n + 1) * 4, 4);
+    ensureMemory(workPtr + (n + 1) * 4);
+    const bPtr = allocator.alloc((n + 1) * 4, 4);
+    ensureMemory(bPtr + (n + 1) * 4);
     f32.set(A, aPtr / 4);
     LUDCMP_COL_f32(dim, n, aPtr, indxPtr, workPtr);
-    return { aPtr, indxPtr };
+    return { aPtr, indxPtr, bPtr };
+  }
+
+  function uploadFactorization(A, INDX, dim, n) {
+    allocator.reset();
+    const aPtr = allocator.alloc(A.length * 4, 4);
+    ensureMemory(aPtr + A.length * 4);
+    const indxPtr = allocator.alloc((n + 1) * 4, 4);
+    ensureMemory(indxPtr + (n + 1) * 4);
+    const bPtr = allocator.alloc((n + 1) * 4, 4);
+    ensureMemory(bPtr + (n + 1) * 4);
+    f32.set(A, aPtr / 4);
+    i32.set(INDX, indxPtr / 4);
+    return { aPtr, indxPtr, bPtr, dim, n };
   }
 
   function solveWithLU(A, B, dim, n) {
-    const aPtr = alloc(A.length * 4, 4);
     allocator.reset();
+    const aPtr = allocator.alloc(A.length * 4, 4);
+    ensureMemory(aPtr + A.length * 4);
     const bPtr = allocator.alloc(B.length * 4, 4);
     ensureMemory(bPtr + B.length * 4);
-    const indxPtr = alloc((n + 1) * 4, 4);
-    const workPtr = alloc((n + 1) * 4, 4);
+    const indxPtr = allocator.alloc((n + 1) * 4, 4);
+    ensureMemory(indxPtr + (n + 1) * 4);
+    const workPtr = allocator.alloc((n + 1) * 4, 4);
+    ensureMemory(workPtr + (n + 1) * 4);
     f32.set(A, aPtr / 4);
     f32.set(B, bPtr / 4);
     LUDCMP_COL_f32(dim, n, aPtr, indxPtr, workPtr);
@@ -75,14 +95,25 @@ export async function loadAoperLinSolveF32Wasm(options = {}) {
     return Float32Array.from(f32.subarray(bPtr / 4, bPtr / 4 + B.length));
   }
 
-  function solveWithLUInPlace(aPtr, indxPtr, B, dim, n) {
-    allocator.reset();
-    const bPtr = allocator.alloc(B.length * 4, 4);
-    ensureMemory(bPtr + B.length * 4);
-    f32.set(B, bPtr / 4);
+  function solveWithLUInPlace(aPtr, indxPtr, B, dim, n, bPtrHint = null) {
+    const solveLen = Math.max(0, n + 1);
+    const bPtr = Number.isFinite(bPtrHint)
+      ? bPtrHint
+      : allocator.alloc(solveLen * 4, 4);
+    ensureMemory(bPtr + solveLen * 4);
+    const inVec = B instanceof Float32Array ? B : Float32Array.from(B || []);
+    f32.set(inVec.subarray(0, solveLen), bPtr / 4);
     BAKSUB_COL_f32(dim, n, aPtr, indxPtr, bPtr);
-    return Float32Array.from(f32.subarray(bPtr / 4, bPtr / 4 + B.length));
+    return Float32Array.from(f32.subarray(bPtr / 4, bPtr / 4 + solveLen));
   }
 
-  return { solveWithLU, factorInPlace, solveWithLUInPlace, memory, f32, i32 };
+  return {
+    solveWithLU,
+    factorInPlace,
+    uploadFactorization,
+    solveWithLUInPlace,
+    memory,
+    f32,
+    i32,
+  };
 }

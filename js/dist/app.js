@@ -16,6 +16,7 @@ let threeReady = false;
 const els = {
   fileInput: document.getElementById('fileInput'),
   saveBtn: document.getElementById('saveBtn'),
+  loadExampleSelect: document.getElementById('loadExampleSelect'),
   fileMeta: document.getElementById('fileMeta'),
   fileSummary: document.getElementById('fileSummary'),
   fileAircraftName: document.getElementById('fileAircraftName'),
@@ -233,8 +234,98 @@ const TEMPLATE_POSITIVE_FIELD_INDICES = {
   surfaceSpacing: new Set([0, 2]),
   sectionData: new Set([3, 5]),
 };
+const EXAMPLE_MANIFEST_FILENAME = 'examples.json';
+const FALLBACK_EXAMPLE_AVL_FILES = [
+  'al.avl',
+  'allegro.avl',
+  'asond.avl',
+  'asondnaca.avl',
+  'b737.avl',
+  'bd.avl',
+  'bd2.avl',
+  'bdc.avl',
+  'btest.avl',
+  'btest2.avl',
+  'circle.avl',
+  'd81.avl',
+  'd81t.avl',
+  'ellip.avl',
+  'ellip2.avl',
+  'ellipg.avl',
+  'gap.avl',
+  'greff.avl',
+  'h.avl',
+  'h0.avl',
+  'h03.avl',
+  'h05.avl',
+  'h10.avl',
+  'h20.avl',
+  'h6.avl',
+  'har.avl',
+  'hers-gp10.avl',
+  'hers-zimg05.avl',
+  'hers-zsym05.avl',
+  'hers.avl',
+  'hershey.avl',
+  'longwing.avl',
+  'ow.avl',
+  'plane.avl',
+  'sample.avl',
+  'square.avl',
+  'sub.avl',
+  'supergee.avl',
+  'supra-big.avl',
+  'supra.avl',
+  'supra0.avl',
+  'suprabad.avl',
+  'suprad.avl',
+  'supraf.avl',
+  'sweeptest.avl',
+  'test.avl',
+  'testcdcl-section.avl',
+  'testcdcl_surface.avl',
+  'testdes.avl',
+  'ttest.avl',
+  'ttest0cam.avl',
+  'vanilla.avl',
+  'vanilla2.avl',
+  'w.avl',
+  'wing.avl',
+];
+const FALLBACK_RUN_COMPANION_BASES = [
+  'b737',
+  'bd',
+  'bd2',
+  'bdc',
+  'circle',
+  'greff',
+  'plane',
+  'square',
+  'supergee',
+  'supra',
+  'supra0',
+  'suprad',
+  'test',
+  'ttest',
+  'vanilla',
+  'w',
+];
+const FALLBACK_MASS_COMPANION_BASES = [
+  'allegro',
+  'b737',
+  'bd',
+  'bd2',
+  'bdc',
+  'plane',
+  'supergee',
+  'supra',
+  'supra0',
+  'suprad',
+];
 let fileMeasureCtx = null;
 let templateParamApplyTimer = null;
+let availableRunCompanionBases = new Set(FALLBACK_RUN_COMPANION_BASES);
+let availableMassCompanionBases = new Set(FALLBACK_MASS_COMPANION_BASES);
 
 function escapeHtml(text) {
   return text
@@ -3141,6 +3232,51 @@ function basenamePath(path) {
   return String(path || '').split(/[\\/]/).pop() || String(path || '');
 }
 
+function runsFileCandidateUrls(filename) {
+  const clean = String(filename || '').replace(/^[/\\]+/, '').trim();
+  if (!clean) return [];
+  return [
+    new URL(`./third_party/avl/runs/${clean}`, window.location.href).toString(),
+    new URL(`../third_party/avl/runs/${clean}`, window.location.href).toString(),
+    new URL(`../../third_party/avl/runs/${clean}`, window.location.href).toString(),
+  ];
+}
+
+function normalizeExampleAvlName(name) {
+  const clean = basenamePath(String(name || '').trim());
+  if (!clean || !clean.toLowerCase().endsWith('.avl')) return '';
+  return clean;
+}
+
+function normalizeExampleAvlList(rawList) {
+  const out = [];
+  const seen = new Set();
+  (rawList || []).forEach((entry) => {
+    const normalized = normalizeExampleAvlName(entry);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(normalized);
+  });
+  out.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  return out;
+}
+
+function normalizeCompanionBaseList(rawList, extension) {
+  const out = new Set();
+  const ext = String(extension || '').toLowerCase();
+  (rawList || []).forEach((entry) => {
+    const clean = basenamePath(String(entry || '').trim()).toLowerCase();
+    if (!clean) return;
+    let base = clean;
+    if (ext && clean.endsWith(ext)) base = clean.slice(0, -ext.length);
+    else if (clean.includes('.')) base = clean.replace(/\.[^.]*$/, '');
+    if (base) out.add(base);
+  });
+  return out;
+}
+
 function resolveProvidedAirfoilKey(path) {
   const cleanPath = normalizeAirfoilPath(path);
   if (!cleanPath) return null;
@@ -3233,6 +3369,10 @@ async function handleFileSelection(files) {
   const primaryAvl = avlFiles[0] || textFiles[0] || null;
   if (primaryAvl) {
     await handleFileLoad(primaryAvl);
+    const isAvl = String(primaryAvl.name || '').toLowerCase().endsWith('.avl');
+    if (isAvl && !runFiles.length && !massFiles.length) {
+      await loadCompanionRunAndMassForAvl(primaryAvl.name, 'Loaded companion');
+    }
   } else if (!runFiles.length && !massFiles.length) {
     renderRequiredAirfoilFiles();
     scheduleAutoTrim();
@@ -3316,6 +3456,133 @@ async function fetchTextFromCandidates(candidates) {
   return null;
 }
 
+async function fetchRunsFileText(filename) {
+  return fetchTextFromCandidates(runsFileCandidateUrls(filename));
+}
+
+function applyExampleOptionsToSelect(exampleNames) {
+  if (!els.loadExampleSelect) return;
+  const select = els.loadExampleSelect;
+  const previous = select.value;
+  select.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Load Example';
+  select.appendChild(placeholder);
+
+  exampleNames.forEach((name) => {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
+  });
+
+  select.value = exampleNames.includes(previous) ? previous : '';
+  select.disabled = !exampleNames.length;
+}
+
+async function initExampleSelect() {
+  if (!els.loadExampleSelect) return;
+  let examples = [];
+  const manifestText = await fetchRunsFileText(EXAMPLE_MANIFEST_FILENAME);
+  if (manifestText) {
+    try {
+      const parsed = JSON.parse(manifestText);
+      const raw = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.avl) ? parsed.avl : []);
+      examples = normalizeExampleAvlList(raw);
+      const rawRun = Array.isArray(parsed?.run) ? parsed.run : (Array.isArray(parsed?.runs) ? parsed.runs : []);
+      const rawMass = Array.isArray(parsed?.mass) ? parsed.mass : (Array.isArray(parsed?.masses) ? parsed.masses : []);
+      const runBases = normalizeCompanionBaseList(rawRun, '.run');
+      const massBases = normalizeCompanionBaseList(rawMass, '.mass');
+      if (runBases.size) availableRunCompanionBases = runBases;
+      if (massBases.size) availableMassCompanionBases = massBases;
+      logDebug(`Loaded examples manifest: ${EXAMPLE_MANIFEST_FILENAME} (${examples.length} entries).`);
+    } catch (err) {
+      logDebug(`Example manifest parse failed: ${err?.message ?? err}`);
+    }
+  }
+  if (!examples.length) {
+    examples = normalizeExampleAvlList(FALLBACK_EXAMPLE_AVL_FILES);
+    logDebug(`Using fallback example list (${examples.length} entries).`);
+  }
+  if (!availableRunCompanionBases.size) {
+    availableRunCompanionBases = new Set(FALLBACK_RUN_COMPANION_BASES);
+  }
+  if (!availableMassCompanionBases.size) {
+    availableMassCompanionBases = new Set(FALLBACK_MASS_COMPANION_BASES);
+  }
+  applyExampleOptionsToSelect(examples);
+}
+
+async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
+  const base = basenamePath(String(avlFilename || '').replace(/\.[^.]+$/, '')).toLowerCase();
+  if (!base) return;
+
+  if (availableRunCompanionBases.has(base)) {
+    const runName = `${base}.run`;
+    const runText = await fetchRunsFileText(runName);
+    if (runText) {
+      try {
+        const parsed = parseRunsPayload(runText);
+        applyLoadedRunCases(parsed, runName, source);
+        logDebug(`${source} run cases: ${runName}`);
+      } catch (err) {
+        updateRunCasesMeta(`Failed to load ${runName}`);
+        logDebug(`Companion run-case load failed (${runName}): ${err?.message ?? err}`);
+      }
+    } else {
+      logDebug(`Companion run file not found: ${runName}`);
+    }
+  } else {
+    logDebug(`Skipping companion run load (not indexed): ${base}.run`);
+  }
+
+  if (availableMassCompanionBases.has(base)) {
+    const massName = `${base}.mass`;
+    const massText = await fetchRunsFileText(massName);
+    if (massText) {
+      try {
+        const props = parseMassFileText(massText);
+        applyLoadedMassProps(props, massName, source);
+      } catch (err) {
+        if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massName}`;
+        logDebug(`Companion mass load failed (${massName}): ${err?.message ?? err}`);
+      }
+    } else {
+      logDebug(`Companion mass file not found: ${massName}`);
+    }
+  } else {
+    logDebug(`Skipping companion mass load (not indexed): ${base}.mass`);
+  }
+}
+
+async function loadExampleFromRuns(avlName) {
+  const normalized = normalizeExampleAvlName(avlName);
+  if (!normalized) return;
+  const avlText = await fetchRunsFileText(normalized);
+  if (!avlText) {
+    if (els.fileMeta) els.fileMeta.textContent = `Failed to load example: ${normalized}`;
+    logDebug(`Example AVL not found: ${normalized}`);
+    return;
+  }
+
+  uiState.text = avlText;
+  uiState.filename = normalized;
+  setFileTextValue(avlText);
+  if (els.fileMeta) els.fileMeta.textContent = `Loaded example: ${normalized}`;
+  loadGeometryFromText(uiState.text, true);
+  resetAuxPanelsForNewAvl();
+
+  const airfoilPromise = ensureRequiredAirfoilsLoaded();
+  await loadCompanionRunAndMassForAvl(normalized, 'Loaded example');
+  await airfoilPromise;
+
+  resetTrimSeed();
+  applyTrim({ useSeed: false });
+  logDebug(`Loaded example bundle: ${normalized}`);
+}
+
 async function loadDefaultRunAndMass() {
   const runCandidates = [
     new URL('./third_party/avl/runs/plane.run', window.location.href).toString(),
@@ -3353,6 +3620,19 @@ els.fileInput.addEventListener('change', async (evt) => {
   const files = evt.target.files;
   if (files?.length) await handleFileSelection(files);
   evt.target.value = '';
+});
+
+els.loadExampleSelect?.addEventListener('change', async (evt) => {
+  const select = evt.target;
+  const chosen = normalizeExampleAvlName(select?.value || '');
+  if (select) select.value = '';
+  if (!chosen) return;
+  if (select) select.disabled = true;
+  try {
+    await loadExampleFromRuns(chosen);
+  } finally {
+    if (select) select.disabled = false;
+  }
 });
 
 els.bank?.addEventListener('input', scheduleAutoTrim);
@@ -5477,9 +5757,20 @@ function parseAVL(text) {
     return lines[i++].trim();
   };
 
+  const stripInlineComment = (line) => {
+    const text = String(line || '');
+    const hashIdx = text.indexOf('#');
+    const bangIdx = text.indexOf('!');
+    let cutIdx = -1;
+    if (hashIdx >= 0) cutIdx = hashIdx;
+    if (bangIdx >= 0 && (cutIdx < 0 || bangIdx < cutIdx)) cutIdx = bangIdx;
+    return cutIdx >= 0 ? text.slice(0, cutIdx) : text;
+  };
+
   const parseNumbers = (line) => {
-    if (!line) return [];
-    return line.split(/\s+/).map((v) => Number(v)).filter((v) => Number.isFinite(v));
+    const clean = stripInlineComment(line).trim();
+    if (!clean) return [];
+    return clean.split(/\s+/).map((v) => Number(v)).filter((v) => Number.isFinite(v));
   };
 
   const readValueLine = () => parseNumbers(nextLine());
@@ -5944,7 +6235,10 @@ function buildNacaSlope(code, samples = 60) {
 
 function fetchAirfoil(path) {
   const cleanPath = normalizeAirfoilPath(path);
-  if (!cleanPath || airfoilCache.has(cleanPath) || airfoilPending.has(cleanPath) || airfoilFailed.has(cleanPath)) return;
+  if (!cleanPath) return null;
+  if (airfoilCache.has(cleanPath)) return Promise.resolve();
+  if (airfoilPending.has(cleanPath)) return airfoilPending.get(cleanPath) || null;
+  if (airfoilFailed.has(cleanPath)) return null;
   const candidates = [
     new URL(cleanPath, window.location.href).toString(),
     new URL(`../third_party/avl/runs/${cleanPath}`, window.location.href).toString(),
@@ -5978,6 +6272,19 @@ function fetchAirfoil(path) {
     });
   airfoilPending.set(cleanPath, promise);
   renderRequiredAirfoilFiles();
+  return promise;
+}
+
+async function ensureRequiredAirfoilsLoaded() {
+  if (!Array.isArray(requiredAirfoilFiles) || !requiredAirfoilFiles.length) return;
+  const pending = [];
+  requiredAirfoilFiles.forEach((path) => {
+    if (resolveProvidedAirfoilKey(path)) return;
+    const req = fetchAirfoil(path);
+    if (req && typeof req.then === 'function') pending.push(req);
+  });
+  if (!pending.length) return;
+  await Promise.allSettled(pending);
 }
 
 function nacaCamber(naca, x) {
@@ -8075,7 +8382,9 @@ function loadGeometryFromText(text, shouldFit = true) {
   logDebug(dbg.join('\n'));
   setRequiredAirfoilFiles(model.airfoilFiles);
   renderRequiredAirfoilFiles();
-  // AFILE dependencies are user-supplied via the File panel.
+  requiredAirfoilFiles.forEach((path) => {
+    if (!resolveProvidedAirfoilKey(path)) fetchAirfoil(path);
+  });
   uiState.displayModel = model;
   rebuildAircraftVisual(Boolean(shouldFit));
   const bounds = computeBounds(aircraft);
@@ -8705,7 +9014,7 @@ function runExecFromText(text) {
   execRequestId += 1;
   const useWasm = Boolean(els.useWasmExec?.checked);
   if (useWasm) {
-    logDebug('EXEC wasm toggle enabled; using JS EXEC kernels for drag parity.');
+    logDebug('EXEC wasm toggle enabled; using wasm-enabled kernels.');
   }
   worker.postMessage({ state, requestId: execRequestId, useWasm });
   const dt = performance.now() - t0;
@@ -9033,6 +9342,7 @@ window.addEventListener('resize', handleResize);
 async function bootApp() {
   initTopNav();
   initPanelCollapse();
+  await initExampleSelect();
   renderRunCasesList();
   updateRunCasesMeta();
   renderMassProps(makeDefaultMassProps());

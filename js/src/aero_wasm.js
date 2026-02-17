@@ -3,12 +3,68 @@
  * Derived work under GPL-2.0.
  * Original source: https://web.mit.edu/drela/Public/web/avl/
  */
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { CROSS, DOT } from './aic.js';
 import { CDCL } from './cdcl.js';
 import { TPFORC } from './atpforc.js';
 import { SFFORC, BDFORC } from './aero.js';
+
+function isNodeRuntime() {
+  return typeof process !== 'undefined' && Boolean(process.versions?.node);
+}
+
+function isHttpLike(spec) {
+  return /^https?:/i.test(spec);
+}
+
+function toBufferSource(bytes) {
+  if (bytes instanceof ArrayBuffer) return bytes;
+  if (ArrayBuffer.isView(bytes)) {
+    const view = bytes;
+    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+  }
+  return bytes;
+}
+
+async function loadWasmBytes(options = {}) {
+  if (options.wasmBytes != null) return toBufferSource(options.wasmBytes);
+
+  if (typeof options.wasmPath === 'string' && options.wasmPath.trim()) {
+    const spec = options.wasmPath.trim();
+    if (typeof fetch === 'function' && (isHttpLike(spec) || spec.startsWith('/') || spec.startsWith('./') || spec.startsWith('../'))) {
+      const res = await fetch(new URL(spec, import.meta.url));
+      if (!res.ok) throw new Error(`Failed to load wasm: ${res.status}`);
+      return res.arrayBuffer();
+    }
+    if (isNodeRuntime()) {
+      const fsMod = await import('node:fs/promises');
+      return fsMod.readFile(spec);
+    }
+  }
+
+  const wasmCandidates = [
+    new URL('./aero.wasm', import.meta.url),
+    new URL('../dist/aero.wasm', import.meta.url),
+  ];
+  for (const wasmUrl of wasmCandidates) {
+    if (typeof fetch === 'function' && (wasmUrl.protocol === 'http:' || wasmUrl.protocol === 'https:')) {
+      try {
+        const res = await fetch(wasmUrl);
+        if (res.ok) return res.arrayBuffer();
+      } catch (err) {
+        if (!isNodeRuntime()) throw err;
+      }
+    }
+    if (isNodeRuntime()) {
+      try {
+        const fsMod = await import('node:fs/promises');
+        return await fsMod.readFile(wasmUrl);
+      } catch {
+        // try next candidate
+      }
+    }
+  }
+  throw new Error('Failed to load aero.wasm');
+}
 
 function writeF32(view, offset, arr) {
   view.set(arr, offset / 4);
@@ -31,6 +87,18 @@ function makeAllocator(start = 4096, ensure) {
     offset = next;
     return aligned;
   };
+}
+
+// TPFORC_WAT uses a fixed scratch region starting at byte 256.
+// Keep JS-managed state allocation above that workspace to avoid overlap.
+function aeroScratchFloorBytes(state) {
+  const nstrip = Math.max(0, Number(state?.NSTRIP || 0));
+  const numax = Math.max(0, Number(state?.NUMAX || 0));
+  // bytes = 256 + 4 * ( nstrip*(numax+11) + 6*numax + 4 )
+  const tpforcBytes = 256 + 4 * (nstrip * (numax + 11) + 6 * numax + 4);
+  // Add guard pad and align up for clean pointer arithmetic.
+  const padded = tpforcBytes + 4096;
+  return (padded + 15) & ~15;
 }
 
 const SCALAR_F32_FIELDS = [
@@ -246,6 +314,510 @@ const ARRAY_F32_FIELDS = [
   'SRC_U',
 ];
 
+const PACK_LAYOUTS = Object.create(null);
+
+function registerPackLayout(names, layout) {
+  for (const name of names) {
+    PACK_LAYOUTS[name] = layout;
+  }
+}
+
+const dimStrip = (state) => Math.max(0, Number(state?.NSTRIP || 0));
+const dimSurf = (state) => Math.max(0, Number(state?.NSURF || 0));
+const dimVort = (state) => Math.max(0, Number(state?.NVOR || 0));
+const dimCtrl = (state) => Math.max(0, Number(state?.NCONTROL || 0));
+const dimDesign = (state) => Math.max(0, Number(state?.NDESIGN || 0));
+const dimU = (state) => Math.max(0, Number(state?.NUMAX || 0));
+
+registerPackLayout(
+  ['CHORD', 'WSTRIP', 'CHORD1', 'CHORD2', 'ENSY', 'ENSZ', 'AINC', 'XSREF', 'YSREF', 'ZSREF',
+    'CNC', 'CDSTRP', 'CYSTRP', 'CLSTRP', 'CDST_A', 'CYST_A', 'CLST_A',
+    'CL_LSTRP', 'CD_LSTRP', 'CMC4_LSTRP', 'CA_LSTRP', 'CN_LSTRP', 'CLT_LSTRP',
+    'CLA_LSTRP', 'CMLE_LSTRP', 'CDV_LSTRP'],
+  { kind: 'scalar1d', count: dimStrip, offset: 1 },
+);
+
+registerPackLayout(
+  ['SSURF', 'CAVESURF', 'CDSURF', 'CYSURF', 'CLSURF', 'CDVSURF',
+    'CDS_A', 'CYS_A', 'CLS_A', 'CL_LSRF', 'CD_LSRF'],
+  { kind: 'scalar1d', count: dimSurf, offset: 1 },
+);
+
+registerPackLayout(
+  ['DXV', 'GAM', 'DCP'],
+  { kind: 'scalar1d', count: dimVort, offset: 1 },
+);
+
+registerPackLayout(
+  ['RLE1', 'RLE2', 'RLE', 'ESS'],
+  { kind: 'vec3_1d_stride4', count: dimStrip, offset: 1 },
+);
+
+registerPackLayout(
+  ['RV1', 'RV2', 'RV', 'RC', 'ENV', 'VV', 'WV'],
+  { kind: 'vec3_1d_stride4', count: dimVort, offset: 1 },
+);
+
+registerPackLayout(
+  ['CFSTRP', 'CMSTRP', 'CF_LSTRP', 'CM_LSTRP'],
+  { kind: 'vec3_1d_stride3', count: dimStrip, offset: 1 },
+);
+
+registerPackLayout(
+  ['CFSURF', 'CMSURF', 'CF_LSRF', 'CM_LSRF'],
+  { kind: 'vec3_1d_stride3', count: dimSurf, offset: 1 },
+);
+
+registerPackLayout(
+  ['CNC_U', 'CDST_U', 'CYST_U', 'CLST_U'],
+  {
+    kind: 'scalar2d',
+    rows: dimStrip,
+    cols: dimU,
+    rowStride: (state) => dimStrip(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CNC_D', 'CDST_D', 'CYST_D', 'CLST_D'],
+  {
+    kind: 'scalar2d',
+    rows: dimStrip,
+    cols: dimCtrl,
+    rowStride: (state) => dimStrip(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CNC_G', 'CDST_G', 'CYST_G', 'CLST_G'],
+  {
+    kind: 'scalar2d',
+    rows: dimStrip,
+    cols: dimDesign,
+    rowStride: (state) => dimStrip(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CDS_U', 'CYS_U', 'CLS_U'],
+  {
+    kind: 'scalar2d',
+    rows: dimSurf,
+    cols: dimU,
+    rowStride: (state) => dimSurf(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CDS_D', 'CYS_D', 'CLS_D'],
+  {
+    kind: 'scalar2d',
+    rows: dimSurf,
+    cols: dimCtrl,
+    rowStride: (state) => dimSurf(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CDS_G', 'CYS_G', 'CLS_G'],
+  {
+    kind: 'scalar2d',
+    rows: dimSurf,
+    cols: dimDesign,
+    rowStride: (state) => dimSurf(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['DCP_U', 'GAM_U'],
+  {
+    kind: 'scalar2d',
+    rows: dimVort,
+    cols: dimU,
+    rowStride: (state) => Number(state?.DIM_N || (dimVort(state) + 1)),
+    rowOffset: 1,
+    colOffset: 1,
+  },
+);
+
+registerPackLayout(
+  ['DCP_D', 'GAM_D', 'DCONTROL'],
+  {
+    kind: 'scalar2d',
+    rows: dimVort,
+    cols: dimCtrl,
+    rowStride: (state) => Number(state?.DIM_N || (dimVort(state) + 1)),
+    rowOffset: 1,
+    colOffset: 1,
+  },
+);
+
+registerPackLayout(
+  ['DCP_G', 'GAM_G'],
+  {
+    kind: 'scalar2d',
+    rows: dimVort,
+    cols: dimDesign,
+    rowStride: (state) => Number(state?.DIM_N || (dimVort(state) + 1)),
+    rowOffset: 1,
+    colOffset: 1,
+  },
+);
+
+registerPackLayout(
+  ['CFST_U', 'CMST_U'],
+  {
+    kind: 'vec3_2d_stride3',
+    rows: dimStrip,
+    cols: dimU,
+    rowStride: (state) => dimStrip(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CFST_D', 'CMST_D'],
+  {
+    kind: 'vec3_2d_stride3',
+    rows: dimStrip,
+    cols: dimCtrl,
+    rowStride: (state) => dimStrip(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CFST_G', 'CMST_G'],
+  {
+    kind: 'vec3_2d_stride3',
+    rows: dimStrip,
+    cols: dimDesign,
+    rowStride: (state) => dimStrip(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CFS_U', 'CMS_U'],
+  {
+    kind: 'vec3_2d_stride3',
+    rows: dimSurf,
+    cols: dimU,
+    rowStride: (state) => dimSurf(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CFS_D', 'CMS_D'],
+  {
+    kind: 'vec3_2d_stride3',
+    rows: dimSurf,
+    cols: dimCtrl,
+    rowStride: (state) => dimSurf(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['CFS_G', 'CMS_G'],
+  {
+    kind: 'vec3_2d_stride3',
+    rows: dimSurf,
+    cols: dimDesign,
+    rowStride: (state) => dimSurf(state) + 1,
+    rowOffset: 1,
+    colOffset: 0,
+  },
+);
+
+registerPackLayout(
+  ['VV_U', 'WV_U'],
+  {
+    kind: 'vec3_2d_stride4',
+    rows: dimVort,
+    cols: dimU,
+    rowStride: (state) => Number(state?.DIM_N || (dimVort(state) + 1)),
+    rowOffset: 1,
+    colOffset: 1,
+  },
+);
+
+registerPackLayout(
+  ['VV_D', 'WV_D', 'ENV_D'],
+  {
+    kind: 'vec3_2d_stride4',
+    rows: dimVort,
+    cols: dimCtrl,
+    rowStride: (state) => Number(state?.DIM_N || (dimVort(state) + 1)),
+    rowOffset: 1,
+    colOffset: 1,
+  },
+);
+
+registerPackLayout(
+  ['VV_G', 'WV_G', 'ENV_G'],
+  {
+    kind: 'vec3_2d_stride4',
+    rows: dimVort,
+    cols: dimDesign,
+    rowStride: (state) => Number(state?.DIM_N || (dimVort(state) + 1)),
+    rowOffset: 1,
+    colOffset: 1,
+  },
+);
+
+registerPackLayout(
+  ['PHINGE', 'VHINGE'],
+  {
+    kind: 'vec3_2d_stride3',
+    rows: dimStrip,
+    cols: dimCtrl,
+    rowStride: (state) => dimStrip(state) + 1,
+    rowOffset: 1,
+    colOffset: 1,
+  },
+);
+
+registerPackLayout(
+  ['NVSTRP'],
+  { kind: 'scalar1d', count: dimStrip, offset: 1 },
+);
+
+registerPackLayout(
+  ['NJ', 'IMAGS', 'LNCOMP'],
+  { kind: 'scalar1d', count: dimSurf, offset: 1 },
+);
+
+registerPackLayout(
+  ['IJFRST', 'LSSURF'],
+  { kind: 'scalar1d', count: dimStrip, offset: 1, valueOffset: -1 },
+);
+
+registerPackLayout(
+  ['JFRST'],
+  { kind: 'scalar1d', count: dimSurf, offset: 1, valueOffset: -1 },
+);
+
+registerPackLayout(
+  ['LFLOAD'],
+  { kind: 'scalar1d', count: dimSurf, offset: 1 },
+);
+
+registerPackLayout(
+  ['LVISCSTRP'],
+  { kind: 'scalar1d', count: dimStrip, offset: 1 },
+);
+
+function packArrayInto(dst, src, state, name) {
+  const layout = PACK_LAYOUTS[name];
+  if (!layout) return false;
+  const maxLen = Math.min(dst.length, src?.length || 0);
+  dst.fill(0);
+  if (maxLen === 0) return true;
+  switch (layout.kind) {
+    case 'scalar1d': {
+      const count = Math.max(0, Math.min(layout.count(state), dst.length));
+      const offset = layout.offset || 0;
+      const valueOffset = layout.valueOffset || 0;
+      for (let i = 0; i < count; i += 1) {
+        dst[i] = (src[i + offset] ?? 0) + valueOffset;
+      }
+      return true;
+    }
+    case 'vec3_1d_stride4': {
+      const count = Math.max(0, Math.min(layout.count(state), Math.floor(dst.length / 3)));
+      const offset = layout.offset || 0;
+      for (let i = 0; i < count; i += 1) {
+        const srcBase = 4 * (i + offset) + 1;
+        const dstBase = 3 * i;
+        dst[dstBase] = src[srcBase] ?? 0;
+        dst[dstBase + 1] = src[srcBase + 1] ?? 0;
+        dst[dstBase + 2] = src[srcBase + 2] ?? 0;
+      }
+      return true;
+    }
+    case 'vec3_1d_stride3': {
+      const count = Math.max(0, Math.min(layout.count(state), Math.floor(dst.length / 3)));
+      const offset = layout.offset || 0;
+      for (let i = 0; i < count; i += 1) {
+        const srcBase = 3 * (i + offset);
+        const dstBase = 3 * i;
+        dst[dstBase] = src[srcBase] ?? 0;
+        dst[dstBase + 1] = src[srcBase + 1] ?? 0;
+        dst[dstBase + 2] = src[srcBase + 2] ?? 0;
+      }
+      return true;
+    }
+    case 'scalar2d': {
+      const rows = Math.max(0, layout.rows(state));
+      const cols = Math.max(0, layout.cols(state));
+      const rowStride = Math.max(1, layout.rowStride(state));
+      const rowOffset = layout.rowOffset || 0;
+      const colOffset = layout.colOffset || 0;
+      for (let j = 0; j < cols; j += 1) {
+        for (let i = 0; i < rows; i += 1) {
+          const dstIndex = i + rows * j;
+          if (dstIndex >= dst.length) break;
+          const srcIndex = (i + rowOffset) + rowStride * (j + colOffset);
+          dst[dstIndex] = src[srcIndex] ?? 0;
+        }
+      }
+      return true;
+    }
+    case 'vec3_2d_stride3': {
+      const rows = Math.max(0, layout.rows(state));
+      const cols = Math.max(0, layout.cols(state));
+      const rowStride = Math.max(1, layout.rowStride(state));
+      const rowOffset = layout.rowOffset || 0;
+      const colOffset = layout.colOffset || 0;
+      for (let j = 0; j < cols; j += 1) {
+        for (let i = 0; i < rows; i += 1) {
+          const dstBase = 3 * (i + rows * j);
+          if (dstBase + 2 >= dst.length) break;
+          const slot = (i + rowOffset) + rowStride * (j + colOffset);
+          const srcBase = 3 * slot;
+          dst[dstBase] = src[srcBase] ?? 0;
+          dst[dstBase + 1] = src[srcBase + 1] ?? 0;
+          dst[dstBase + 2] = src[srcBase + 2] ?? 0;
+        }
+      }
+      return true;
+    }
+    case 'vec3_2d_stride4': {
+      const rows = Math.max(0, layout.rows(state));
+      const cols = Math.max(0, layout.cols(state));
+      const rowStride = Math.max(1, layout.rowStride(state));
+      const rowOffset = layout.rowOffset || 0;
+      const colOffset = layout.colOffset || 0;
+      for (let j = 0; j < cols; j += 1) {
+        for (let i = 0; i < rows; i += 1) {
+          const dstBase = 3 * (i + rows * j);
+          if (dstBase + 2 >= dst.length) break;
+          const slot = (i + rowOffset) + rowStride * (j + colOffset);
+          const srcBase = 4 * slot + 1;
+          dst[dstBase] = src[srcBase] ?? 0;
+          dst[dstBase + 1] = src[srcBase + 1] ?? 0;
+          dst[dstBase + 2] = src[srcBase + 2] ?? 0;
+        }
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+function unpackArrayInto(dst, src, state, name) {
+  const layout = PACK_LAYOUTS[name];
+  if (!layout) return false;
+  switch (layout.kind) {
+    case 'scalar1d': {
+      const count = Math.max(0, layout.count(state));
+      const offset = layout.offset || 0;
+      const valueOffset = layout.valueOffset || 0;
+      for (let i = 0; i < count; i += 1) {
+        dst[i + offset] = (src[i] ?? 0) - valueOffset;
+      }
+      return true;
+    }
+    case 'vec3_1d_stride4': {
+      const count = Math.max(0, layout.count(state));
+      const offset = layout.offset || 0;
+      for (let i = 0; i < count; i += 1) {
+        const dstBase = 4 * (i + offset) + 1;
+        const srcBase = 3 * i;
+        dst[dstBase] = src[srcBase] ?? 0;
+        dst[dstBase + 1] = src[srcBase + 1] ?? 0;
+        dst[dstBase + 2] = src[srcBase + 2] ?? 0;
+      }
+      return true;
+    }
+    case 'vec3_1d_stride3': {
+      const count = Math.max(0, layout.count(state));
+      const offset = layout.offset || 0;
+      for (let i = 0; i < count; i += 1) {
+        const dstBase = 3 * (i + offset);
+        const srcBase = 3 * i;
+        dst[dstBase] = src[srcBase] ?? 0;
+        dst[dstBase + 1] = src[srcBase + 1] ?? 0;
+        dst[dstBase + 2] = src[srcBase + 2] ?? 0;
+      }
+      return true;
+    }
+    case 'scalar2d': {
+      const rows = Math.max(0, layout.rows(state));
+      const cols = Math.max(0, layout.cols(state));
+      const rowStride = Math.max(1, layout.rowStride(state));
+      const rowOffset = layout.rowOffset || 0;
+      const colOffset = layout.colOffset || 0;
+      for (let j = 0; j < cols; j += 1) {
+        for (let i = 0; i < rows; i += 1) {
+          const srcIndex = i + rows * j;
+          const dstIndex = (i + rowOffset) + rowStride * (j + colOffset);
+          dst[dstIndex] = src[srcIndex] ?? 0;
+        }
+      }
+      return true;
+    }
+    case 'vec3_2d_stride3': {
+      const rows = Math.max(0, layout.rows(state));
+      const cols = Math.max(0, layout.cols(state));
+      const rowStride = Math.max(1, layout.rowStride(state));
+      const rowOffset = layout.rowOffset || 0;
+      const colOffset = layout.colOffset || 0;
+      for (let j = 0; j < cols; j += 1) {
+        for (let i = 0; i < rows; i += 1) {
+          const srcBase = 3 * (i + rows * j);
+          const slot = (i + rowOffset) + rowStride * (j + colOffset);
+          const dstBase = 3 * slot;
+          dst[dstBase] = src[srcBase] ?? 0;
+          dst[dstBase + 1] = src[srcBase + 1] ?? 0;
+          dst[dstBase + 2] = src[srcBase + 2] ?? 0;
+        }
+      }
+      return true;
+    }
+    case 'vec3_2d_stride4': {
+      const rows = Math.max(0, layout.rows(state));
+      const cols = Math.max(0, layout.cols(state));
+      const rowStride = Math.max(1, layout.rowStride(state));
+      const rowOffset = layout.rowOffset || 0;
+      const colOffset = layout.colOffset || 0;
+      for (let j = 0; j < cols; j += 1) {
+        for (let i = 0; i < rows; i += 1) {
+          const srcBase = 3 * (i + rows * j);
+          const slot = (i + rowOffset) + rowStride * (j + colOffset);
+          const dstBase = 4 * slot + 1;
+          dst[dstBase] = src[srcBase] ?? 0;
+          dst[dstBase + 1] = src[srcBase + 1] ?? 0;
+          dst[dstBase + 2] = src[srcBase + 2] ?? 0;
+        }
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
 const LAYOUT_FIELDS = [
   ...SCALAR_F32_FIELDS,
   ...SCALAR_I32_FIELDS,
@@ -256,10 +828,8 @@ const LAYOUT_FIELDS = [
 ];
 
 export async function loadAeroWasm(options = {}) {
-  const debugSync = options.debugSync ?? process.env.AERO_WASM_DEBUG === '1';
-  const wasmPath = options.wasmPath
-    ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'dist', 'aero.wasm');
-  const wasmBytes = await fs.readFile(wasmPath);
+  const debugSync = options.debugSync ?? (isNodeRuntime() && process.env?.AERO_WASM_DEBUG === '1');
+  const wasmBytes = await loadWasmBytes(options);
 
   const imports = {
     env: {
@@ -378,7 +948,7 @@ export async function loadAeroWasm(options = {}) {
   }
 
   function allocStateCached(state) {
-    const alloc = makeAllocator(4096, ensureMemory);
+    const alloc = makeAllocator(aeroScratchFloorBytes(state), ensureMemory);
     const offsets = {};
     const ptrs = {};
 
@@ -408,12 +978,18 @@ export async function loadAeroWasm(options = {}) {
         ptrs[name] = ptr;
         return;
       }
-      if (name in state) {
-        writeI32(i32, base + offsets[name], [state[name] | 0]);
-      }
+      const val = name in state ? (state[name] | 0) : 0;
+      writeI32(i32, base + offsets[name], [val]);
     }
 
     SCALAR_I32_FIELDS.forEach(allocScalarI32);
+
+    function allocScalarBool(name) {
+      const val = name in state ? (state[name] ? 1 : 0) : 0;
+      writeI32(i32, base + offsets[name], [val]);
+    }
+
+    SCALAR_BOOL_FIELDS.forEach(allocScalarBool);
 
     function allocArrayField(name, kind) {
       const arr = state[name];
@@ -427,13 +1003,22 @@ export async function loadAeroWasm(options = {}) {
       const ptr = alloc(arr.length * 4);
       writeI32(i32, base + offsets[name], [ptr]);
       ptrs[name] = ptr;
+      const memSlice = kind === 'f32'
+        ? f32.subarray(ptr / 4, ptr / 4 + arr.length)
+        : i32.subarray(ptr / 4, ptr / 4 + arr.length);
       if (kind === 'f32') {
-        writeF32(f32, ptr, arr);
+        if (!packArrayInto(memSlice, arr, state, name)) {
+          memSlice.set(arr);
+        }
       } else if (kind === 'i32') {
-        writeI32(i32, ptr, arr);
+        if (!packArrayInto(memSlice, arr, state, name)) {
+          memSlice.set(arr);
+        }
       } else if (kind === 'bool') {
         const tmp = Int32Array.from(arr, (v) => (v ? 1 : 0));
-        writeI32(i32, ptr, tmp);
+        if (!packArrayInto(memSlice, tmp, state, name)) {
+          memSlice.set(tmp);
+        }
       }
     }
 
@@ -522,13 +1107,13 @@ export async function loadAeroWasm(options = {}) {
     imports.env.__mem.syncStateFromMemory = () => syncStateFromMemory(state, mem.base, mem.offsets);
     imports.env.__mem.syncState();
     AERO(mem.base);
-    if (options.debugSync ?? process.env.AERO_WASM_DEBUG === '1') {
+    if (debugSync) {
       const cftotPtr = imports.env.__mem.i32[(mem.base + mem.offsets.CFTOT) / 4];
       const memCftot = Float32Array.from(imports.env.__mem.f32.subarray(cftotPtr / 4, cftotPtr / 4 + 3));
       console.log('[AERO_wasm] mem CFTOT', Array.from(memCftot));
     }
     imports.env.__mem.syncStateFromMemory();
-    if (options.debugSync ?? process.env.AERO_WASM_DEBUG === '1') {
+    if (debugSync) {
       console.log('[AERO_wasm] state CFTOT', Array.from(state.CFTOT));
     }
     return {
@@ -593,62 +1178,18 @@ export async function loadAeroWasm(options = {}) {
 function syncStateToMemory(state, statePtr, offsets) {
   const mem = syncStateToMemory.__mem;
   const { f32, i32 } = mem;
-  const syncScalars = [
-    'CDTOT',
-    'CYTOT',
-    'CLTOT',
-    'CDVTOT',
-    'CDTOT_A',
-    'CLTOT_A',
-    'CLFF',
-    'CYFF',
-    'CDFF',
-    'SPANEF',
-  ];
-  const syncArrays = [
-    'CFTOT',
-    'CMTOT',
-    'CDBDY',
-    'CYBDY',
-    'CLBDY',
-    'CFBDY',
-    'CMBDY',
-    'DCPB',
-    'CHINGE',
-    'CHINGE_U',
-    'CHINGE_D',
-    'CHINGE_G',
-    'CDTOT_U',
-    'CYTOT_U',
-    'CLTOT_U',
-    'CFTOT_U',
-    'CMTOT_U',
-    'CDTOT_D',
-    'CYTOT_D',
-    'CLTOT_D',
-    'CFTOT_D',
-    'CMTOT_D',
-    'CDTOT_G',
-    'CYTOT_G',
-    'CLTOT_G',
-    'CFTOT_G',
-    'CMTOT_G',
-    'DCP',
-    'CNC',
-    'CFSTRP',
-    'CMSTRP',
-    'CDSTRP',
-    'CYSTRP',
-    'CLSTRP',
-    'CDVSURF',
-    'CDSURF',
-    'CYSURF',
-    'CLSURF',
-  ];
+  const syncScalars = SCALAR_F32_FIELDS;
+  const syncBools = SCALAR_BOOL_FIELDS;
+  const syncArrays = ARRAY_F32_FIELDS;
 
   for (const name of syncScalars) {
     if (!(name in offsets) || !(name in state)) continue;
     f32[(statePtr + offsets[name]) / 4] = state[name];
+  }
+
+  for (const name of syncBools) {
+    if (!(name in offsets) || !(name in state)) continue;
+    i32[(statePtr + offsets[name]) / 4] = state[name] ? 1 : 0;
   }
 
   for (const name of syncArrays) {
@@ -656,7 +1197,10 @@ function syncStateToMemory(state, statePtr, offsets) {
     const arr = state[name];
     const ptr = i32[(statePtr + offsets[name]) / 4];
     if (!ptr || !arr) continue;
-    f32.set(arr, ptr / 4);
+    const memSlice = f32.subarray(ptr / 4, ptr / 4 + arr.length);
+    if (!packArrayInto(memSlice, arr, state, name)) {
+      memSlice.set(arr);
+    }
   }
 }
 
@@ -726,6 +1270,9 @@ function syncStateFromMemory(state, statePtr, offsets) {
     const arr = state[name];
     const ptr = i32[(statePtr + offsets[name]) / 4];
     if (!ptr || !arr) continue;
-    arr.set(f32.subarray(ptr / 4, ptr / 4 + arr.length));
+    const memSlice = f32.subarray(ptr / 4, ptr / 4 + arr.length);
+    if (!unpackArrayInto(arr, memSlice, state, name)) {
+      arr.set(memSlice);
+    }
   }
 }

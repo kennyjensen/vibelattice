@@ -482,6 +482,18 @@ textarea.code {
   gap: 10px;
   align-items: center;
   flex-shrink: 0;
+  flex-wrap: nowrap;
+}
+
+.aircraft-example-select {
+  width: 140px;
+  min-width: 140px;
+  max-width: 140px;
+  flex: 0 0 140px;
+  height: 36px;
+  box-sizing: border-box;
+  line-height: 1.25;
+  padding-right: 28px;
 }
 
 .file-summary {

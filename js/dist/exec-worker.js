@@ -8,8 +8,8 @@ let execWasmReady = null;
 let execWasmState = null;
 let amodeWasm = null;
 let amodeWasmReady = null;
-let amodeWasmState = null;
-let amodeWasmLast = null;
+let amodeWasmMemory = null;
+let amodeNativeCtx = null;
 
 async function loadExecWasm() {
   if (execWasm) return execWasm;
@@ -71,24 +71,243 @@ async function loadAmodeWasm() {
     const bytes = await (await fetch(url)).arrayBuffer();
     const imports = {
       env: {
-        runchk_js: () => {},
-        sysmat_js: (ir) => {
-          const { ASYS, BSYS, RSYS } = amodeWasmState.__amode;
-          amodeWasmLast = SYSMAT(amodeWasmState, ir, ASYS, BSYS, RSYS);
+        s_wsle: () => 0,
+        e_wsle: () => 0,
+        do_lio: () => 0,
+        sin: (x) => Math.sin(x),
+        cos: (x) => Math.cos(x),
+        tan: (x) => Math.tan(x),
+        d_sign: (aPtr, bPtr) => {
+          if (!amodeWasmMemory) return 0;
+          const f64 = new Float64Array(amodeWasmMemory.buffer);
+          const a = f64[(aPtr | 0) >> 3] || 0;
+          const b = f64[(bPtr | 0) >> 3] || 0;
+          return b >= 0 ? Math.abs(a) : -Math.abs(a);
         },
-        appmat_js: () => {},
-        syssho_js: () => {},
-        eigsol_js: (ir, etol, nsys) => {
-          const { ASYS } = amodeWasmState.__amode;
-          amodeWasmLast = EIGSOL(amodeWasmState, ir, etol, ASYS, nsys);
+        memset: (ptr, value, count) => {
+          if (!amodeWasmMemory) return ptr | 0;
+          const u8 = new Uint8Array(amodeWasmMemory.buffer);
+          u8.fill(value & 0xff, ptr, ptr + count);
+          return ptr | 0;
+        },
+        memmove: (dst, src, count) => {
+          if (!amodeWasmMemory) return dst | 0;
+          const u8 = new Uint8Array(amodeWasmMemory.buffer);
+          u8.copyWithin(dst, src, src + count);
+          return dst | 0;
         },
       },
     };
     const { instance } = await WebAssembly.instantiate(bytes, imports);
     amodeWasm = instance.exports;
+    amodeWasmMemory = instance.exports.memory || null;
     return amodeWasm;
   })();
   return amodeWasmReady;
+}
+
+function getAmodeNativeCtx(wasm) {
+  if (
+    !wasm
+    || typeof wasm.AMODE_runchk !== 'function'
+    || typeof wasm.AMODE_sysmat !== 'function'
+    || typeof wasm.AMODE_eigsol !== 'function'
+    || !wasm.memory
+  ) {
+    return null;
+  }
+  if (amodeNativeCtx && amodeNativeCtx.wasm === wasm) return amodeNativeCtx;
+  if (
+    typeof wasm.AMODE_ptr_case_i_icon !== 'function'
+    || typeof wasm.AMODE_ptr_case_i_nvtot !== 'function'
+    || typeof wasm.AMODE_ptr_case_i_ncontrol !== 'function'
+    || typeof wasm.AMODE_ptr_case_i_neigen !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_parval !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_vinf !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_wrot !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_cftot !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_cmtot !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_cftot_u !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_cmtot_u !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_cftot_d !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_cmtot_d !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_sref !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_cref !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_bref !== 'function'
+    || typeof wasm.AMODE_ptr_case_r_dtr !== 'function'
+    || typeof wasm.AMODE_ptr_un_r_unitl !== 'function'
+    || typeof wasm.AMODE_ptr_mass_r_amass !== 'function'
+    || typeof wasm.AMODE_ptr_mass_r_ainer !== 'function'
+    || typeof wasm.AMODE_ptr_case_z_eval !== 'function'
+    || typeof wasm.AMODE_ptr_case_z_evec !== 'function'
+  ) {
+    return null;
+  }
+  const dims = {
+    iconIv: 35,
+    iconRun: 25,
+    parIp: 30,
+    parRun: 25,
+    jemax: 12,
+    ndmax: 30,
+    neigRun: 25,
+  };
+  const ptr = {
+    icon: wasm.AMODE_ptr_case_i_icon(),
+    nvtot: wasm.AMODE_ptr_case_i_nvtot(),
+    ncontrol: wasm.AMODE_ptr_case_i_ncontrol(),
+    neigen: wasm.AMODE_ptr_case_i_neigen(),
+    parval: wasm.AMODE_ptr_case_r_parval(),
+    vinf: wasm.AMODE_ptr_case_r_vinf(),
+    wrot: wasm.AMODE_ptr_case_r_wrot(),
+    cftot: wasm.AMODE_ptr_case_r_cftot(),
+    cmtot: wasm.AMODE_ptr_case_r_cmtot(),
+    cftotU: wasm.AMODE_ptr_case_r_cftot_u(),
+    cmtotU: wasm.AMODE_ptr_case_r_cmtot_u(),
+    cftotD: wasm.AMODE_ptr_case_r_cftot_d(),
+    cmtotD: wasm.AMODE_ptr_case_r_cmtot_d(),
+    sref: wasm.AMODE_ptr_case_r_sref(),
+    cref: wasm.AMODE_ptr_case_r_cref(),
+    bref: wasm.AMODE_ptr_case_r_bref(),
+    dtr: wasm.AMODE_ptr_case_r_dtr(),
+    unitl: wasm.AMODE_ptr_un_r_unitl(),
+    amass: wasm.AMODE_ptr_mass_r_amass(),
+    ainer: wasm.AMODE_ptr_mass_r_ainer(),
+    eval: wasm.AMODE_ptr_case_z_eval(),
+    evec: wasm.AMODE_ptr_case_z_evec(),
+  };
+  const heapBase = Number(wasm.__heap_base?.value ?? wasm.__heap_base ?? 65536);
+  let arenaTop = (heapBase + 7) & ~7;
+  function ensureMemoryBytes(requiredBytes) {
+    const pageSize = 64 * 1024;
+    const have = wasm.memory.buffer.byteLength;
+    if (have >= requiredBytes) return;
+    const pages = Math.ceil((requiredBytes - have) / pageSize);
+    if (pages > 0) wasm.memory.grow(pages);
+  }
+  function alloc(bytes, align = 8) {
+    const aligned = (arenaTop + (align - 1)) & ~(align - 1);
+    const end = aligned + bytes;
+    ensureMemoryBytes(end);
+    arenaTop = end;
+    return aligned;
+  }
+  const asysLen = dims.jemax * dims.jemax;
+  const bsysLen = dims.jemax * dims.ndmax;
+  const rsysLen = dims.jemax;
+  amodeNativeCtx = {
+    wasm,
+    dims,
+    ptr,
+    asysLen,
+    bsysLen,
+    rsysLen,
+    asysPtr: alloc(asysLen * Float64Array.BYTES_PER_ELEMENT, 8),
+    bsysPtr: alloc(bsysLen * Float64Array.BYTES_PER_ELEMENT, 8),
+    rsysPtr: alloc(rsysLen * Float64Array.BYTES_PER_ELEMENT, 8),
+  };
+  return amodeNativeCtx;
+}
+
+function syncAmodeNativeState(ctx, state) {
+  const { wasm, dims, ptr } = ctx;
+  const mem = wasm.memory.buffer;
+  new Int32Array(mem, ptr.nvtot, 1)[0] = state.NVTOT | 0;
+  new Int32Array(mem, ptr.ncontrol, 1)[0] = state.NCONTROL | 0;
+
+  {
+    const out = new Int32Array(mem, ptr.icon, dims.iconIv * dims.iconRun);
+    out.fill(0);
+    const src = state.ICON;
+    if (src && src.length) {
+      const ivmax = state.IVMAX || dims.iconIv;
+      const nrun = Math.min(dims.iconRun, Math.floor((src.length - 1) / Math.max(1, ivmax)));
+      const nvtot = Math.min(dims.iconIv, state.NVTOT || 0);
+      for (let run = 1; run <= nrun; run += 1) {
+        for (let iv = 1; iv <= nvtot; iv += 1) {
+          out[(iv - 1) + dims.iconIv * (run - 1)] = src[idx2(iv, run, ivmax)] | 0;
+        }
+      }
+    }
+  }
+
+  {
+    const out = new Float32Array(mem, ptr.parval, dims.parIp * dims.parRun);
+    out.fill(0);
+    const src = state.PARVAL;
+    if (src && src.length) {
+      const iptot = state.IPTOT || dims.parIp;
+      const nrun = Math.min(dims.parRun, Math.floor((src.length - 1) / Math.max(1, iptot)));
+      const nip = Math.min(dims.parIp, iptot);
+      for (let run = 1; run <= nrun; run += 1) {
+        for (let ip = 1; ip <= nip; ip += 1) {
+          out[(ip - 1) + dims.parIp * (run - 1)] = Math.fround(src[idx2(ip, run, iptot)] || 0);
+        }
+      }
+    }
+  }
+
+  const copyF32 = (dstPtr, src, len) => {
+    const out = new Float32Array(mem, dstPtr, len);
+    out.fill(0);
+    if (!src) return;
+    const n = Math.min(len, src.length);
+    for (let i = 0; i < n; i += 1) out[i] = Math.fround(src[i] || 0);
+  };
+  copyF32(ptr.vinf, state.VINF, 3);
+  copyF32(ptr.wrot, state.WROT, 3);
+  copyF32(ptr.cftot, state.CFTOT, 3);
+  copyF32(ptr.cmtot, state.CMTOT, 3);
+  copyF32(ptr.cftotU, state.CFTOT_U, 18);
+  copyF32(ptr.cmtotU, state.CMTOT_U, 18);
+  copyF32(ptr.cftotD, state.CFTOT_D, 90);
+  copyF32(ptr.cmtotD, state.CMTOT_D, 90);
+  copyF32(ptr.amass, state.AMASS, 9);
+  copyF32(ptr.ainer, state.AINER, 9);
+  new Float32Array(mem, ptr.sref, 1)[0] = Math.fround(state.SREF || 0);
+  new Float32Array(mem, ptr.cref, 1)[0] = Math.fround(state.CREF || 0);
+  new Float32Array(mem, ptr.bref, 1)[0] = Math.fround(state.BREF || 0);
+  new Float32Array(mem, ptr.dtr, 1)[0] = Math.fround(state.DTR || 0);
+  new Float32Array(mem, ptr.unitl, 1)[0] = Math.fround(state.UNITL || 0);
+}
+
+function runAmodeNativeEigen(wasm, state, ir, etol) {
+  const ctx = getAmodeNativeCtx(wasm);
+  if (!ctx) return null;
+  syncAmodeNativeState(ctx, state);
+  const ok = wasm.AMODE_runchk(ir | 0) !== 0;
+  if (!ok) {
+    return {
+      sysRes: { NSYS: 0, LTERR: true },
+      eigRes: { KEIG: 0, EVAL: [], EVEC: [], IERR: 0 },
+    };
+  }
+  const nsys = wasm.AMODE_sysmat(ir | 0, ctx.asysPtr, ctx.bsysPtr, ctx.rsysPtr) | 0;
+  const sysRes = { NSYS: nsys, LTERR: nsys <= 0 };
+  if (nsys <= 0) {
+    return { sysRes, eigRes: { KEIG: 0, EVAL: [], EVEC: [], IERR: 0 } };
+  }
+  const ierr = wasm.AMODE_eigsol(ir | 0, Math.fround(etol || 0), ctx.asysPtr, nsys) | 0;
+  const mem = wasm.memory.buffer;
+  const neigen = new Int32Array(mem, ctx.ptr.neigen, ctx.dims.neigRun);
+  const keig = Math.max(0, neigen[(ir | 0) - 1] | 0);
+  const evalRaw = new Float32Array(mem, ctx.ptr.eval, ctx.dims.jemax * ctx.dims.neigRun * 2);
+  const evecRaw = new Float32Array(mem, ctx.ptr.evec, ctx.dims.jemax * ctx.dims.jemax * ctx.dims.neigRun * 2);
+  const EVAL = [];
+  const EVEC = [];
+  for (let k = 1; k <= keig; k += 1) {
+    const evalBase = ((k - 1) + ctx.dims.jemax * ((ir | 0) - 1)) * 2;
+    EVAL.push({ re: Number(evalRaw[evalBase] || 0), im: Number(evalRaw[evalBase + 1] || 0) });
+    const vr = new Float32Array(nsys);
+    const vi = new Float32Array(nsys);
+    for (let i = 1; i <= nsys; i += 1) {
+      const evecBase = ((i - 1) + ctx.dims.jemax * ((k - 1) + ctx.dims.jemax * ((ir | 0) - 1))) * 2;
+      vr[i - 1] = Math.fround(evecRaw[evecBase] || 0);
+      vi[i - 1] = Math.fround(evecRaw[evecBase + 1] || 0);
+    }
+    EVEC.push({ re: vr, im: vi });
+  }
+  return { sysRes, eigRes: { KEIG: keig, EVAL, EVEC, IERR: ierr } };
 }
 
 function normalizeEigenVec(vr, vi, nsys) {
@@ -118,12 +337,20 @@ async function computeEigenmodes(state, useWasm) {
   let eigRes = null;
   if (useWasm) {
     const wasm = await loadAmodeWasm();
-    amodeWasmState = state;
-    wasm.SYSMAT(IR);
-    sysRes = amodeWasmLast;
-    const nsys = sysRes?.NSYS || 0;
-    wasm.EIGSOL(IR, ETOL, nsys);
-    eigRes = amodeWasmLast;
+    const nativeEigen = runAmodeNativeEigen(wasm, state, IR, ETOL);
+    if (nativeEigen) {
+      sysRes = nativeEigen.sysRes;
+      eigRes = nativeEigen.eigRes;
+      if (sysRes?.LTERR || (sysRes?.NSYS || 0) <= 0) {
+        log(`RUNCHK/SYSMAT failed for run ${IR}; eigenmodes unavailable`);
+        return { nsys: 0, modes: [] };
+      }
+    } else {
+      log('Native AMODE exports missing; falling back to JS eigenmode path');
+      const { ASYS, BSYS, RSYS } = state.__amode;
+      sysRes = SYSMAT(state, IR, ASYS, BSYS, RSYS);
+      eigRes = EIGSOL(state, IR, ETOL, ASYS, sysRes?.NSYS || 0);
+    }
   } else {
     const { ASYS, BSYS, RSYS } = state.__amode;
     sysRes = SYSMAT(state, IR, ASYS, BSYS, RSYS);
@@ -221,14 +448,26 @@ onmessage = async (evt) => {
     } catch (err) {
       log(`EXEC precheck failed: ${err?.message ?? err}`);
     }
-    // Keep EXEC on JS kernels for now; wasm EXEC path currently fails drag parity for plane.run.
-    // `useWasm` is still honored for eigenmode solve below.
-    state.USE_WASM_SOLVE = false;
-    state.USE_WASM_GAM = false;
-    state.USE_WASM_AERO = false;
-    state.USE_WASM_AIC = false;
-    state.USE_WASM_LU = false;
-    EXEC(state, 20, 0, 1);
+    // Honor the UI toggle for all wasm-enabled EXEC kernels.
+    state.USE_WASM_SOLVE = Boolean(useWasm);
+    state.USE_WASM_GAM = Boolean(useWasm);
+    state.USE_WASM_AERO = Boolean(useWasm);
+    state.USE_WASM_AIC = Boolean(useWasm);
+    state.USE_WASM_LU = Boolean(useWasm);
+    if (useWasm) {
+      try {
+        const execFn = await loadExecWasm();
+        execWasmState = state;
+        execFn(20, 0, 1, 0);
+        execWasmState = null;
+      } catch (err) {
+        execWasmState = null;
+        log(`EXEC wasm bridge failed: ${err?.message ?? err}; falling back to JS EXEC`);
+        EXEC(state, 20, 0, 1);
+      }
+    } else {
+      EXEC(state, 20, 0, 1);
+    }
     const dt = Date.now() - t0;
     log(`Worker EXEC done (${dt} ms)`);
     log(`EXEC state: ALFA=${state.ALFA} BETA=${state.BETA} MACH=${state.MACH}`);
@@ -370,6 +609,11 @@ onmessage = async (evt) => {
       WROT: state.WROT,
       DELCON: state.DELCON,
       SPANEF: state.SPANEF,
+      USE_WASM_SOLVE: Boolean(state.USE_WASM_SOLVE),
+      USE_WASM_GAM: Boolean(state.USE_WASM_GAM),
+      USE_WASM_AERO: Boolean(state.USE_WASM_AERO),
+      USE_WASM_AIC: Boolean(state.USE_WASM_AIC),
+      USE_WASM_LU: Boolean(state.USE_WASM_LU),
       TREFFTZ: trefftz,
       EIGEN: eigen,
     });

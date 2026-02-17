@@ -302,6 +302,54 @@ test('amode.f WASM port matches Fortran reference', async () => {
   assertCloseArray(actualAppRsys, appRsysNums, 1e-3);
 });
 
+test('amode wasm binary exposes native AMODE bridge exports', () => {
+  const wasmPath = path.join(repoRoot, 'js', 'dist', 'amode.wasm');
+  assert.ok(fs.existsSync(wasmPath), `wasm binary not found: ${wasmPath}`);
+  const wasmBytes = fs.readFileSync(wasmPath);
+  const module = new WebAssembly.Module(wasmBytes);
+  const imports = WebAssembly.Module.imports(module);
+  const exports = WebAssembly.Module.exports(module);
+
+  const importNames = new Set(imports.filter((imp) => imp.module === 'env').map((imp) => imp.name));
+  assert.equal(importNames.has('sysmat_js'), false, 'amode.wasm should not import env.sysmat_js');
+  assert.equal(importNames.has('appmat_js'), false, 'amode.wasm should not import env.appmat_js');
+  assert.equal(importNames.has('eigsol_js'), false, 'amode.wasm should not import env.eigsol_js');
+  assert.equal(importNames.has('runchk_js'), false, 'amode.wasm should not import env.runchk_js');
+  assert.equal(importNames.has('syssho_js'), false, 'amode.wasm should not import env.syssho_js');
+
+  const exportNames = new Set(exports.map((exp) => exp.name));
+  assert.equal(exportNames.has('AMODE_runchk'), true, 'native bridge should export AMODE_runchk');
+  assert.equal(exportNames.has('AMODE_sysmat'), true, 'native bridge should export AMODE_sysmat');
+  assert.equal(exportNames.has('AMODE_appmat'), true, 'native bridge should export AMODE_appmat');
+  assert.equal(exportNames.has('AMODE_eigsol'), true, 'native bridge should export AMODE_eigsol');
+  assert.equal(exportNames.has('RUNCHK_NATIVE'), false, 'legacy RUNCHK trampoline export should be absent');
+  assert.equal(exportNames.has('SYSMAT_PRECHECK'), false, 'legacy SYSMAT precheck export should be absent');
+  assert.equal(exportNames.has('APPMAT_PRECHECK'), false, 'legacy APPMAT precheck export should be absent');
+  assert.equal(exportNames.has('EIGSOL_PRECHECK'), false, 'legacy EIGSOL precheck export should be absent');
+});
+
+test('amode wasm SYSMAT/APPMAT should reject invalid mass state', async () => {
+  const wasm = await loadAmodeWasm();
+  const state = makeState();
+  state.PARVAL[idx2(state.IPMASS, 1, state.IPTOT)] = 0.0;
+
+  const sys = wasm.SYSMAT_wasm(state, 1);
+  assert.equal(sys?.LTERR, true, 'SYSMAT should fail precheck when mass<=0');
+  assert.equal(sys?.NSYS, 0, 'invalid SYSMAT should return NSYS=0');
+
+  const app = wasm.APPMAT_wasm(state, 1);
+  assert.equal(app?.LTERR, true, 'APPMAT should fail precheck when mass<=0');
+  assert.equal(app?.NSYS, 0, 'invalid APPMAT should return NSYS=0');
+});
+
+test('amode wasm EIGSOL should return empty result when NSYS<=0', async () => {
+  const wasm = await loadAmodeWasm();
+  const state = makeState();
+  const out = wasm.EIGSOL_wasm(state, 1, 1.0e-5, null, 0);
+  assert.equal(out?.KEIG, 0, 'invalid EIGSOL should return KEIG=0');
+  assert.equal(out?.IERR, 0, 'invalid EIGSOL precheck path should return IERR=0');
+});
+
 test('amode EIGSOL JS/WASM match Fortran eigenvalue reference', async () => {
   const refBin = path.join(refDir, 'amode_eig_ref');
   if (!fs.existsSync(refBin)) {

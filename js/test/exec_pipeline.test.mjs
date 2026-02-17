@@ -29,6 +29,40 @@ test('parseAVL loads b737 surfaces', async () => {
   assert.ok(wing.sections.length > 0, 'expected wing sections');
 });
 
+test('parseAVL ignores inline ! comments on numeric lines (circle.avl spacing)', async () => {
+  const text = await readRunFile('circle.avl');
+  const model = parseAVL(text);
+  const wing = model.surfaces[0];
+  assert.ok(wing, 'expected first surface');
+  assert.equal(wing.nSpan, 0, 'inline ! comment should not contribute numeric tokens');
+  assert.equal(wing.sections.length, 13, 'expected all circle sections');
+});
+
+test('parseAVL ignores inline # comments on numeric lines', () => {
+  const text = [
+    'Inline Hash Test',
+    '0.0',
+    '0 0 0',
+    '1 1 1',
+    '0 0 0',
+    'SURFACE',
+    'Wing',
+    '2 1.0 # 9 0.0',
+    'SECTION',
+    '0 0 0 1 0 # keep only section fields',
+    'SECTION',
+    '0 1 0 1 0',
+  ].join('\n');
+  const model = parseAVL(text);
+  const wing = model.surfaces[0];
+  assert.ok(wing, 'expected surface');
+  assert.equal(wing.nChord, 2);
+  assert.equal(wing.sSpace, 1);
+  assert.equal(wing.nSpan, 0, 'inline # comment should not contribute numeric tokens');
+  assert.equal(wing.sections.length, 2);
+  assert.equal(wing.sections[0].ainc, 0);
+});
+
 test('applyZSymmetry mirrors sections about zsym plane', async () => {
   const text = [
     'Z Sym Test',
