@@ -606,7 +606,7 @@ export function buildExecState(model, options = {}) {
     SRCORE: Math.fround(1.0),
     SAXFR: Math.fround(0.25),
 
-    LNASA_SA: false,
+    LNASA_SA: true,
     LSA_RATES: false,
     LAIC: false,
     LSRD: false,
@@ -694,9 +694,9 @@ export function buildExecState(model, options = {}) {
     LVALBE: new Uint8Array(NVMAX + 1),
 
     DCONTROL: new Float32Array((NVMAX + 1) * (NDMAX + 1)),
-    VHINGE: new Float32Array(4 * (NVMAX + 1) * (NDMAX + 1)),
-    VREFL: new Float32Array((NVMAX + 1) * (NDMAX + 1)),
-    PHINGE: new Float32Array(4 * (NVMAX + 1) * (NDMAX + 1)),
+    VHINGE: new Float32Array(4 * (NSTRMAX + 1) * (NDMAX + 1)),
+    VREFL: new Float32Array((NSTRMAX + 1) * (NDMAX + 1)),
+    PHINGE: new Float32Array(4 * (NSTRMAX + 1) * (NDMAX + 1)),
 
     ENC: new Float32Array(4 * (NVMAX + 1)),
     ENV: new Float32Array(4 * (NVMAX + 1)),
@@ -852,7 +852,7 @@ export function buildExecState(model, options = {}) {
     CM_LSRF: new Float32Array(3 * (NSURF + 1)),
     CF_LSRF: new Float32Array(3 * (NSURF + 1)),
 
-    CHINGE: new Float32Array((NDMAX + 1) * (NSTRMAX + 1)),
+    CHINGE: new Float32Array(NDMAX + 1),
     CHINGE_U: new Float32Array((NDMAX + 1) * (NUMAX + 1)),
     CHINGE_D: new Float32Array((NDMAX + 1) * (NDMAX + 1)),
     CHINGE_G: new Float32Array((NDMAX + 1) * (NGMAX + 1)),

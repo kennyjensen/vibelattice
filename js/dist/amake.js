@@ -389,18 +389,18 @@ export function MAKESURF(state, isurf, surf) {
               vsq = f32(vhx * vhx + vhy * vhy + vhz * vhz);
             }
             const vmod = f32(Math.sqrt(vsq));
-            VHINGE[idx3(1, i, n, 4, state.NVMAX + 1)] = f32(vhx / vmod);
-            VHINGE[idx3(2, i, n, 4, state.NVMAX + 1)] = f32(vhy / vmod);
-            VHINGE[idx3(3, i, n, 4, state.NVMAX + 1)] = f32(vhz / vmod);
-            VREFL[idx2(i, n, state.NVMAX + 1)] = f32(REFLD[isec - 1][icl - 1]);
+            VHINGE[idx3(1, j, n, 4, state.NSTRMAX + 1)] = f32(vhx / vmod);
+            VHINGE[idx3(2, j, n, 4, state.NSTRMAX + 1)] = f32(vhy / vmod);
+            VHINGE[idx3(3, j, n, 4, state.NSTRMAX + 1)] = f32(vhz / vmod);
+            VREFL[idx2(j, n, state.NSTRMAX + 1)] = f32(REFLD[isec - 1][icl - 1]);
             if (xhd >= 0.0) {
-              PHINGE[idx3(1, i, n, 4, state.NVMAX + 1)] = f32(RLE[idx2(1, j, 4)] + xhd);
-              PHINGE[idx3(2, i, n, 4, state.NVMAX + 1)] = RLE[idx2(2, j, 4)];
-              PHINGE[idx3(3, i, n, 4, state.NVMAX + 1)] = RLE[idx2(3, j, 4)];
+              PHINGE[idx3(1, j, n, 4, state.NSTRMAX + 1)] = f32(RLE[idx2(1, j, 4)] + xhd);
+              PHINGE[idx3(2, j, n, 4, state.NSTRMAX + 1)] = RLE[idx2(2, j, 4)];
+              PHINGE[idx3(3, j, n, 4, state.NSTRMAX + 1)] = RLE[idx2(3, j, 4)];
             } else {
-              PHINGE[idx3(1, i, n, 4, state.NVMAX + 1)] = f32(RLE[idx2(1, j, 4)] - xhd);
-              PHINGE[idx3(2, i, n, 4, state.NVMAX + 1)] = RLE[idx2(2, j, 4)];
-              PHINGE[idx3(3, i, n, 4, state.NVMAX + 1)] = RLE[idx2(3, j, 4)];
+              PHINGE[idx3(1, j, n, 4, state.NSTRMAX + 1)] = f32(RLE[idx2(1, j, 4)] - xhd);
+              PHINGE[idx3(2, j, n, 4, state.NSTRMAX + 1)] = RLE[idx2(2, j, 4)];
+              PHINGE[idx3(3, j, n, 4, state.NSTRMAX + 1)] = RLE[idx2(3, j, 4)];
             }
           }
           const fracle = f32((xled / chordC - XPT[ivc]) / dxoc);
@@ -512,21 +512,21 @@ export function SDUPL(state, baseSurf, ydup, newSurf) {
       state.LVNC[iii] = state.LVNC[ii];
 
       for (let n = 1; n <= state.NCONTROL; n += 1) {
-        const rsgn = state.VREFL[idx2(ii, n, state.NVMAX + 1)];
+        const rsgn = state.VREFL[idx2(jj, n, state.NSTRMAX + 1)];
         state.DCONTROL[idx2(iii, n, state.NVMAX + 1)] = f32(
           -state.DCONTROL[idx2(ii, n, state.NVMAX + 1)] * rsgn,
         );
-        state.VREFL[idx2(iii, n, state.NVMAX + 1)] = state.VREFL[idx2(ii, n, state.NVMAX + 1)];
-        state.VHINGE[idx3(1, iii, n, 4, state.NVMAX + 1)] = state.VHINGE[idx3(1, ii, n, 4, state.NVMAX + 1)];
-        state.VHINGE[idx3(2, iii, n, 4, state.NVMAX + 1)] = f32(
-          -state.VHINGE[idx3(2, ii, n, 4, state.NVMAX + 1)],
+        state.VREFL[idx2(jji, n, state.NSTRMAX + 1)] = state.VREFL[idx2(jj, n, state.NSTRMAX + 1)];
+        state.VHINGE[idx3(1, jji, n, 4, state.NSTRMAX + 1)] = state.VHINGE[idx3(1, jj, n, 4, state.NSTRMAX + 1)];
+        state.VHINGE[idx3(2, jji, n, 4, state.NSTRMAX + 1)] = f32(
+          -state.VHINGE[idx3(2, jj, n, 4, state.NSTRMAX + 1)],
         );
-        state.VHINGE[idx3(3, iii, n, 4, state.NVMAX + 1)] = state.VHINGE[idx3(3, ii, n, 4, state.NVMAX + 1)];
-        state.PHINGE[idx3(1, iii, n, 4, state.NVMAX + 1)] = state.PHINGE[idx3(1, ii, n, 4, state.NVMAX + 1)];
-        state.PHINGE[idx3(2, iii, n, 4, state.NVMAX + 1)] = f32(
-          -state.PHINGE[idx3(2, ii, n, 4, state.NVMAX + 1)] + yoff,
+        state.VHINGE[idx3(3, jji, n, 4, state.NSTRMAX + 1)] = state.VHINGE[idx3(3, jj, n, 4, state.NSTRMAX + 1)];
+        state.PHINGE[idx3(1, jji, n, 4, state.NSTRMAX + 1)] = state.PHINGE[idx3(1, jj, n, 4, state.NSTRMAX + 1)];
+        state.PHINGE[idx3(2, jji, n, 4, state.NSTRMAX + 1)] = f32(
+          -state.PHINGE[idx3(2, jj, n, 4, state.NSTRMAX + 1)] + yoff,
         );
-        state.PHINGE[idx3(3, iii, n, 4, state.NVMAX + 1)] = state.PHINGE[idx3(3, ii, n, 4, state.NVMAX + 1)];
+        state.PHINGE[idx3(3, jji, n, 4, state.NSTRMAX + 1)] = state.PHINGE[idx3(3, jj, n, 4, state.NSTRMAX + 1)];
       }
     }
   }
@@ -690,9 +690,9 @@ export function ENCALC(state) {
         const sind = f32(Math.sin(angd));
 
         const vhinge = [
-          VHINGE[idx3(1, iv, n, 4, dimN)],
-          VHINGE[idx3(2, iv, n, 4, dimN)],
-          VHINGE[idx3(3, iv, n, 4, dimN)],
+          VHINGE[idx3(1, j, n, 4, state.NSTRMAX + 1)],
+          VHINGE[idx3(2, j, n, 4, state.NSTRMAX + 1)],
+          VHINGE[idx3(3, j, n, 4, state.NSTRMAX + 1)],
         ];
 
         let end = dot3([ENC[idx2(1, iv, 4)], ENC[idx2(2, iv, 4)], ENC[idx2(3, iv, 4)]], vhinge);

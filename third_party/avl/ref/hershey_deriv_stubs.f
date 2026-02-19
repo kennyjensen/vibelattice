@@ -1,0 +1,47 @@
+      SUBROUTINE TRMSET
+      RETURN
+      END
+
+      SUBROUTINE RUNGET
+      RETURN
+      END
+
+      SUBROUTINE LOWRIT
+      RETURN
+      END
+
+      SUBROUTINE CLRZOOM
+      RETURN
+      END
+
+      SUBROUTINE PARMOD
+      RETURN
+      END
+
+      SUBROUTINE PLEND
+      RETURN
+      END
+
+      SUBROUTINE PLOTVL
+      RETURN
+      END
+
+      SUBROUTINE PLOTTP
+      RETURN
+      END
+
+      SUBROUTINE OBOPER
+      RETURN
+      END
+
+      SUBROUTINE RUNSAV
+      RETURN
+      END
+
+      SUBROUTINE OUTVM
+      RETURN
+      END
+
+      SUBROUTINE CPOML
+      RETURN
+      END

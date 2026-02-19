@@ -80,6 +80,9 @@ C---- Run case parameters (match JS test values)
 
       CALL EXEC(NITER,0,IR)
 
+      WRITE(*,'(A,1X,2(ES23.15E3))') 'DERIV',
+     &  CLTOT_U(5), CLTOT_D(1)
+
       WRITE(*,'(A,1X,3(ES23.15E3))') 'GAMU0_1', GAM_U_0(1,1),
      &  GAM_U_0(1,2), GAM_U_0(1,3)
       WRITE(*,'(A,1X,3(ES23.15E3))') 'AICN1',

@@ -587,10 +587,10 @@ registerPackLayout(
 registerPackLayout(
   ['PHINGE', 'VHINGE'],
   {
-    kind: 'vec3_2d_stride3',
+    kind: 'vec3_2d_stride4',
     rows: dimStrip,
     cols: dimCtrl,
-    rowStride: (state) => dimStrip(state) + 1,
+    rowStride: (state) => Number(state?.NSTRMAX || dimStrip(state)) + 1,
     rowOffset: 1,
     colOffset: 1,
   },

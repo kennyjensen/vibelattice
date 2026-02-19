@@ -209,6 +209,7 @@ let trefftzBusyHideTimer = null;
 let trimRequestId = 0;
 let execRequestId = 0;
 let autoTrimTimer = null;
+let suspendAutoTrim = false;
 let lastTrimState = null;
 let loadingGroup = null;
 let outputFontFitRaf = 0;
@@ -1931,20 +1932,88 @@ function renderStabilityGrid(result) {
     return;
   }
 
-  const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-  const dA = (arr, add = 0) => dot3(arr, vinfA) + add;
+  const dir = (typeof result?.LNASA_SA === 'boolean')
+    ? (result.LNASA_SA ? -1.0 : 1.0)
+    : -1.0;
+  const ca = Math.cos(Number(result?.ALFA ?? 0.0));
+  const sa = Math.sin(Number(result?.ALFA ?? 0.0));
+  const w0 = Number(result?.WROT?.[0] ?? 0.0);
+  const w2 = Number(result?.WROT?.[2] ?? 0.0);
+  const rx = (w0 * ca + w2 * sa) * dir;
+  const rz = (w2 * ca - w0 * sa) * dir;
+  const wrotRx = [ca * dir, 0.0, sa * dir];
+  const wrotRz = [-sa * dir, 0.0, ca * dir];
+  const wrotA = [-rx * sa - rz * ca, 0.0, -rz * sa + rx * ca];
+  const dot3 = (a, b) => Number(a[0] || 0) * b[0] + Number(a[1] || 0) * b[1] + Number(a[2] || 0) * b[2];
+  const dA = (arr, add = 0) => (
+    Number(arr[0] || 0) * Number(vinfA[0] || 0)
+    + Number(arr[1] || 0) * Number(vinfA[1] || 0)
+    + Number(arr[2] || 0) * Number(vinfA[2] || 0)
+    + Number(arr[3] || 0) * wrotA[0]
+    + Number(arr[4] || 0) * wrotA[1]
+    + Number(arr[5] || 0) * wrotA[2]
+    + add
+  );
   const dB = (arr) => dot3(arr, vinfB);
+  const dRX = (arr) => Number(arr[3] || 0) * wrotRx[0] + Number(arr[5] || 0) * wrotRx[2];
+  const dRY = (arr) => Number(arr[4] || 0);
+  const dRZ = (arr) => Number(arr[5] || 0) * wrotRz[2] + Number(arr[3] || 0) * wrotRz[0];
   const clxU = cmU[0] || [];
   const cmyU = cmU[1] || [];
   const cnzU = cmU[2] || [];
+  const crsaxU = Array.from({ length: 6 }, (_, k) => Number(clxU[k] || 0) * ca + Number(cnzU[k] || 0) * sa);
+  const cmsaxU = Array.from({ length: 6 }, (_, k) => Number(cmyU[k] || 0));
+  const cnsaxU = Array.from({ length: 6 }, (_, k) => Number(cnzU[k] || 0) * ca - Number(clxU[k] || 0) * sa);
+  const crsaxA = -Number(result?.CMTOT?.[0] ?? 0.0) * sa + Number(result?.CMTOT?.[2] ?? 0.0) * ca;
+  const cnsaxA = -Number(result?.CMTOT?.[2] ?? 0.0) * sa - Number(result?.CMTOT?.[0] ?? 0.0) * ca;
+  const bref = Number.isFinite(result?.BREF) ? Number(result.BREF) : Number(uiState.modelHeader?.bref);
+  const cref = Number.isFinite(result?.CREF) ? Number(result.CREF) : Number(uiState.modelHeader?.cref);
+  const rateScaleP = Number.isFinite(bref) && Math.abs(bref) > 1e-12 ? (2.0 / bref) : 0.0;
+  const rateScaleQ = Number.isFinite(cref) && Math.abs(cref) > 1e-12 ? (2.0 / cref) : 0.0;
+  const rateScaleR = rateScaleP;
 
   const rows = [];
   rows.push(['', 'CL', 'CY', 'Cl', 'Cm', 'Cn']);
-  rows.push(['α', dA(clU, result?.CLTOT_A ?? 0), dA(cyU, 0), dA(clxU, 0), dA(cmyU, 0), dA(cnzU, 0)]);
-  rows.push(['β', dB(clU), dB(cyU), dB(clxU), dB(cmyU), dB(cnzU)]);
-  rows.push(['p', clU[3] ?? 0, cyU[3] ?? 0, clxU[3] ?? 0, cmyU[3] ?? 0, cnzU[3] ?? 0]);
-  rows.push(['q', clU[4] ?? 0, cyU[4] ?? 0, clxU[4] ?? 0, cmyU[4] ?? 0, cnzU[4] ?? 0]);
-  rows.push(['r', clU[5] ?? 0, cyU[5] ?? 0, clxU[5] ?? 0, cmyU[5] ?? 0, cnzU[5] ?? 0]);
+  rows.push([
+    'α',
+    dA(clU, result?.CLTOT_A ?? 0),
+    dA(cyU, 0),
+    dir * dA(crsaxU, crsaxA),
+    dA(cmsaxU, 0),
+    dir * dA(cnsaxU, cnsaxA),
+  ]);
+  rows.push([
+    'β',
+    dB(clU),
+    dB(cyU),
+    dir * dB(crsaxU),
+    dB(cmsaxU),
+    dir * dB(cnsaxU),
+  ]);
+  rows.push([
+    'p',
+    dRX(clU) * rateScaleP,
+    dRX(cyU) * rateScaleP,
+    dir * dRX(crsaxU) * rateScaleP,
+    dRX(cmsaxU) * rateScaleP,
+    dir * dRX(cnsaxU) * rateScaleP,
+  ]);
+  rows.push([
+    'q',
+    dRY(clU) * rateScaleQ,
+    dRY(cyU) * rateScaleQ,
+    dir * dRY(crsaxU) * rateScaleQ,
+    dRY(cmsaxU) * rateScaleQ,
+    dir * dRY(cnsaxU) * rateScaleQ,
+  ]);
+  rows.push([
+    'r',
+    dRZ(clU) * rateScaleR,
+    dRZ(cyU) * rateScaleR,
+    dir * dRZ(crsaxU) * rateScaleR,
+    dRZ(cmsaxU) * rateScaleR,
+    dir * dRZ(cnsaxU) * rateScaleR,
+  ]);
 
   const nControl = uiState.modelCache?.controlMap?.size
     || Math.max((clD?.length ?? 1) - 1, (cyD?.length ?? 1) - 1, ((cmD?.[0]?.length ?? 1) - 1));
@@ -1952,13 +2021,19 @@ function renderStabilityGrid(result) {
   const momentY = cmD?.[1] || [];
   const momentZ = cmD?.[2] || [];
   for (let i = 1; i <= nControl; i += 1) {
+    const dIdx = i - 1;
+    const cmxD = Number(momentX[dIdx] || 0);
+    const cmyD = Number(momentY[dIdx] || 0);
+    const cmzD = Number(momentZ[dIdx] || 0);
+    const crsD = cmxD * ca + cmzD * sa;
+    const cnsD = cmzD * ca - cmxD * sa;
     rows.push([
       `d${i}`,
-      clD?.[i] ?? 0,
-      cyD?.[i] ?? 0,
-      momentX[i] ?? 0,
-      momentY[i] ?? 0,
-      momentZ[i] ?? 0,
+      clD?.[dIdx] ?? 0,
+      cyD?.[dIdx] ?? 0,
+      dir * crsD,
+      cmyD,
+      dir * cnsD,
     ]);
   }
 
@@ -1982,7 +2057,7 @@ function renderStabilityGrid(result) {
 
   if (els.outStabilityNeutral) {
     const cla = dA(clU, result?.CLTOT_A ?? 0);
-    const cma = dA(cmyU, 0);
+    const cma = dA(cmsaxU, 0);
     const xrefRaw = Number.isFinite(result?.XREF) ? Number(result.XREF) : Number(uiState.modelHeader?.xref);
     const crefRaw = Number.isFinite(result?.CREF) ? Number(result.CREF) : Number(uiState.modelHeader?.cref);
     let xnp = Number.NaN;
@@ -2001,17 +2076,11 @@ function renderBodyDerivGrid(result) {
   const cmU = result?.CMTOT_U;
   const cfD = result?.CFTOT_D;
   const cmD = result?.CMTOT_D;
-  const vinfA = result?.VINF_A;
-  const vinfB = result?.VINF_B;
-  if (!cfU || !cmU || !vinfA || !vinfB) {
+  if (!cfU || !cmU) {
     els.outBodyDeriv.textContent = '-';
     scheduleOutputGridFontFit();
     return;
   }
-
-  const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-  const dA = (arr) => dot3(arr, vinfA);
-  const dB = (arr) => dot3(arr, vinfB);
 
   const cxU = cfU[0] || [];
   const cyU = cfU[1] || [];
@@ -2019,14 +2088,47 @@ function renderBodyDerivGrid(result) {
   const clU = cmU[0] || [];
   const cmY = cmU[1] || [];
   const cnU = cmU[2] || [];
+  const bref = Number.isFinite(result?.BREF) ? Number(result.BREF) : Number(uiState.modelHeader?.bref);
+  const cref = Number.isFinite(result?.CREF) ? Number(result.CREF) : Number(uiState.modelHeader?.cref);
+  const rateScaleP = Number.isFinite(bref) && Math.abs(bref) > 1e-12 ? (2.0 / bref) : 0.0;
+  const rateScaleQ = Number.isFinite(cref) && Math.abs(cref) > 1e-12 ? (2.0 / cref) : 0.0;
+  const rateScaleR = rateScaleP;
+  const dir = (typeof result?.LNASA_SA === 'boolean')
+    ? (result.LNASA_SA ? -1.0 : 1.0)
+    : -1.0;
 
   const rows = [];
   rows.push(['', 'CX', 'CY', 'CZ', 'Cl', 'Cm', 'Cn']);
-  rows.push(['α', dA(cxU), dA(cyU), dA(czU), dA(clU), dA(cmY), dA(cnU)]);
-  rows.push(['β', dB(cxU), dB(cyU), dB(czU), dB(clU), dB(cmY), dB(cnU)]);
-  rows.push(['p', cxU[3] ?? 0, cyU[3] ?? 0, czU[3] ?? 0, clU[3] ?? 0, cmY[3] ?? 0, cnU[3] ?? 0]);
-  rows.push(['q', cxU[4] ?? 0, cyU[4] ?? 0, czU[4] ?? 0, clU[4] ?? 0, cmY[4] ?? 0, cnU[4] ?? 0]);
-  rows.push(['r', cxU[5] ?? 0, cyU[5] ?? 0, czU[5] ?? 0, clU[5] ?? 0, cmY[5] ?? 0, cnU[5] ?? 0]);
+  rows.push(['u', -(cxU[0] ?? 0), -(dir * (cyU[0] ?? 0)), -(czU[0] ?? 0), -(clU[0] ?? 0), -(dir * (cmY[0] ?? 0)), -(cnU[0] ?? 0)]);
+  rows.push(['v', -(dir * (cxU[1] ?? 0)), -(cyU[1] ?? 0), -(dir * (czU[1] ?? 0)), -(dir * (clU[1] ?? 0)), -(cmY[1] ?? 0), -(dir * (cnU[1] ?? 0))]);
+  rows.push(['w', -(cxU[2] ?? 0), -(dir * (cyU[2] ?? 0)), -(czU[2] ?? 0), -(clU[2] ?? 0), -(dir * (cmY[2] ?? 0)), -(cnU[2] ?? 0)]);
+  rows.push([
+    'p',
+    (cxU[3] ?? 0) * rateScaleP,
+    dir * (cyU[3] ?? 0) * rateScaleP,
+    (czU[3] ?? 0) * rateScaleP,
+    (clU[3] ?? 0) * rateScaleP,
+    dir * (cmY[3] ?? 0) * rateScaleP,
+    (cnU[3] ?? 0) * rateScaleP,
+  ]);
+  rows.push([
+    'q',
+    dir * (cxU[4] ?? 0) * rateScaleQ,
+    (cyU[4] ?? 0) * rateScaleQ,
+    dir * (czU[4] ?? 0) * rateScaleQ,
+    dir * (clU[4] ?? 0) * rateScaleQ,
+    (cmY[4] ?? 0) * rateScaleQ,
+    dir * (cnU[4] ?? 0) * rateScaleQ,
+  ]);
+  rows.push([
+    'r',
+    (cxU[5] ?? 0) * rateScaleR,
+    dir * (cyU[5] ?? 0) * rateScaleR,
+    (czU[5] ?? 0) * rateScaleR,
+    (clU[5] ?? 0) * rateScaleR,
+    dir * (cmY[5] ?? 0) * rateScaleR,
+    (cnU[5] ?? 0) * rateScaleR,
+  ]);
 
   const nControl = uiState.modelCache?.controlMap?.size
     || Math.max((cfD?.[0]?.length ?? 1) - 1, (cmD?.[0]?.length ?? 1) - 1);
@@ -2037,22 +2139,19 @@ function renderBodyDerivGrid(result) {
   const cmD1 = cmD?.[1] || [];
   const cnD = cmD?.[2] || [];
   for (let i = 1; i <= nControl; i += 1) {
+    const dIdx = i - 1;
     rows.push([
       `d${i}`,
-      cxD[i] ?? 0,
-      cyD[i] ?? 0,
-      czD[i] ?? 0,
-      clD[i] ?? 0,
-      cmD1[i] ?? 0,
-      cnD[i] ?? 0,
+      dir * (cxD[dIdx] ?? 0),
+      cyD[dIdx] ?? 0,
+      dir * (czD[dIdx] ?? 0),
+      dir * (clD[dIdx] ?? 0),
+      cmD1[dIdx] ?? 0,
+      dir * (cnD[dIdx] ?? 0),
     ]);
   }
 
-  const derivSuffix = (rowHead) => {
-    if (rowHead === 'α') return 'a';
-    if (rowHead === 'β') return 'b';
-    return rowHead;
-  };
+  const derivSuffix = (rowHead) => rowHead;
 
   const html = rows.map((row, rIdx) => row.map((cell, cIdx) => {
     if (rIdx === 0 || cIdx === 0) {
@@ -2081,6 +2180,9 @@ function renderSurfaceForcesGrid(result) {
   }
   const model = uiState.modelCache;
   const execNames = Array.isArray(uiState.execSurfaceNames) ? uiState.execSurfaceNames : null;
+  const dir = (typeof result?.LNASA_SA === 'boolean')
+    ? (result.LNASA_SA ? -1.0 : 1.0)
+    : -1.0;
   const rows = [['', 'CL', 'CD', 'CY', 'Cl', 'Cm', 'Cn']];
   for (let i = 1; i < clSurf.length; i += 1) {
     const raw = execNames?.[i - 1] ?? model?.surfaces?.[i - 1]?.name ?? `Surf ${i}`;
@@ -2091,9 +2193,9 @@ function renderSurfaceForcesGrid(result) {
       clSurf[i] ?? 0,
       cdSurf[i] ?? 0,
       cySurf[i] ?? 0,
-      cm[0] ?? 0,
+      dir * (cm[0] ?? 0),
       cm[1] ?? 0,
-      cm[2] ?? 0,
+      dir * (cm[2] ?? 0),
     ]);
   }
 
@@ -4053,8 +4155,8 @@ function applyTrimResults(state) {
   const fac = state.PARVAL[idx2(IPFAC, IR, state.IPTOT)];
   const cl = state.PARVAL[idx2(IPCL, IR, state.IPTOT)];
 
-  if (els.outAlpha) els.outAlpha.textContent = fmtSignedAligned(findVar('alpha'), 2);
-  if (els.outBeta) els.outBeta.textContent = fmtSignedAligned(findVar('beta'), 2);
+  if (els.outAlpha) els.outAlpha.textContent = fmtSignedAligned(findVar('alpha'), 3);
+  if (els.outBeta) els.outBeta.textContent = fmtSignedAligned(findVar('beta'), 3);
   if (els.outBank) els.outBank.textContent = fmt(phi, 2);
   if (els.outCL) els.outCL.textContent = fmtSignedAligned(cl, 5);
   if (els.outV) els.outV.textContent = fmt(vee, 2);
@@ -4104,6 +4206,7 @@ function applyTrimResults(state) {
 els.trimBtn.addEventListener('click', () => applyTrim());
 
 function scheduleAutoTrim() {
+  if (suspendAutoTrim) return;
   if (autoTrimTimer) clearTimeout(autoTrimTimer);
   autoTrimTimer = setTimeout(() => {
     autoTrimTimer = null;
@@ -4695,6 +4798,15 @@ if (typeof window !== 'undefined') {
         CDVTOT: Number(result.CDVTOT),
         machPar: Number.isFinite(machPar) ? machPar : null,
       };
+    },
+    getLastExecResult() {
+      const result = uiState.lastExecResult;
+      if (!result || typeof result !== 'object') return null;
+      return JSON.parse(JSON.stringify(result));
+    },
+    renderHingeForTest(result) {
+      const r = (result && typeof result === 'object') ? result : {};
+      renderHingeGrid(r, r.PARVAL || null);
     },
     getViewerOverlayState() {
       const panelLinePos = panelSpacingGroup?.getObjectByName?.('panel-spacing-lines')?.geometry?.getAttribute?.('position');
@@ -8498,6 +8610,7 @@ function buildExecState(model) {
     NVOR: NVOR,
     NVMAX,
     NSTRIP,
+    NSTRMAX,
     NSURF,
     NCONTROL,
     NDESIGN,
@@ -8529,7 +8642,7 @@ function buildExecState(model) {
     SRCORE: 1.0,
     SAXFR: 0.25,
 
-    LNASA_SA: false,
+    LNASA_SA: true,
     LSA_RATES: false,
     LAIC: false,
     LSRD: false,
@@ -8617,9 +8730,9 @@ function buildExecState(model) {
     LVALBE: new Uint8Array(NVMAX + 1),
 
     DCONTROL: new Float32Array((NVMAX + 1) * (NDMAX + 1)),
-    VHINGE: new Float32Array(4 * (NVMAX + 1) * (NDMAX + 1)),
-    VREFL: new Float32Array((NVMAX + 1) * (NDMAX + 1)),
-    PHINGE: new Float32Array(4 * (NVMAX + 1) * (NDMAX + 1)),
+    VHINGE: new Float32Array(4 * (NSTRMAX + 1) * (NDMAX + 1)),
+    VREFL: new Float32Array((NSTRMAX + 1) * (NDMAX + 1)),
+    PHINGE: new Float32Array(4 * (NSTRMAX + 1) * (NDMAX + 1)),
 
     ENC: new Float32Array(4 * (NVMAX + 1)),
     ENV: new Float32Array(4 * (NVMAX + 1)),
@@ -8774,7 +8887,7 @@ function buildExecState(model) {
     CM_LSRF: new Float32Array(3 * (NSURF + 1)),
     CF_LSRF: new Float32Array(3 * (NSURF + 1)),
 
-    CHINGE: new Float32Array((NDMAX + 1) * (NSTRMAX + 1)),
+    CHINGE: new Float32Array(NDMAX + 1),
     CHINGE_U: new Float32Array((NDMAX + 1) * (NUMAX + 1)),
     CHINGE_D: new Float32Array((NDMAX + 1) * (NDMAX + 1)),
     CHINGE_G: new Float32Array((NDMAX + 1) * (NGMAX + 1)),
@@ -8875,6 +8988,7 @@ function runExecFromText(text) {
   const model = buildSolverModel(resolvedText);
   uiState.execSurfaceNames = buildExecSurfaceNames(model);
   const state = buildExecState(model);
+  state.LNASA_SA = true;
   try {
     const rows = readConstraintRows();
     if (rows.length) {
@@ -8997,6 +9111,7 @@ function runExecFromText(text) {
       WROT: state.WROT,
       DELCON: state.DELCON,
       SPANEF: state.SPANEF,
+      LNASA_SA: state.LNASA_SA,
     });
     execInProgress = false;
     updateTrefftzBusy();
@@ -9060,8 +9175,61 @@ function buildForcesElementLines(result) {
   return lines;
 }
 
+function renderHingeGrid(result, parval = null) {
+  if (!els.outHinge) return;
+  const idx2 = (i, j, dim1) => i + dim1 * j;
+  const IR = 1;
+  const IPVEE = 12;
+  const IPRHO = 13;
+  const rows = [['', 'Chinge', 'Moment']];
+  const rhoPar = parval ? Number(parval[idx2(IPRHO, IR, 30)]) : Number.NaN;
+  const veePar = parval ? Number(parval[idx2(IPVEE, IR, 30)]) : Number.NaN;
+  const qdyn = (Number.isFinite(rhoPar) && Number.isFinite(veePar))
+    ? (0.5 * rhoPar * veePar * veePar)
+    : Number.NaN;
+  const sref = Number(result?.SREF);
+  const cref = Number(result?.CREF);
+  const model = uiState.modelCache;
+  const names = model?.controlMap ? Array.from(model.controlMap.keys()) : [];
+  const chingeValues = Array.isArray(result?.CHINGE) ? result.CHINGE : [];
+  const nRows = Math.max(names.length, Math.max(0, chingeValues.length - 1));
+  for (let i = 1; i <= nRows; i += 1) {
+    const name = names[i - 1] ?? `Ctrl ${i}`;
+    const chinge = Number(chingeValues[i]);
+    const moment = (Number.isFinite(chinge)
+      && Number.isFinite(qdyn)
+      && Number.isFinite(sref)
+      && Number.isFinite(cref))
+      ? (chinge * qdyn * sref * cref)
+      : Number.NaN;
+    rows.push([name, chinge, moment]);
+  }
+  const html = rows.map((row, rIdx) => row.map((cell, cIdx) => {
+    if (rIdx === 0) {
+      const cls = cIdx > 0 ? 'stability-cell stability-head stability-colhead' : 'stability-cell stability-head';
+      return `<div class="${cls}">${escapeHtml(String(cell))}</div>`;
+    }
+    if (cIdx === 0) {
+      return `<div class="stability-cell stability-head">${escapeHtml(String(cell))}</div>`;
+    }
+    if (!Number.isFinite(Number(cell))) {
+      return '<div class="stability-cell stability-val"><strong class="stability-num">-</strong></div>';
+    }
+    return `<div class="stability-cell stability-val"><strong class="stability-num">${fmtSignedFixed(Number(cell), 6)}</strong></div>`;
+  }).join('')).join('');
+  els.outHinge.innerHTML = html;
+}
+
 function applyExecResults(result) {
-  uiState.lastExecResult = result;
+  const normalizedResult = {
+    LNASA_SA: true,
+    ...(result || {}),
+  };
+  uiState.lastExecResult = normalizedResult;
+  result = normalizedResult;
+  const dir = (typeof result?.LNASA_SA === 'boolean')
+    ? (result.LNASA_SA ? -1.0 : 1.0)
+    : -1.0;
   const computedEigenModes = computeEigenModesFromExec(result);
   const activeCaseIdx = activeRunCaseIndex();
   if (activeCaseIdx >= 0 && Array.isArray(uiState.runCases) && uiState.runCases.length) {
@@ -9126,8 +9294,8 @@ function applyExecResults(result) {
   const rad = parval ? parval[idx2(IPRAD, IR, 30)] : null;
   const fac = parval ? parval[idx2(IPFAC, IR, 30)] : null;
 
-  if (Number.isFinite(result.ALFA) && els.outAlpha) els.outAlpha.textContent = fmtSignedAligned(result.ALFA / (Math.PI / 180), 2);
-  if (Number.isFinite(result.BETA) && els.outBeta) els.outBeta.textContent = fmtSignedAligned(result.BETA / (Math.PI / 180), 2);
+  if (Number.isFinite(result.ALFA) && els.outAlpha) els.outAlpha.textContent = fmtSignedAligned(result.ALFA / (Math.PI / 180), 3);
+  if (Number.isFinite(result.BETA) && els.outBeta) els.outBeta.textContent = fmtSignedAligned(result.BETA / (Math.PI / 180), 3);
   if (Number.isFinite(result.CLTOT) && els.outCL) els.outCL.textContent = fmtSignedAligned(result.CLTOT, 5);
   if (Number.isFinite(result.CDTOT) && els.outCD) els.outCD.textContent = fmtSignedAligned(result.CDTOT, 5);
   if (Number.isFinite(vee) && els.outV) els.outV.textContent = fmt(vee, 2);
@@ -9141,19 +9309,19 @@ function applyExecResults(result) {
     els.outMach.textContent = Number.isFinite(mach) ? fmtSignedAligned(mach, 3) : '-';
   }
   if (result.WROT) {
-    if (els.outPb2v) els.outPb2v.textContent = fmtSignedAligned(result.WROT[0], 3);
+    if (els.outPb2v) els.outPb2v.textContent = fmtSignedAligned(dir * result.WROT[0], 3);
     if (els.outQc2v) els.outQc2v.textContent = fmtSignedAligned(result.WROT[1], 3);
-    if (els.outRb2v) els.outRb2v.textContent = fmtSignedAligned(result.WROT[2], 3);
+    if (els.outRb2v) els.outRb2v.textContent = fmtSignedAligned(dir * result.WROT[2], 3);
   }
   if (result.CFTOT) {
-    if (els.outCXtot) els.outCXtot.textContent = fmtSignedAligned(result.CFTOT[0], 5);
+    if (els.outCXtot) els.outCXtot.textContent = fmtSignedAligned(dir * result.CFTOT[0], 5);
     if (els.outCYtot) els.outCYtot.textContent = fmtSignedAligned(result.CFTOT[1], 5);
-    if (els.outCZtot) els.outCZtot.textContent = fmtSignedAligned(result.CFTOT[2], 5);
+    if (els.outCZtot) els.outCZtot.textContent = fmtSignedAligned(dir * result.CFTOT[2], 5);
   }
   if (result.CMTOT) {
-    if (els.outCltot) els.outCltot.textContent = fmtSignedAligned(result.CMTOT[0], 5);
+    if (els.outCltot) els.outCltot.textContent = fmtSignedAligned(dir * result.CMTOT[0], 5);
     if (els.outCmtot) els.outCmtot.textContent = fmtSignedAligned(result.CMTOT[1], 5);
-    if (els.outCntot) els.outCntot.textContent = fmtSignedAligned(result.CMTOT[2], 5);
+    if (els.outCntot) els.outCntot.textContent = fmtSignedAligned(dir * result.CMTOT[2], 5);
   }
   if (Number.isFinite(result.CDVTOT)) {
     if (els.outCDvis) els.outCDvis.textContent = fmtSignedAligned(result.CDVTOT, 5);
@@ -9222,32 +9390,7 @@ function applyExecResults(result) {
         renderLinesChunked(els.outForcesBody, lines, 120);
       }
 
-      if (els.outHinge) {
-        const rows = [['', 'Chinge']];
-        if (result.CHINGE) {
-          const model = uiState.modelCache;
-          const names = model?.controlMap ? Array.from(model.controlMap.keys()) : [];
-          for (let i = 1; i < result.CHINGE.length; i += 1) {
-            const name = names[i - 1] ?? `Ctrl ${i}`;
-            rows.push([name, result.CHINGE[i] ?? 0]);
-          }
-        }
-        if (rows.length === 1) {
-          els.outHinge.textContent = '-';
-        } else {
-          const html = rows.map((row, rIdx) => row.map((cell, cIdx) => {
-            if (rIdx === 0) {
-              const cls = cIdx > 0 ? 'stability-cell stability-head stability-colhead' : 'stability-cell stability-head';
-              return `<div class="${cls}">${escapeHtml(String(cell))}</div>`;
-            }
-            if (cIdx === 0) {
-              return `<div class="stability-cell stability-head">${escapeHtml(String(cell))}</div>`;
-            }
-            return `<div class="stability-cell stability-val"><strong class="stability-num">${fmtSignedFixed(Number(cell), 6)}</strong></div>`;
-          }).join('')).join('');
-          els.outHinge.innerHTML = html;
-        }
-      }
+      renderHingeGrid(result, parval);
     } catch (err) {
       logDebug(`EXEC detail render failed: ${err?.message ?? err}`);
     }
@@ -9340,6 +9483,7 @@ function handleResize() {
 window.addEventListener('resize', handleResize);
 
 async function bootApp() {
+  suspendAutoTrim = true;
   initTopNav();
   initPanelCollapse();
   await initExampleSelect();
@@ -9370,6 +9514,7 @@ async function bootApp() {
   updateTrefftz(Number(els.cl.value));
   drawEigenPlot();
   resetTrimSeed();
+  suspendAutoTrim = false;
   applyTrim({ useSeed: false });
 }
 

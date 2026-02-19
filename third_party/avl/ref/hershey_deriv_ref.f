@@ -1,8 +1,8 @@
-      PROGRAM PLANE_EXEC_REF
+      PROGRAM HERSHEY_DERIV_REF
       USE avl_heap_inc
       INCLUDE 'AVL.INC'
       LOGICAL ERROR
-      INTEGER IR, J, K, N, IS, IOFF, NITER
+      INTEGER IR, NITER, N
       CHARACTER*256 FILAVL
       CHARACTER*32 ARG2
 
@@ -12,7 +12,6 @@
       LUINP = 4
 
       CALL DEFINI
-      LNASA_SA = .FALSE.
       LSA_RATES = .FALSE.
       LVISC = .FALSE.
       LBFORCE = .FALSE.
@@ -21,7 +20,7 @@
 
       CALL GETARG0(1,FILAVL)
       IF(FILAVL .EQ. ' ') THEN
-        FILAVL = 'plane.avl'
+        FILAVL = 'hershey.avl'
       ENDIF
 
       NITER = NITMAX
@@ -41,120 +40,49 @@
       CALL ENCALC
       CALL VARINI
 
+C---- include control vars
+      NVTOT = IVTOT + NCONTROL
+      NCTOT = ICTOT + NCONTROL
+
       IR = 1
-      ICON(IVALFA,IR) = ICCL
+
+C---- constrain base vars directly to specified values
+      ICON(IVALFA,IR) = ICALFA
       ICON(IVBETA,IR) = ICBETA
       ICON(IVROTX,IR) = ICROTX
       ICON(IVROTY,IR) = ICROTY
       ICON(IVROTZ,IR) = ICROTZ
-      ICON(IVTOT+1,IR) = ICMOMX
-      ICON(IVTOT+2,IR) = ICMOMY
-      ICON(IVTOT+3,IR) = ICMOMZ
 
-C---- Run case parameters (match plane.run values)
+      DO N = 1, NCONTROL
+        ICON(IVTOT+N,IR) = ICTOT + N
+        CONVAL(ICTOT+N,IR) = 0.0
+      END DO
+
+C---- operating point requested by user
       PARVAL(IPMACH,IR) = 0.0
-      PARVAL(IPVEE,IR) = 64.5396
-      PARVAL(IPRHO,IR) = 0.0005846
-      PARVAL(IPGEE,IR) = 32.18
-      PARVAL(IPCL,IR) = 0.390510
+      PARVAL(IPVEE,IR) = 1.0
+      PARVAL(IPRHO,IR) = 1.0
+      PARVAL(IPGEE,IR) = 1.0
+      PARVAL(IPMASS,IR) = 1.0
       PARVAL(IPPHI,IR) = 0.0
-      PARVAL(IPXCG,IR) = 0.02463
-      PARVAL(IPYCG,IR) = 0.0
-      PARVAL(IPZCG,IR) = 0.2239
-      PARVAL(IPCD0,IR) = 0.00835
+      PARVAL(IPCD0,IR) = 0.0
 
-      ALFA = -0.1455*DTR
-      BETA = 0.0
-
-      CONVAL(ICCL,IR) = 0.390510
+      CONVAL(ICALFA,IR) = 1.0
       CONVAL(ICBETA,IR) = 0.0
       CONVAL(ICROTX,IR) = 0.0
       CONVAL(ICROTY,IR) = 0.0
       CONVAL(ICROTZ,IR) = 0.0
-      CONVAL(ICMOMX,IR) = 0.0
-      CONVAL(ICMOMY,IR) = 0.0
-      CONVAL(ICMOMZ,IR) = 0.0
+
+      ALFA = 1.0*DTR
+      BETA = 0.0
 
       CALL EXEC(NITER,0,IR)
 
-      WRITE(*,'(A,1X,3(ES23.15E3))') 'GAMU0_1', GAM_U_0(1,1),
-     &  GAM_U_0(1,2), GAM_U_0(1,3)
-      WRITE(*,'(A,1X,3(ES23.15E3))') 'AICN1',
-     &  AICN(1,1), AICN(1,2), AICN(1,3)
-      WRITE(*,'(A,1X,3(ES23.15E3))') 'ENC1',
-     &  ENC(1,1), ENC(2,1), ENC(3,1)
-
-      WRITE(*,'(A,1X,9(ES23.15E3))') 'FORCE',
-     &  CLTOT, CDTOT, CYTOT,
-     &  CMTOT(1), CMTOT(2), CMTOT(3),
-     &  CFTOT(1), CFTOT(2), CFTOT(3)
-      WRITE(*,'(A,1X,ES23.15E3)') 'CDVTOT', CDVTOT
-      WRITE(*,'(A,1X,I8)') 'NCONTROL', NCONTROL
-      DO N = 1, NCONTROL
-        WRITE(*,'(A,1X,I6,1X,ES23.15E3)') 'CHINGE', N, CHINGE(N)
-      END DO
-      WRITE(*,'(A,1X,I8)') 'NSTRIP', NSTRIP
-      DO J = 1, NSTRIP
-        IOFF = 0
-        IF(LSTRIPOFF(J)) IOFF = 1
-        WRITE(*,'(A,1X,I6,1X,6(ES23.15E3),1X,I2)') 'STRIP', J,
-     &    RLE(2,J), RLE(3,J), CNC(J), CLA_LSTRP(J),
-     &    CLT_LSTRP(J), DWWAKE(J), IOFF
-      END DO
-
-C---- Full parity dump for all displayed outputs
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'ALFA', ALFA
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'BETA', BETA
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'MACH', MACH
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'CLTOT', CLTOT
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'CDTOT', CDTOT
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'CYTOT', CYTOT
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'CDVTOT', CDVTOT
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'SPANEF', SPANEF
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'SREF', SREF
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'CREF', CREF
-      WRITE(*,'(A,1X,A,1X,ES23.15E3)') 'SCALAR', 'BREF', BREF
-
-      WRITE(*,'(A,1X,A,1X,3(ES23.15E3,1X))') 'VEC3', 'WROT',
-     &  WROT(1), WROT(2), WROT(3)
-      WRITE(*,'(A,1X,A,1X,3(ES23.15E3,1X))') 'VEC3', 'CFTOT',
-     &  CFTOT(1), CFTOT(2), CFTOT(3)
-      WRITE(*,'(A,1X,A,1X,3(ES23.15E3,1X))') 'VEC3', 'CMTOT',
-     &  CMTOT(1), CMTOT(2), CMTOT(3)
-
-      WRITE(*,'(A,1X,I8)') 'NSURF', NSURF
-      DO IS = 1, NSURF
-        WRITE(*,'(A,1X,I6,1X,10(ES23.15E3,1X))') 'SURFROW', IS,
-     &    CLSURF(IS), CDSURF(IS), CYSURF(IS), CDVSURF(IS),
-     &    CFSURF(1,IS), CFSURF(2,IS), CFSURF(3,IS),
-     &    CMSURF(1,IS), CMSURF(2,IS), CMSURF(3,IS)
-      END DO
-
-      DO K = 1, NUMAX
-        WRITE(*,'(A,1X,I3,1X,9(ES23.15E3,1X))') 'UROW', K,
-     &    CLTOT_U(K), CDTOT_U(K), CYTOT_U(K),
-     &    CFTOT_U(1,K), CFTOT_U(2,K), CFTOT_U(3,K),
-     &    CMTOT_U(1,K), CMTOT_U(2,K), CMTOT_U(3,K)
-      END DO
-
-      DO N = 1, NCONTROL
-        WRITE(*,'(A,1X,I3,1X,11(ES23.15E3,1X))') 'DROW', N,
-     &    CLTOT_D(N), CDTOT_D(N), CYTOT_D(N),
-     &    CFTOT_D(1,N), CFTOT_D(2,N), CFTOT_D(3,N),
-     &    CMTOT_D(1,N), CMTOT_D(2,N), CMTOT_D(3,N),
-     &    CHINGE(N), DELCON(N)
-      END DO
-
-      DO J = 1, NSTRIP
-        IOFF = 0
-        IF(LSTRIPOFF(J)) IOFF = 1
-        WRITE(*,'(A,1X,I6,1X,9(ES23.15E3,1X),1X,I2)') 'STRIPROW', J,
-     &    RLE(2,J), RLE(3,J), CLSTRP(J), CDSTRP(J), CYSTRP(J),
-     &    CNC(J), CLA_LSTRP(J), CLT_LSTRP(J), DWWAKE(J), IOFF
-      END DO
-
+      WRITE(*,'(A)') 'BEGIN DERMATS'
+      CALL DERMATS(6,.TRUE.)
+      WRITE(*,'(A)') 'BEGIN DERMATB'
+      CALL DERMATB(6,.TRUE.)
       END
-
 C--------------------------------------------------------------
 C  Minimal subset of avl.f subroutines needed for parsing/setup
 C--------------------------------------------------------------
@@ -259,16 +187,16 @@ C---- variable selection keys
       VARKEY(IVROTZ) = 'Y aw   rate'
 C
 C---- constraint names
-      CONNAM(ICALFA) = 'alpha '
-      CONNAM(ICBETA) = 'beta  '
-      CONNAM(ICROTX) = 'pb/2V '
-      CONNAM(ICROTY) = 'qc/2V '
-      CONNAM(ICROTZ) = 'rb/2V '
-      CONNAM(ICCL  ) = 'CL    '
-      CONNAM(ICCY  ) = 'CY    '
-      CONNAM(ICMOMX) = 'Cl roll mom'
-      CONNAM(ICMOMY) = 'Cm pitchmom'
-      CONNAM(ICMOMZ) = 'Cn yaw  mom'
+      CONNAM(ICALFA) = 'alpha       '
+      CONNAM(ICBETA) = 'beta        '
+      CONNAM(ICROTX) = 'pb/2V       '
+      CONNAM(ICROTY) = 'qc/2V       '
+      CONNAM(ICROTZ) = 'rb/2V       '
+      CONNAM(ICCL  ) = 'CL          '
+      CONNAM(ICCY  ) = 'CY          '
+      CONNAM(ICMOMX) = 'Cl roll mom '
+      CONNAM(ICMOMY) = 'Cm pitchmom '
+      CONNAM(ICMOMZ) = 'Cn yaw  mom '
 C
 C---- constraint selection keys
       CONKEY(ICALFA) = 'A '
@@ -283,17 +211,13 @@ C---- constraint selection keys
       CONKEY(ICMOMZ) = 'YM'
 C
       IZERO = ICHAR('0')
-C
-C---- add control variables, direct constraints
       DO N = 1, NCONTROL
-        ITEN = N/10
-        IONE = N - 10*ITEN
         IV = IVTOT + N
         IC = ICTOT + N
-        VARNAM(IV) = DNAME(N)
-        CONNAM(IC) = DNAME(N)
+        ITEN = N/10
+        IONE = N - 10*ITEN
         IF(ITEN.EQ.0) THEN
-         VARKEY(IV) = 'D' // CHAR(IZERO+IONE) // ' '
+         VARKEY(IV) = 'D' // CHAR(IZERO+IONE)
      &             // ' ' // DNAME(N)(1:8)
          CONKEY(IC) = 'D' // CHAR(IZERO+IONE)
         ELSE

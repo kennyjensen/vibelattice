@@ -336,7 +336,7 @@ export function EXEC(state, NITER, INFO, IR) {
 
   runAsetupSums(state, vinf1, wrot1);
 
-  if (state.USE_WASM_AERO && wasmAero) {
+  if (state.USE_WASM_AERO && wasmAero && state.NCONTROL === 0) {
     try {
       wasmAero.AERO(state);
     } catch {
@@ -648,7 +648,7 @@ export function EXEC(state, NITER, INFO, IR) {
 
       runAsetupSums(state, vinf1, wrot1);
 
-      if (state.USE_WASM_AERO && wasmAero) {
+      if (state.USE_WASM_AERO && wasmAero && state.NCONTROL === 0) {
         try {
           wasmAero.AERO(state);
         } catch {

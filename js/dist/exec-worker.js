@@ -335,23 +335,31 @@ async function computeEigenmodes(state, useWasm) {
   }
   let sysRes = null;
   let eigRes = null;
+  let usedNative = false;
   if (useWasm) {
-    const wasm = await loadAmodeWasm();
-    const nativeEigen = runAmodeNativeEigen(wasm, state, IR, ETOL);
-    if (nativeEigen) {
-      sysRes = nativeEigen.sysRes;
-      eigRes = nativeEigen.eigRes;
-      if (sysRes?.LTERR || (sysRes?.NSYS || 0) <= 0) {
-        log(`RUNCHK/SYSMAT failed for run ${IR}; eigenmodes unavailable`);
-        return { nsys: 0, modes: [] };
+    try {
+      const wasm = await loadAmodeWasm();
+      const nativeEigen = runAmodeNativeEigen(wasm, state, IR, ETOL);
+      if (nativeEigen) {
+        const nativeNsys = nativeEigen?.sysRes?.NSYS || 0;
+        if (!(nativeEigen?.sysRes?.LTERR) && nativeNsys > 0) {
+          sysRes = nativeEigen.sysRes;
+          eigRes = nativeEigen.eigRes;
+          usedNative = true;
+        } else {
+          log(`RUNCHK/SYSMAT failed for run ${IR}; falling back to JS eigenmode path`);
+        }
+      } else {
+        log('Native AMODE exports missing; falling back to JS eigenmode path');
       }
-    } else {
-      log('Native AMODE exports missing; falling back to JS eigenmode path');
-      const { ASYS, BSYS, RSYS } = state.__amode;
-      sysRes = SYSMAT(state, IR, ASYS, BSYS, RSYS);
-      eigRes = EIGSOL(state, IR, ETOL, ASYS, sysRes?.NSYS || 0);
+    } catch (err) {
+      log(`AMODE wasm load failed: ${err?.message ?? err}; falling back to JS eigenmode path`);
     }
   } else {
+    // no-op, use JS path below
+  }
+
+  if (!usedNative) {
     const { ASYS, BSYS, RSYS } = state.__amode;
     sysRes = SYSMAT(state, IR, ASYS, BSYS, RSYS);
     eigRes = EIGSOL(state, IR, ETOL, ASYS, sysRes?.NSYS || 0);
@@ -398,6 +406,8 @@ onmessage = async (evt) => {
     postMessage({ type: 'error', message: 'Missing state.' });
     return;
   }
+  // Keep body-derivative sign convention aligned with Fortran AVL defaults.
+  state.LNASA_SA = true;
   if (type === 'trim') {
     try {
       const IR = 1;
@@ -451,23 +461,13 @@ onmessage = async (evt) => {
     // Honor the UI toggle for all wasm-enabled EXEC kernels.
     state.USE_WASM_SOLVE = Boolean(useWasm);
     state.USE_WASM_GAM = Boolean(useWasm);
-    state.USE_WASM_AERO = Boolean(useWasm);
-    state.USE_WASM_AIC = Boolean(useWasm);
-    state.USE_WASM_LU = Boolean(useWasm);
-    if (useWasm) {
-      try {
-        const execFn = await loadExecWasm();
-        execWasmState = state;
-        execFn(20, 0, 1, 0);
-        execWasmState = null;
-      } catch (err) {
-        execWasmState = null;
-        log(`EXEC wasm bridge failed: ${err?.message ?? err}; falling back to JS EXEC`);
-        EXEC(state, 20, 0, 1);
-      }
-    } else {
-      EXEC(state, 20, 0, 1);
-    }
+    state.USE_WASM_AERO = false;
+    state.USE_WASM_AIC = false;
+    state.USE_WASM_LU = false;
+    // Use the JS EXEC entrypoint and let it dispatch to wasm kernels via the
+    // USE_WASM_* flags above. The legacy aoper.wasm wrapper has diverged from
+    // current state layout and can emit non-finite totals in default runs.
+    EXEC(state, 20, 0, 1);
     const dt = Date.now() - t0;
     log(`Worker EXEC done (${dt} ms)`);
     log(`EXEC state: ALFA=${state.ALFA} BETA=${state.BETA} MACH=${state.MACH}`);
@@ -609,6 +609,7 @@ onmessage = async (evt) => {
       WROT: state.WROT,
       DELCON: state.DELCON,
       SPANEF: state.SPANEF,
+      LNASA_SA: state.LNASA_SA,
       USE_WASM_SOLVE: Boolean(state.USE_WASM_SOLVE),
       USE_WASM_GAM: Boolean(state.USE_WASM_GAM),
       USE_WASM_AERO: Boolean(state.USE_WASM_AERO),

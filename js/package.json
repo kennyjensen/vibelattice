@@ -5,7 +5,10 @@
   "scripts": {
     "build:wasm": "node ./wasm/build_wasm.js",
     "build:fortran": "make -C ../third_party/avl/ref",
-    "test": "node --test ./test/*.test.mjs"
+    "test:node": "node --test ./test/*.test.mjs",
+    "test:ui-signs": "npx playwright test ./playwright/body_axis_sign_regression.spec.js",
+    "test:ci": "npm run test:node && npm run test:ui-signs",
+    "test": "npm run test:ci"
   },
   "devDependencies": {
     "wabt": "^1.0.32"

@@ -187,6 +187,7 @@ export function SFFORC(state) {
   const ICRS = [1, 2, 0];
   const JCRS = [2, 0, 1];
   const dimStrip = state.NSTRIP + 1;
+  const dimHingeStrip = state.NSTRMAX + 1;
   const dimSurf = state.NSURF + 1;
   const dimN = state.DIM_N;
 
@@ -668,19 +669,18 @@ export function SFFORC(state) {
 
       for (let l = 0; l < state.NCONTROL; l += 1) {
         const rh = new Float32Array(3);
-        rh[0] = f32(state.RV[idx3(0, i)] - state.PHINGE[idx2(0, idx2(j, l, dimStrip), 3)]);
-        rh[1] = f32(state.RV[idx3(1, i)] - state.PHINGE[idx2(1, idx2(j, l, dimStrip), 3)]);
-        rh[2] = f32(state.RV[idx3(2, i)] - state.PHINGE[idx2(2, idx2(j, l, dimStrip), 3)]);
-
         const ld = l + 1;
+        rh[0] = f32(state.RV[idx3(0, i)] - state.PHINGE[idx3u(0, j, ld, dimHingeStrip)]);
+        rh[1] = f32(state.RV[idx3(1, i)] - state.PHINGE[idx3u(1, j, ld, dimHingeStrip)]);
+        rh[2] = f32(state.RV[idx3(2, i)] - state.PHINGE[idx3u(2, j, ld, dimHingeStrip)]);
         const dfac = f32(state.DCONTROL[idx2(i, ld, dimN)] / f32(state.SREF * state.CREF));
 
         const mh = new Float32Array(3);
         CROSS(rh, fgam, mh);
         const vhinge = new Float32Array(3);
-        vhinge[0] = state.VHINGE[idx2(0, idx2(j, l, dimStrip), 3)];
-        vhinge[1] = state.VHINGE[idx2(1, idx2(j, l, dimStrip), 3)];
-        vhinge[2] = state.VHINGE[idx2(2, idx2(j, l, dimStrip), 3)];
+        vhinge[0] = state.VHINGE[idx3u(0, j, ld, dimHingeStrip)];
+        vhinge[1] = state.VHINGE[idx3u(1, j, ld, dimHingeStrip)];
+        vhinge[2] = state.VHINGE[idx3u(2, j, ld, dimHingeStrip)];
         state.CHINGE[l] = f32(state.CHINGE[l] + f32(DOT(mh, vhinge) * dfac));
 
         for (let n = 0; n < state.NUMAX; n += 1) {

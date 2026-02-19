@@ -486,12 +486,14 @@ textarea.code {
 }
 
 .aircraft-example-select {
-  width: 140px;
-  min-width: 140px;
-  max-width: 140px;
-  flex: 0 0 140px;
+  width: 124px;
+  min-width: 124px;
+  max-width: 124px;
+  flex: 0 0 124px;
   height: 36px;
   box-sizing: border-box;
+  font-size: 14px;
+  font-weight: 600;
   line-height: 1.25;
   padding-right: 28px;
 }
@@ -539,7 +541,7 @@ textarea.code {
 .file-ref-grid {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
-  gap: 8px 10px;
+  gap: 6px 2px;
   align-items: center;
 }
 
@@ -1059,6 +1061,12 @@ textarea.code {
   font: inherit;
 }
 
+.panel select.aircraft-example-select {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
 .trefftz-plot .u-grid .u-gridline {
   stroke: rgba(255,255,255,0.08);
 }
@@ -1169,7 +1177,7 @@ textarea.code {
 
 .hinge-grid {
   display: inline-grid;
-  grid-template-columns: max-content max-content;
+  grid-template-columns: max-content max-content max-content;
   gap: 4px 12px;
   color: var(--muted);
   font-size: 14px;
@@ -1530,6 +1538,13 @@ textarea.code {
 @media (max-width: 1200px) {
   .stage-geo .viewer {
     height: clamp(240px, 50vh, 480px);
+  }
+}
+
+@media (min-width: 901px) {
+  #editorPanel .file-highlight,
+  #editorPanel .file-editor textarea.code {
+    min-height: 480px;
   }
 }
 

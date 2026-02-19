@@ -410,13 +410,13 @@
         <button id="downloadForcesElement" type="button">Download element forces</button>
         <pre id="outForcesBody">-</pre>
       </div>
-      <div id="debugPanel" class="panel output" hidden>
+      <div id="debugPanel" class="panel output">
         <div class="panel-title">Debug</div>
         <div class="panel-body">
           <div class="row">
             <button id="trimBtn" class="btn primary" type="button">Trim</button>
             <label class="toggle">
-              <input id="useWasmExec" type="checkbox" />
+              <input id="useWasmExec" type="checkbox" checked />
               Use WASM for EXEC
             </label>
             <button id="clearDebug" class="btn ghost" type="button">Clear</button>
@@ -506,13 +506,14 @@ rudder  1.0  0.0  0. 0. 0.  1
 
   <script>
     (function () {
-      const params = new URLSearchParams(window.location.search);
-      const debugRaw = params.get('debug');
-      const debugToken = String(debugRaw ?? '').trim().toLowerCase();
-      const debugEnabled = debugRaw != null && (debugToken === '' || ['1', 'true', 'yes', 'on'].includes(debugToken));
+      const params = new URLSearchParams(window.location.search || '');
+      const debugRaw = String(params.get('debug') || '').trim().toLowerCase();
+      const showDebug = ['1', 'true', 'yes', 'on'].includes(debugRaw);
       const debugPanel = document.getElementById('debugPanel');
-      if (debugPanel) debugPanel.hidden = !debugEnabled;
-
+      if (debugPanel) {
+        debugPanel.hidden = !showDebug;
+        debugPanel.style.display = showDebug ? '' : 'none';
+      }
       const el = document.getElementById('debugLog');
       const format = (msg) => `[BOOT ${new Date().toLocaleTimeString()}] ${msg}`;
       const log = (msg) => {

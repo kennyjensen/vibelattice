@@ -2,9 +2,10 @@ import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 async function withStaticServer(run) {
-  const root = path.resolve('.');
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
   const server = http.createServer(async (req, res) => {
     const reqPath = (req.url || '/').split('?')[0];
     const clean = decodeURIComponent(reqPath === '/' ? '/index.html' : reqPath);

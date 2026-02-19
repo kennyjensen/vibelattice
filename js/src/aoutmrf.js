@@ -297,8 +297,9 @@ export function MRFHINGE(state, LUN = 6) {
   lines.push(`${fmtI(state.NCONTROL)} | # controls`);
   for (let n = 1; n <= state.NCONTROL; n += 1) {
     const name = state.DNAME?.[n] ?? state.DNAME?.[n - 1] ?? '';
+    const chinge = state.CHINGE?.[n - 1] ?? state.CHINGE?.[n] ?? 0.0;
     lines.push(
-      `${fmtES(state.CHINGE[n])}  ${name}  | Control Hinge Moments (referred to Sref, Cref) : Chinge, Control`,
+      `${fmtES(chinge)}  ${name}  | Control Hinge Moments (referred to Sref, Cref) : Chinge, Control`,
     );
   }
   return lines.join('\n');
