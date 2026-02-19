@@ -37,6 +37,9 @@ function parseRefOutput(stdout) {
     } else if (parts[0] === 'CDVTOT') {
       const nums = (line.match(numRe) || []).map((v) => Number(v.replace(/d/i, 'e')));
       out.CDVTOT = nums[0];
+    } else if (parts[0] === 'NVOR') {
+      const nums = (line.match(numRe) || []).map((v) => Number(v.replace(/d/i, 'e')));
+      out.NVOR = nums[0];
     } else if (parts[0] === 'NSTRIP') {
       const nums = (line.match(numRe) || []).map((v) => Number(v.replace(/d/i, 'e')));
       out.NSTRIP = nums[0];
@@ -127,13 +130,13 @@ function assertPlaneMatchesRef(state, ref) {
   assertCloseArray(state.CFTOT, ref.force.CFTOT, tolForce, 'CFTOT');
   assertClose(state.CDVTOT, ref.CDVTOT, tolForce, 'CDVTOT');
 
+  assert.equal(state.NVOR, ref.NVOR, 'NVOR mismatch');
   assert.equal(state.NCONTROL, ref.NCONTROL, 'NCONTROL mismatch');
   for (let i = 1; i <= state.NCONTROL; i += 1) {
     const got = Number(state.CHINGE?.[i - 1] ?? 0.0);
     const exp = Number(ref.hinge?.[i] ?? 0.0);
     assertClose(got, exp, tolHinge, `CHINGE[${i}]`);
   }
-
   assert.equal(state.NSTRIP, ref.NSTRIP, 'NSTRIP mismatch');
 
   for (let j = 1; j <= state.NSTRIP; j += 1) {

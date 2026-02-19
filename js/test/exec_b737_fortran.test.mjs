@@ -37,6 +37,9 @@ function parseRefOutput(stdout) {
     } else if (parts[0] === 'CDVTOT') {
       const nums = (line.match(numRe) || []).map((v) => Number(v.replace(/d/i, 'e')));
       out.CDVTOT = nums[0];
+    } else if (parts[0] === 'NVOR') {
+      const nums = (line.match(numRe) || []).map((v) => Number(v.replace(/d/i, 'e')));
+      out.NVOR = nums[0];
     } else if (parts[0] === 'NSTRIP') {
       const nums = (line.match(numRe) || []).map((v) => Number(v.replace(/d/i, 'e')));
       out.NSTRIP = nums[0];
@@ -139,6 +142,7 @@ test('EXEC matches Fortran for b737.avl forces and trefftz', { timeout: 140000 }
   assertCloseArray(state.CFTOT, ref.force.CFTOT, tolForce, 'CFTOT');
   assertClose(state.CDVTOT, ref.CDVTOT, tolForce, 'CDVTOT');
 
+  assert.equal(state.NVOR, ref.NVOR, 'NVOR mismatch');
   assert.equal(state.NSTRIP, ref.NSTRIP, 'NSTRIP mismatch');
 
   for (let j = 1; j <= state.NSTRIP; j += 1) {
@@ -184,6 +188,7 @@ test('EXEC matches Fortran for b737.avl with iterations', { timeout: 200000 }, a
   assertCloseArray(state.CFTOT, ref.force.CFTOT, tolForce, 'CFTOT');
   assertClose(state.CDVTOT, ref.CDVTOT, tolForce, 'CDVTOT');
 
+  assert.equal(state.NVOR, ref.NVOR, 'NVOR mismatch');
   assert.equal(state.NSTRIP, ref.NSTRIP, 'NSTRIP mismatch');
 
   for (let j = 1; j <= state.NSTRIP; j += 1) {

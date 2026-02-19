@@ -89,6 +89,7 @@ C---- Run case parameters (match plane.run values)
      &  CMTOT(1), CMTOT(2), CMTOT(3),
      &  CFTOT(1), CFTOT(2), CFTOT(3)
       WRITE(*,'(A,1X,ES23.15E3)') 'CDVTOT', CDVTOT
+      WRITE(*,'(A,1X,I8)') 'NVOR', NVOR
       WRITE(*,'(A,1X,I8)') 'NCONTROL', NCONTROL
       DO N = 1, NCONTROL
         WRITE(*,'(A,1X,I6,1X,ES23.15E3)') 'CHINGE', N, CHINGE(N)
