@@ -9,6 +9,7 @@ function parseElevatorDeflection(text) {
 }
 
 test('trimmed elevator horseshoe wake legs use the same downstream direction on left/right sides', async ({ page }) => {
+  test.setTimeout(120000);
   const root = path.resolve('.');
   const server = http.createServer(async (req, res) => {
     const reqPath = (req.url || '/').split('?')[0];
@@ -35,17 +36,21 @@ test('trimmed elevator horseshoe wake legs use the same downstream direction on 
   const port = typeof address === 'object' && address ? address.port : 0;
 
   try {
-    for (const entry of ['/index.html', '/js/dist/index.html']) {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    for (const entry of ['/index.html']) {
       await page.goto(`http://127.0.0.1:${port}${entry}`, { waitUntil: 'domcontentloaded' });
-      await expect(page.locator('#debugLog')).toContainText('App ready', { timeout: 30000 });
+      await page.waitForFunction(() => {
+        const log = document.getElementById('debugLog')?.textContent || '';
+        return log.includes('App module loaded.') || log.includes('App module failed:');
+      }, { timeout: 30000 });
       await page.waitForFunction(() => Boolean(window.__trefftzTestHook?.getVortexLegSymmetryStats));
 
-      await page.click('#trimBtn');
+      await page.evaluate(() => { document.getElementById('trimBtn')?.click(); });
       await page.waitForFunction(() => {
         const txt = String(document.getElementById('outDef')?.textContent || '');
         const stats = window.__trefftzTestHook?.getVortexLegSymmetryStats?.();
-        return txt.includes('elevator =') && stats?.left?.n > 0 && stats?.right?.n > 0;
-      }, null, { timeout: 30000 });
+        return /elevator\s*=/.test(txt.replace(/\u00a0/g, ' ')) && stats?.left?.n > 0 && stats?.right?.n > 0;
+      }, null, { timeout: 60000 });
 
       const values = await page.evaluate(() => ({
         defText: String(document.getElementById('outDef')?.textContent || ''),

@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 
-test('viewer right-side button order is stable and pressure stays in bottom row for both entrypoints', async ({ page }) => {
+test('viewer right-side button order is stable and pressure stays in bottom row', async ({ page }) => {
   const root = path.resolve('.');
   const server = http.createServer(async (req, res) => {
     const reqPath = (req.url || '/').split('?')[0];
@@ -28,7 +28,7 @@ test('viewer right-side button order is stable and pressure stays in bottom row 
   const port = typeof address === 'object' && address ? address.port : 0;
 
   try {
-    const entrypoints = ['/index.html', '/js/dist/index.html'];
+    const entrypoints = ['/index.html'];
     const expectedOrder = [
       'viewerHome',
       'viewerZoomIn',

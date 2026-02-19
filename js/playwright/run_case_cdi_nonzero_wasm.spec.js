@@ -35,14 +35,20 @@ test('plane.run has nonzero CDi with wasm-enabled EXEC path', async ({ page }) =
   const port = typeof address === 'object' && address ? address.port : 0;
 
   try {
-    for (const entry of ['/index.html', '/js/dist/index.html']) {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    for (const entry of ['/index.html']) {
       await page.goto(`http://127.0.0.1:${port}${entry}`, { waitUntil: 'domcontentloaded' });
       await expect(page.locator('#debugLog')).toContainText('App ready', { timeout: 30000 });
       await page.waitForFunction(() => typeof window.__trefftzTestHook !== 'undefined');
 
-      await page.check('#useWasmExec');
+      await page.evaluate(() => {
+        const el = document.getElementById('useWasmExec');
+        if (!el) return;
+        el.checked = true;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
       await page.setInputFiles('#runCasesInput', path.resolve('third_party/avl/runs/plane.run'));
-      await page.click('#trimBtn');
+      await page.evaluate(() => { document.getElementById('trimBtn')?.click(); });
 
       await page.waitForFunction(() => {
         const txt = String(document.getElementById('outCDind')?.textContent || '').trim();

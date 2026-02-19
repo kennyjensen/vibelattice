@@ -8,7 +8,7 @@ test('flight and trefftz labels have no unit annotations', async ({ page }) => {
   const server = http.createServer((req, res) => {
     const urlPath = decodeURIComponent(req.url || '/');
     const safePath = urlPath.split('?')[0].replace(/^\/+/, '');
-    const filePath = path.join(root, safePath || 'js/dist/index.html');
+    const filePath = path.join(root, safePath || 'index.html');
     if (!filePath.startsWith(root)) {
       res.writeHead(403);
       res.end('Forbidden');
@@ -32,7 +32,7 @@ test('flight and trefftz labels have no unit annotations', async ({ page }) => {
   await new Promise((resolve) => server.listen(0, resolve));
   const { port } = server.address();
 
-  await page.goto(`http://127.0.0.1:${port}/js/dist/index.html`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => typeof window.__trefftzTestHook !== 'undefined');
 
   await expect(page.locator('label[for="gee"] .label-text')).toHaveCount(0);

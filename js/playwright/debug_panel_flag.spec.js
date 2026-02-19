@@ -34,7 +34,7 @@ async function withStaticServer(run) {
   }
 }
 
-test('debug panel is hidden by default and shown by debug flag on root and dist entrypoints', async ({ page }) => {
+test('debug panel is hidden by default and shown by debug flag on root entrypoint', async ({ page }) => {
   await withStaticServer(async (baseUrl) => {
     await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#debugPanel')).toBeHidden();
@@ -42,10 +42,10 @@ test('debug panel is hidden by default and shown by debug flag on root and dist 
     await page.goto(`${baseUrl}/index.html?debug=1`, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#debugPanel')).toBeVisible();
 
-    await page.goto(`${baseUrl}/js/dist/index.html`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#debugPanel')).toBeHidden();
 
-    await page.goto(`${baseUrl}/js/dist/index.html?debug=true`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${baseUrl}/index.html?debug=true`, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#debugPanel')).toBeVisible();
   });
 });

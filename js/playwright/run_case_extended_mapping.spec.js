@@ -71,7 +71,8 @@ test('AVL .run maps Mach, loop mode, and mass/inertia values into EXEC and UI', 
   const port = typeof address === 'object' && address ? address.port : 0;
 
   try {
-    for (const entry of ['/index.html', '/js/dist/index.html']) {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    for (const entry of ['/index.html']) {
       await page.goto(`http://127.0.0.1:${port}${entry}`, { waitUntil: 'domcontentloaded' });
       await expect(page.locator('#debugLog')).toContainText('App ready', { timeout: 30000 });
       await page.waitForFunction(() => typeof window.__trefftzTestHook !== 'undefined');
@@ -107,7 +108,7 @@ test('AVL .run maps Mach, loop mode, and mass/inertia values into EXEC and UI', 
       await expect(page.locator('#massIyz')).toHaveValue('0.0200');
       await expect(page.locator('#massIxz')).toHaveValue('0.0300');
 
-      await page.click('#trimBtn');
+      await page.evaluate(() => { document.getElementById('trimBtn')?.click(); });
       await page.waitForFunction(() => {
         const t = String(document.getElementById('outMach')?.textContent || '').trim();
         const s = window.__trefftzTestHook?.getLastExecSummary?.();

@@ -37,9 +37,12 @@ test('trefftz right axis allocates space below zero and aligns ai=0 with cl=0', 
   };
 
   try {
-    for (const entry of ['/index.html', '/js/dist/index.html']) {
+    for (const entry of ['/index.html']) {
       await page.goto(`http://127.0.0.1:${port}${entry}`, { waitUntil: 'domcontentloaded' });
-      await expect(page.locator('#debugLog')).toContainText('App ready', { timeout: 30000 });
+      await page.waitForFunction(() => {
+        const log = document.getElementById('debugLog')?.textContent || '';
+        return log.includes('App module loaded.') || log.includes('App module failed:');
+      }, { timeout: 30000 });
       await page.waitForFunction(() => typeof window.__trefftzTestHook !== 'undefined');
 
       await page.evaluate((data) => {

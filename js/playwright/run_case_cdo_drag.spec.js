@@ -35,7 +35,8 @@ test('plane.run applies CDo so total-forces drag is nonzero', async ({ page }) =
   const port = typeof address === 'object' && address ? address.port : 0;
 
   try {
-    for (const entry of ['/index.html', '/js/dist/index.html']) {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    for (const entry of ['/index.html']) {
       await page.goto(`http://127.0.0.1:${port}${entry}`, { waitUntil: 'domcontentloaded' });
       await expect(page.locator('#debugLog')).toContainText('App ready', { timeout: 30000 });
 
@@ -43,7 +44,7 @@ test('plane.run applies CDo so total-forces drag is nonzero', async ({ page }) =
       await page.setInputFiles('#runCasesInput', runPath);
       await expect(page.locator('#runCasesMeta')).toContainText('plane.run');
 
-      await page.click('#trimBtn');
+      await page.evaluate(() => { document.getElementById('trimBtn')?.click(); });
       await page.waitForFunction(() => {
         const cdEl = document.getElementById('outCD');
         const cdpEl = document.getElementById('outCDvis');

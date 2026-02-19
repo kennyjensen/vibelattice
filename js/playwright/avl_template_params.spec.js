@@ -45,7 +45,7 @@ test('AVL template literals create Aircraft sliders and drive resolved geometry 
   ].join('\n');
 
   try {
-    for (const entry of ['/index.html', '/js/dist/index.html']) {
+    for (const entry of ['/index.html']) {
       await page.goto(`http://127.0.0.1:${port}${entry}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await expect(page.locator('#debugLog')).toContainText('App ready', { timeout: 30000 });
       await page.waitForFunction(() => Boolean(window.__trefftzTestHook?.getTemplateParams));

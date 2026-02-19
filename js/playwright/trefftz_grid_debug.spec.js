@@ -8,7 +8,7 @@ test('trefftz grid debug output', async ({ page }) => {
   const server = http.createServer((req, res) => {
     const urlPath = decodeURIComponent(req.url || '/');
     const safePath = urlPath.split('?')[0].replace(/^\/+/, '');
-    const filePath = path.join(root, safePath || 'js/dist/index.html');
+    const filePath = path.join(root, safePath || 'index.html');
     if (!filePath.startsWith(root)) {
       res.writeHead(403);
       res.end('Forbidden');
@@ -33,7 +33,7 @@ test('trefftz grid debug output', async ({ page }) => {
   const { port } = server.address();
 
   await page.setViewportSize({ width: 1200, height: 800 });
-  await page.goto(`http://127.0.0.1:${port}/js/dist/index.html`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => {
     const log = document.getElementById('debugLog')?.textContent || '';
     return log.includes('App module loaded.') || log.includes('App module failed:');

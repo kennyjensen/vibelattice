@@ -2,10 +2,8 @@ import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import http from 'node:http';
-import { fileURLToPath } from 'node:url';
-
-test('startup keeps wasm exec toggle on by default on both entrypoints', async ({ page }) => {
-  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+test('startup keeps wasm exec toggle off by default on root entrypoint', async ({ page }) => {
+  const root = path.resolve('.');
   const server = http.createServer(async (req, res) => {
     const reqPath = (req.url || '/').split('?')[0];
     const clean = decodeURIComponent(reqPath === '/' ? '/index.html' : reqPath);
@@ -31,9 +29,9 @@ test('startup keeps wasm exec toggle on by default on both entrypoints', async (
   const port = typeof address === 'object' && address ? address.port : 0;
 
   try {
-    for (const entry of ['/index.html', '/js/dist/index.html']) {
+    for (const entry of ['/index.html']) {
       await page.goto(`http://127.0.0.1:${port}${entry}`, { waitUntil: 'domcontentloaded' });
-      await expect(page.locator('#useWasmExec')).toBeChecked();
+      await expect(page.locator('#useWasmExec')).not.toBeChecked();
       await expect(page.locator('#fileMeta')).toContainText('Loaded: plane.avl', { timeout: 30000 });
       const debugText = await page.locator('#debugLog').innerText();
       expect(debugText).not.toContain('App module failed');

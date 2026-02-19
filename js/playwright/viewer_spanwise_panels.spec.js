@@ -27,7 +27,7 @@ test('plane.avl draws multiple spanwise lattice/vortex segments in 3D overlays',
   const port = typeof address === 'object' && address ? address.port : 0;
 
   try {
-    for (const entry of ['/index.html', '/js/dist/index.html']) {
+    for (const entry of ['/index.html']) {
       await page.goto(`http://127.0.0.1:${port}${entry}`, { waitUntil: 'domcontentloaded' });
       await expect(page.locator('#debugLog')).toContainText('App ready', { timeout: 30000 });
       await page.waitForFunction(() => Boolean(window.__trefftzTestHook?.getViewerOverlayState));
