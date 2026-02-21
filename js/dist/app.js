@@ -174,6 +174,7 @@ const uiState = {
   runCases: [],
   runCasesFilename: null,
   needsRunCaseConstraintSync: false,
+  seedNoRunFlightFromExec: false,
   selectedRunCaseIndex: -1,
   massProps: null,
   massPropsFilename: null,
@@ -2640,6 +2641,49 @@ function makeDefaultMassProps() {
   };
 }
 
+function defaultNumericInputValue(el, fallback = 0) {
+  const raw = (el && typeof el.defaultValue === 'string') ? el.defaultValue : '';
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function resetRunCaseSessionDefaults() {
+  if (els.flightMode) {
+    const mode = String(els.flightMode.defaultValue || 'level').trim().toLowerCase();
+    els.flightMode.value = (mode === 'looping') ? 'looping' : 'level';
+  }
+  syncFlightModePanels();
+  if (els.bank) setNumericInput(els.bank, defaultNumericInputValue(els.bank, 0), 3);
+  if (els.cl) setNumericInput(els.cl, defaultNumericInputValue(els.cl, 0.6), 3);
+  if (els.vel) setNumericInput(els.vel, defaultNumericInputValue(els.vel, 30), 2);
+  if (els.clLoop) setNumericInput(els.clLoop, defaultNumericInputValue(els.clLoop, 0.6), 3);
+  if (els.velLoop) setNumericInput(els.velLoop, defaultNumericInputValue(els.velLoop, 30), 2);
+  if (els.radLoop) setNumericInput(els.radLoop, defaultNumericInputValue(els.radLoop, 0), 2);
+  if (els.facLoop) setNumericInput(els.facLoop, defaultNumericInputValue(els.facLoop, 0), 3);
+  if (uiState.modelCache) {
+    rebuildConstraintUI(uiState.modelCache);
+  }
+  updateConstraintDuplicates();
+}
+
+function resetFlightCgToHeaderDefaults() {
+  const hdr = uiState.modelHeader || {};
+  if (els.xcg) setNumericInput(els.xcg, Number.isFinite(Number(hdr.xref)) ? Number(hdr.xref) : defaultNumericInputValue(els.xcg, 0), 4);
+  if (els.ycg) setNumericInput(els.ycg, Number.isFinite(Number(hdr.yref)) ? Number(hdr.yref) : defaultNumericInputValue(els.ycg, 0), 4);
+  if (els.zcg) setNumericInput(els.zcg, Number.isFinite(Number(hdr.zref)) ? Number(hdr.zref) : defaultNumericInputValue(els.zcg, 0), 4);
+}
+
+function resetMassSessionDefaults() {
+  if (els.gee) setNumericInput(els.gee, defaultNumericInputValue(els.gee, 9.81), 4);
+  if (els.rho) setNumericInput(els.rho, defaultNumericInputValue(els.rho, 1.225), 6);
+  if (els.mass) setNumericInput(els.mass, defaultNumericInputValue(els.mass, 120), 4);
+  resetFlightCgToHeaderDefaults();
+  uiState.massPropsFilename = null;
+  uiState.massProps = makeDefaultMassProps();
+  renderMassProps(uiState.massProps);
+  if (els.massPropsMeta) els.massPropsMeta.textContent = 'No mass file loaded.';
+}
+
 function renderMassProps(props = null) {
   const mp = props || uiState.massProps || readMassPropsFromUI();
   uiState.massProps = mp;
@@ -2651,9 +2695,6 @@ function renderMassProps(props = null) {
   show(els.massXcg, mp.xcg, 4);
   show(els.massYcg, mp.ycg, 4);
   show(els.massZcg, mp.zcg, 4);
-  show(els.xcg, mp.xcg, 4);
-  show(els.ycg, mp.ycg, 4);
-  show(els.zcg, mp.zcg, 4);
   show(els.massIxx, mp.ixx, 4);
   show(els.massIyy, mp.iyy, 4);
   show(els.massIzz, mp.izz, 4);
@@ -2726,24 +2767,11 @@ function parseMassFileText(text) {
   if (!rows.length) throw new Error('No mass rows found.');
   const lscale = Number.isFinite(vars.lunitScale) && vars.lunitScale > 0 ? vars.lunitScale : 1.0;
   const mscale = Number.isFinite(vars.munitScale) && vars.munitScale > 0 ? vars.munitScale : 1.0;
-  const inertiaScale = mscale * lscale * lscale;
-  const scaledRows = rows.map((r) => ({
-    mass: r.mass * mscale,
-    x: r.x * lscale,
-    y: r.y * lscale,
-    z: r.z * lscale,
-    ixx: r.ixx * inertiaScale,
-    iyy: r.iyy * inertiaScale,
-    izz: r.izz * inertiaScale,
-    ixy: r.ixy * inertiaScale,
-    ixz: r.ixz * inertiaScale,
-    iyz: r.iyz * inertiaScale,
-  }));
   let massSum = 0;
   let sx = 0;
   let sy = 0;
   let sz = 0;
-  scaledRows.forEach((r) => {
+  rows.forEach((r) => {
     massSum += r.mass;
     sx += r.mass * r.x;
     sy += r.mass * r.y;
@@ -2760,7 +2788,7 @@ function parseMassFileText(text) {
   let ixy0 = 0;
   let ixz0 = 0;
   let iyz0 = 0;
-  scaledRows.forEach((r) => {
+  rows.forEach((r) => {
     ixx0 += r.ixx + r.mass * (r.y * r.y + r.z * r.z);
     iyy0 += r.iyy + r.mass * (r.x * r.x + r.z * r.z);
     izz0 += r.izz + r.mass * (r.x * r.x + r.y * r.y);
@@ -2770,16 +2798,16 @@ function parseMassFileText(text) {
   });
 
   return {
-    mass: massSum,
+    mass: massSum * mscale,
     xcg,
     ycg,
     zcg,
-    ixx: ixx0 - massSum * (ycg * ycg + zcg * zcg),
-    iyy: iyy0 - massSum * (xcg * xcg + zcg * zcg),
-    izz: izz0 - massSum * (xcg * xcg + ycg * ycg),
-    ixy: ixy0 - massSum * xcg * ycg,
-    ixz: ixz0 - massSum * xcg * zcg,
-    iyz: iyz0 - massSum * ycg * zcg,
+    ixx: (ixx0 - massSum * (ycg * ycg + zcg * zcg)) * mscale * lscale * lscale,
+    iyy: (iyy0 - massSum * (xcg * xcg + zcg * zcg)) * mscale * lscale * lscale,
+    izz: (izz0 - massSum * (xcg * xcg + ycg * ycg)) * mscale * lscale * lscale,
+    ixy: (ixy0 - massSum * xcg * ycg) * mscale * lscale * lscale,
+    ixz: (ixz0 - massSum * xcg * zcg) * mscale * lscale * lscale,
+    iyz: (iyz0 - massSum * ycg * zcg) * mscale * lscale * lscale,
     g: Number.isFinite(vars.g) ? vars.g : Number(els.gee?.value || 9.81),
     rho: Number.isFinite(vars.rho) ? vars.rho : Number(els.rho?.value || 1.225),
     lunit: vars.lunit,
@@ -3255,6 +3283,7 @@ function applyLoadedRunCases(parsed, filename, source = 'Loaded') {
   uiState.selectedRunCaseIndex = parsed.selectedIndex;
   uiState.runCasesFilename = filename;
   uiState.needsRunCaseConstraintSync = true;
+  uiState.seedNoRunFlightFromExec = false;
   renderRunCasesList();
   updateRunCasesMeta(`${source} ${parsed.cases.length} run case(s) from ${filename}`);
   applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
@@ -3281,6 +3310,7 @@ function resetAuxPanelsForNewAvl() {
   uiState.selectedRunCaseIndex = -1;
   uiState.runCasesFilename = null;
   uiState.needsRunCaseConstraintSync = false;
+  uiState.seedNoRunFlightFromExec = false;
   renderRunCasesList();
   updateRunCasesMeta();
   uiState.eigenModesByRunCase = {};
@@ -3289,9 +3319,7 @@ function resetAuxPanelsForNewAvl() {
   stopModeAnimation();
   drawEigenPlot();
 
-  uiState.massPropsFilename = null;
-  uiState.massProps = makeDefaultMassProps();
-  renderMassProps(uiState.massProps);
+  resetMassSessionDefaults();
 }
 
 function buildRunsPayload() {
@@ -3709,15 +3737,17 @@ async function handleFileLoad(file) {
   const text = await readFileAsText(file);
   const lower = String(file.name || '').toLowerCase();
   const isAvl = lower.endsWith('.avl');
+  if (isAvl) {
+    resetAuxPanelsForNewAvl();
+    resetRunCaseSessionDefaults();
+  }
   uiState.text = text;
   uiState.filename = file.name;
   uiState.sourceUrl = null;
   setFileTextValue(uiState.text);
   els.fileMeta.textContent = `Loaded: ${file.name} (${file.size} bytes)`;
   loadGeometryFromText(uiState.text, true, true);
-  if (isAvl) {
-    resetAuxPanelsForNewAvl();
-  }
+  resetFlightCgToHeaderDefaults();
   resetTrimSeed();
   logDebug(`Loaded file: ${file.name}`);
 }
@@ -3952,6 +3982,8 @@ async function initExampleSelect() {
 async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
   const base = basenamePath(String(avlFilename || '').replace(/\.[^.]+$/, '')).toLowerCase();
   if (!base) return;
+  let loadedMass = false;
+  let loadedRun = false;
 
   if (availableMassCompanionBases.has(base)) {
     const massName = `${base}.mass`;
@@ -3960,6 +3992,7 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
       try {
         const props = parseMassFileText(massText);
         applyLoadedMassProps(props, massName, source);
+        loadedMass = true;
       } catch (err) {
         if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massName}`;
         logDebug(`Companion mass load failed (${massName}): ${err?.message ?? err}`);
@@ -3979,6 +4012,7 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
         const parsed = parseRunsPayload(runText);
         applyLoadedRunCases(parsed, runName, source);
         logDebug(`${source} run cases: ${runName}`);
+        loadedRun = true;
       } catch (err) {
         updateRunCasesMeta(`Failed to load ${runName}`);
         logDebug(`Companion run-case load failed (${runName}): ${err?.message ?? err}`);
@@ -3988,6 +4022,18 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
     }
   } else {
     logDebug(`Skipping companion run load (not indexed): ${base}.run`);
+  }
+
+  if (!loadedMass) {
+    resetMassSessionDefaults();
+    logDebug(`Reset mass parameters to session defaults (missing companion ${base}.mass).`);
+  }
+  if (!loadedRun) {
+    resetRunCaseSessionDefaults();
+    uiState.seedNoRunFlightFromExec = true;
+    logDebug(`Reset run-case parameters to session defaults (missing companion ${base}.run).`);
+  } else {
+    uiState.seedNoRunFlightFromExec = false;
   }
 }
 
@@ -4009,8 +4055,10 @@ async function loadExampleFromRuns(avlName) {
   uiState.sourceUrl = avlLoaded.url || null;
   setFileTextValue(avlLoaded.text);
   if (els.fileMeta) els.fileMeta.textContent = `Loaded example: ${normalized}`;
-  loadGeometryFromText(uiState.text, true, true);
   resetAuxPanelsForNewAvl();
+  resetRunCaseSessionDefaults();
+  loadGeometryFromText(uiState.text, true, true);
+  resetFlightCgToHeaderDefaults();
 
   const airfoilPromise = ensureRequiredAirfoilsLoaded();
   await loadCompanionRunAndMassForAvl(normalized, 'Loaded example');
@@ -10252,6 +10300,13 @@ function applyExecResults(result) {
   if (Number.isFinite(result.ALFA) && els.outAlpha) els.outAlpha.textContent = fmtSignedAligned(result.ALFA / (Math.PI / 180), 3);
   if (Number.isFinite(result.BETA) && els.outBeta) els.outBeta.textContent = fmtSignedAligned(result.BETA / (Math.PI / 180), 3);
   if (Number.isFinite(result.CLTOT) && els.outCL) els.outCL.textContent = fmtSignedAligned(result.CLTOT, 5);
+  if (uiState.seedNoRunFlightFromExec && !uiState.runCases.length && Number.isFinite(result.CLTOT)) {
+    setNumericInput(els.cl, Number(result.CLTOT), 4);
+    if (els.clLoop) setNumericInput(els.clLoop, Number(result.CLTOT), 4);
+    updateFlightConditions('cl');
+    uiState.seedNoRunFlightFromExec = false;
+    logDebug(`Seeded no-run flight defaults from EXEC: CL=${fmt(Number(result.CLTOT), 4)} V=${String(els.vel?.value || '')}`);
+  }
   // Do not overwrite user/run-case flight-condition inputs from solved outputs.
   // In AVL OPER, the parameter row (e.g. CL) remains the commanded value while
   // totals show solved coefficients.
