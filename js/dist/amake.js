@@ -28,6 +28,7 @@ function dot3(a, b) {
 }
 
 export function MAKESURF(state, isurf, surf) {
+  const debug = state.__debug;
   const NSEC = surf.sections.length;
   if (NSEC < 2) return;
 
@@ -168,10 +169,57 @@ export function MAKESURF(state, isurf, surf) {
     }
     IPTLOC[1] = 1;
     IPTLOC[NSEC] = npt;
+
+    // Match Fortran MAKESURF behavior: adjust spacing so section locations
+    // align exactly with strip-edge nodes. This prevents controls from
+    // unintentionally spanning across section breaks.
+    for (let isec = 2; isec <= NSEC - 1; isec += 1) {
+      let ipt1 = IPTLOC[isec - 1];
+      let ipt2 = IPTLOC[isec];
+      if (ipt1 === ipt2) {
+        throw new Error(`MAKESURF: insufficient spanwise vortices near section ${isec} on surface ${surf?.name || isurf}`);
+      }
+      let ypt1 = YPT[ipt1];
+      let denom = f32(YPT[ipt2] - YPT[ipt1]);
+      let yscale = denom === 0.0 ? 1.0 : f32((YZLEN[isec] - YZLEN[isec - 1]) / denom);
+      for (let ipt = ipt1; ipt <= ipt2 - 1; ipt += 1) {
+        YPT[ipt] = f32(YZLEN[isec - 1] + f32(yscale * f32(YPT[ipt] - ypt1)));
+      }
+      for (let ivs = ipt1; ivs <= ipt2 - 1; ivs += 1) {
+        YCP[ivs] = f32(YZLEN[isec - 1] + f32(yscale * f32(YCP[ivs] - ypt1)));
+      }
+
+      ipt1 = IPTLOC[isec];
+      ipt2 = IPTLOC[isec + 1];
+      if (ipt1 === ipt2) {
+        throw new Error(`MAKESURF: insufficient spanwise vortices near section ${isec} on surface ${surf?.name || isurf}`);
+      }
+      ypt1 = YPT[ipt1];
+      denom = f32(YPT[ipt2] - YPT[ipt1]);
+      yscale = denom === 0.0 ? 1.0 : f32((YPT[ipt2] - YZLEN[isec]) / denom);
+      for (let ipt = ipt1; ipt <= ipt2 - 1; ipt += 1) {
+        YPT[ipt] = f32(YZLEN[isec] + f32(yscale * f32(YPT[ipt] - ypt1)));
+      }
+      for (let ivs = ipt1; ivs <= ipt2 - 1; ivs += 1) {
+        YCP[ivs] = f32(YZLEN[isec] + f32(yscale * f32(YCP[ivs] - ypt1)));
+      }
+    }
   }
 
   NJ[isurf] = 0;
+  if (debug) {
+    debug({
+      step: 'MAKESURF span setup',
+      isurf,
+      NSEC,
+      NVS,
+      NVC1,
+      NSTRIP: state.NSTRIP,
+      NVOR: state.NVOR,
+    });
+  }
 
+  let loopGuard = 0;
   for (let isec = 1; isec <= NSEC - 1; isec += 1) {
     const xyzleL = [
       f32(XYZSCAL[0] * XYZLES[isec - 1][0] + XYZTRAN[0]),
@@ -219,8 +267,23 @@ export function MAKESURF(state, isurf, surf) {
     const iptR = IPTLOC[isec + 1];
     const nspan = iptR - iptL;
     if (nspan <= 0) continue;
+    if (debug) {
+      debug({
+        step: 'MAKESURF span segment',
+        isec,
+        iptL,
+        iptR,
+        nspan,
+        YPT_L: YPT[iptL],
+        YPT_R: YPT[iptR],
+      });
+    }
 
     for (let ispan = 1; ispan <= nspan; ispan += 1) {
+      loopGuard += 1;
+      if (loopGuard > 1e6) {
+        throw new Error('MAKESURF loop guard tripped');
+      }
       const ipt1 = iptL + ispan - 1;
       const ipt2 = iptL + ispan;
       const ivs = iptL + ispan - 1;
@@ -470,6 +533,12 @@ export function SDUPL(state, baseSurf, ydup, newSurf) {
     state.AINC[jji] = state.AINC[jj];
     state.LSSURF[jji] = newSurf;
 
+    if (state.AINC_G && state.NDESIGN) {
+      for (let n = 1; n <= state.NDESIGN; n += 1) {
+        state.AINC_G[idx2(jji, n, state.NSTRMAX + 1)] = state.AINC_G[idx2(jj, n, state.NSTRMAX + 1)];
+      }
+    }
+
     for (let l = 1; l <= 6; l += 1) {
       state.CLCD[idx2(l, jji, 6)] = state.CLCD[idx2(l, jj, 6)];
     }
@@ -533,6 +602,7 @@ export function SDUPL(state, baseSurf, ydup, newSurf) {
 }
 
 export function ENCALC(state) {
+  const debug = state.__debug;
   const { NSTRIP, NCONTROL, NDESIGN } = state;
   const dimN = state.NVMAX + 1;
   const SAXFR = state.SAXFR ?? 0.0;
@@ -562,6 +632,7 @@ export function ENCALC(state) {
   const ENC_D = state.ENC_D;
   const ENV_D = state.ENV_D;
 
+  if (debug) debug({ step: 'ENCALC start', NSTRIP });
   for (let j = 1; j <= NSTRIP; j += 1) {
     let i = IJFRST[j];
     const dxle = f32(RV2[idx2(1, i, 4)] - RV1[idx2(1, i, 4)]);

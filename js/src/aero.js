@@ -1428,7 +1428,7 @@ export function BDFORC(state) {
             - f32((veff_u[idx2(0, iu, 3)] * esl[0]
               + veff_u[idx2(1, iu, 3)] * esl[1]
               + veff_u[idx2(2, iu, 3)] * esl[2]) * esl[k]));
-          fb_u[idx2(k, iu, 3)] = f32(un * state.SRC_U[idx2(l1, iu, state.NLNODE)] + un_u * state.SRC[l1]);
+          fb_u[idx2(k, iu, 3)] = f32(un * state.SRC_U[idx2(l1, iu + 1, state.DIM_L)] + un_u * state.SRC[l1]);
         }
         state.DCPB[idx2(k, l1, 3)] = f32(fb[k] * f32(2.0 * dinv * drlmi));
       }

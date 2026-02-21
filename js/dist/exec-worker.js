@@ -403,18 +403,18 @@ function log(message) {
 onmessage = async (evt) => {
   const { state, type, requestId, useWasm } = evt.data || {};
   if (!state) {
-    postMessage({ type: 'error', message: 'Missing state.' });
+    postMessage({ type: 'error', message: 'Missing state.', requestId });
     return;
   }
-  // Keep body-derivative sign convention aligned with Fortran AVL defaults.
-  state.LNASA_SA = true;
+  // Preserve caller-selected axis convention (standard AVL axes default false).
+  if (typeof state.LNASA_SA !== 'boolean') state.LNASA_SA = false;
   if (type === 'trim') {
     try {
       const IR = 1;
       TRMSET_CORE(state, 1, IR, IR, IR);
       postMessage({ type: 'trimResult', state, requestId });
     } catch (err) {
-      postMessage({ type: 'error', message: err?.message ?? String(err) });
+      postMessage({ type: 'error', message: err?.message ?? String(err), requestId });
     }
     return;
   }
@@ -458,15 +458,25 @@ onmessage = async (evt) => {
     } catch (err) {
       log(`EXEC precheck failed: ${err?.message ?? err}`);
     }
-    // Honor the UI toggle for all wasm-enabled EXEC kernels.
-    state.USE_WASM_SOLVE = Boolean(useWasm);
-    state.USE_WASM_GAM = Boolean(useWasm);
+    // Keep EXEC on the JS parity path.
+    // The wasm linear solve path can produce non-finite strip/Trefftz outputs
+    // for some multi-file load/update sequences (e.g. default plane -> supra).
+    // Preserve useWasm for eigenmode computation below only.
+    state.USE_WASM_SOLVE = false;
+    state.USE_WASM_GAM = false;
     state.USE_WASM_AERO = false;
     state.USE_WASM_AIC = false;
     state.USE_WASM_LU = false;
+    log(`EXEC kernels: solve=${state.USE_WASM_SOLVE ? 'wasm' : 'js'} gam=${state.USE_WASM_GAM ? 'wasm' : 'js'} aero=${state.USE_WASM_AERO ? 'wasm' : 'js'} aic=${state.USE_WASM_AIC ? 'wasm' : 'js'} lu=${state.USE_WASM_LU ? 'wasm' : 'js'} (uiWasm=${Boolean(useWasm)})`);
+    if (state.LMASS) {
+      try {
+        APPGET(state);
+      } catch (err) {
+        log(`APPGET failed: ${err?.message ?? err}`);
+      }
+    }
     // Use the JS EXEC entrypoint and let it dispatch to wasm kernels via the
-    // USE_WASM_* flags above. The legacy aoper.wasm wrapper has diverged from
-    // current state layout and can emit non-finite totals in default runs.
+    // USE_WASM_* flags above.
     EXEC(state, 20, 0, 1);
     const dt = Date.now() - t0;
     log(`Worker EXEC done (${dt} ms)`);
@@ -536,7 +546,12 @@ onmessage = async (evt) => {
       for (let i = 1; i <= state.NCONTROL; i += 1) out[i] = state.CHINGE[i - 1] ?? 0.0;
       return out;
     })() : null;
-    const eigen = await computeEigenmodes(state, Boolean(useWasm));
+    // Eigen solve mutates working state; keep displayed EXEC outputs based on
+    // the pre-eigen EXEC result to match AVL OPER output panels.
+    const eigenInput = (typeof structuredClone === 'function')
+      ? structuredClone(state)
+      : JSON.parse(JSON.stringify(state));
+    const eigen = await computeEigenmodes(eigenInput, Boolean(useWasm));
     postMessage({
       type: 'result',
       requestId,
@@ -622,6 +637,6 @@ onmessage = async (evt) => {
       EIGEN: eigen,
     });
   } catch (err) {
-    postMessage({ type: 'error', message: err?.message ?? String(err) });
+    postMessage({ type: 'error', message: err?.message ?? String(err), requestId });
   }
 };

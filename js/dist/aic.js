@@ -328,25 +328,51 @@ export function VSRD(BETM, IYSYM, YSYM, IZSYM, ZSYM, SRCORE,
   const FZSYM = f32(IZSYM);
   const YOFF = f32(2.0 * YSYM);
   const ZOFF = f32(2.0 * ZSYM);
+  const stateLayout = RL.length >= (4 * NLDIM);
+  const rcStateLayout = RC.length >= (4 * NCDIM);
+  const srcStateLayout = SRC_U.length >= (NLDIM * (NU + 1));
+  const dblStateLayout = DBL_U.length >= (4 * NLDIM * (NU + 1));
+  const wcStateLayout = WC_U.length >= (4 * NCDIM * (NU + 1));
+  const rlv = (r, l) => (stateLayout ? RL[(r + 1) + 4 * l] : RL[idx3(r, l)]);
+  const rcv = (r, i0) => (rcStateLayout ? RC[(r + 1) + 4 * (i0 + 1)] : RC[idx3(r, i0)]);
+  const rad = (l) => (stateLayout ? RADL[l] : RADL[l]);
+  const srcu = (l, iu0) => (srcStateLayout ? SRC_U[idx2(l, iu0 + 1, NLDIM)] : SRC_U[idx2(l, iu0, NLDIM)]);
+  const dbu = (k0, l, iu0) => (
+    dblStateLayout
+      ? DBL_U[idx3f(k0 + 1, l, iu0 + 1, 4, NLDIM)]
+      : DBL_U[idx3c(k0, l, iu0, NLDIM)]
+  );
+  const wcGet = (k0, i0, iu0) => (
+    wcStateLayout
+      ? WC_U[idx3f(k0 + 1, i0 + 1, iu0 + 1, 4, NCDIM)]
+      : WC_U[idx3c(k0, i0, iu0, NCDIM)]
+  );
+  const wcSet = (k0, i0, iu0, val) => {
+    if (wcStateLayout) {
+      WC_U[idx3f(k0 + 1, i0 + 1, iu0 + 1, 4, NCDIM)] = val;
+    } else {
+      WC_U[idx3c(k0, i0, iu0, NCDIM)] = val;
+    }
+  };
 
   for (let i = 0; i < NC; i += 1) {
     for (let iu = 0; iu < NU; iu += 1) {
-      WC_U[idx3c(0, i, iu, NCDIM)] = 0.0;
-      WC_U[idx3c(1, i, iu, NCDIM)] = 0.0;
-      WC_U[idx3c(2, i, iu, NCDIM)] = 0.0;
+      wcSet(0, i, iu, 0.0);
+      wcSet(1, i, iu, 0.0);
+      wcSet(2, i, iu, 0.0);
     }
   }
 
   for (let ib = 0; ib < NBODY; ib += 1) {
     for (let ilseg = 0; ilseg < NL[ib] - 1; ilseg += 1) {
-      const L1 = LFRST[ib] - 1 + ilseg;
-      const L2 = LFRST[ib] - 1 + ilseg + 1;
+      const L1 = stateLayout ? (LFRST[ib] + ilseg) : (LFRST[ib] - 1 + ilseg);
+      const L2 = L1 + 1;
       const L = L1;
 
-      const RAVG = f32(Math.sqrt(0.5 * (f32(RADL[L2] * RADL[L2]) + f32(RADL[L1] * RADL[L1]))));
-      const dx = f32(RL[idx3(0, L2)] - RL[idx3(0, L1)]);
-      const dy = f32(RL[idx3(1, L2)] - RL[idx3(1, L1)]);
-      const dz = f32(RL[idx3(2, L2)] - RL[idx3(2, L1)]);
+      const RAVG = f32(Math.sqrt(0.5 * (f32(rad(L2) * rad(L2)) + f32(rad(L1) * rad(L1)))));
+      const dx = f32(rlv(0, L2) - rlv(0, L1));
+      const dy = f32(rlv(1, L2) - rlv(1, L1));
+      const dz = f32(rlv(2, L2) - rlv(2, L1));
       const RLAVG = f32(Math.sqrt(f32(f32(dx * dx) + f32(dy * dy) + f32(dz * dz))));
 
       let RCORE = 0.0;
@@ -358,9 +384,9 @@ export function VSRD(BETM, IYSYM, YSYM, IZSYM, ZSYM, SRCORE,
 
       for (let i = 0; i < NC; i += 1) {
         const res = SRDVELC(
-          RC[idx3(0, i)], RC[idx3(1, i)], RC[idx3(2, i)],
-          RL[idx3(0, L1)], RL[idx3(1, L1)], RL[idx3(2, L1)],
-          RL[idx3(0, L2)], RL[idx3(1, L2)], RL[idx3(2, L2)],
+          rcv(0, i), rcv(1, i), rcv(2, i),
+          rlv(0, L1), rlv(1, L1), rlv(2, L1),
+          rlv(0, L2), rlv(1, L2), rlv(2, L2),
           BETM, RCORE,
         );
         const VSRC = res.UVWS;
@@ -369,42 +395,42 @@ export function VSRD(BETM, IYSYM, YSYM, IZSYM, ZSYM, SRCORE,
         for (let iu = 0; iu < NU; iu += 1) {
           for (let k = 0; k < 3; k += 1) {
             const contrib = f32(
-              f32(VSRC[k] * SRC_U[idx2(L, iu, NLDIM)])
-              + f32(VDBL[idx3(k, 0)] * DBL_U[idx3c(0, L, iu, NLDIM)])
-              + f32(VDBL[idx3(k, 1)] * DBL_U[idx3c(1, L, iu, NLDIM)])
-              + f32(VDBL[idx3(k, 2)] * DBL_U[idx3c(2, L, iu, NLDIM)])
+              f32(VSRC[k] * srcu(L, iu))
+              + f32(VDBL[idx3(k, 0)] * dbu(0, L, iu))
+              + f32(VDBL[idx3(k, 1)] * dbu(1, L, iu))
+              + f32(VDBL[idx3(k, 2)] * dbu(2, L, iu))
             );
-            WC_U[idx3c(k, i, iu, NCDIM)] = f32(WC_U[idx3c(k, i, iu, NCDIM)] + contrib);
+            wcSet(k, i, iu, f32(wcGet(k, i, iu) + contrib));
           }
         }
 
         if (IYSYM !== 0) {
           const resY = SRDVELC(
-            RC[idx3(0, i)], RC[idx3(1, i)], RC[idx3(2, i)],
-            RL[idx3(0, L1)], f32(YOFF - RL[idx3(1, L1)]), RL[idx3(2, L1)],
-            RL[idx3(0, L2)], f32(YOFF - RL[idx3(1, L2)]), RL[idx3(2, L2)],
+            rcv(0, i), rcv(1, i), rcv(2, i),
+            rlv(0, L1), f32(YOFF - rlv(1, L1)), rlv(2, L1),
+            rlv(0, L2), f32(YOFF - rlv(1, L2)), rlv(2, L2),
             BETM, RCORE,
           );
           const VSRC = resY.UVWS;
           const VDBL = resY.UVWD;
           for (let iu = 0; iu < NU; iu += 1) {
             for (let k = 0; k < 3; k += 1) {
-              const contrib = f32(
-                f32(VSRC[k] * SRC_U[idx2(L, iu, NLDIM)])
-                + f32(VDBL[idx3(k, 0)] * DBL_U[idx3c(0, L, iu, NLDIM)])
-                - f32(VDBL[idx3(k, 1)] * DBL_U[idx3c(1, L, iu, NLDIM)])
-                + f32(VDBL[idx3(k, 2)] * DBL_U[idx3c(2, L, iu, NLDIM)])
+                const contrib = f32(
+                f32(VSRC[k] * srcu(L, iu))
+                + f32(VDBL[idx3(k, 0)] * dbu(0, L, iu))
+                - f32(VDBL[idx3(k, 1)] * dbu(1, L, iu))
+                + f32(VDBL[idx3(k, 2)] * dbu(2, L, iu))
               );
-              WC_U[idx3c(k, i, iu, NCDIM)] = f32(WC_U[idx3c(k, i, iu, NCDIM)] + f32(contrib * FYSYM));
+              wcSet(k, i, iu, f32(wcGet(k, i, iu) + f32(contrib * FYSYM)));
             }
           }
         }
 
         if (IZSYM !== 0) {
           const resZ = SRDVELC(
-            RC[idx3(0, i)], RC[idx3(1, i)], RC[idx3(2, i)],
-            RL[idx3(0, L1)], RL[idx3(1, L1)], f32(ZOFF - RL[idx3(2, L1)]),
-            RL[idx3(0, L2)], RL[idx3(1, L2)], f32(ZOFF - RL[idx3(2, L2)]),
+            rcv(0, i), rcv(1, i), rcv(2, i),
+            rlv(0, L1), rlv(1, L1), f32(ZOFF - rlv(2, L1)),
+            rlv(0, L2), rlv(1, L2), f32(ZOFF - rlv(2, L2)),
             BETM, RCORE,
           );
           const VSRC = resZ.UVWS;
@@ -412,20 +438,20 @@ export function VSRD(BETM, IYSYM, YSYM, IZSYM, ZSYM, SRCORE,
           for (let iu = 0; iu < NU; iu += 1) {
             for (let k = 0; k < 3; k += 1) {
               const contrib = f32(
-                f32(VSRC[k] * SRC_U[idx2(L, iu, NLDIM)])
-                + f32(VDBL[idx3(k, 0)] * DBL_U[idx3c(0, L, iu, NLDIM)])
-                + f32(VDBL[idx3(k, 1)] * DBL_U[idx3c(1, L, iu, NLDIM)])
-                - f32(VDBL[idx3(k, 2)] * DBL_U[idx3c(2, L, iu, NLDIM)])
+                f32(VSRC[k] * srcu(L, iu))
+                + f32(VDBL[idx3(k, 0)] * dbu(0, L, iu))
+                + f32(VDBL[idx3(k, 1)] * dbu(1, L, iu))
+                - f32(VDBL[idx3(k, 2)] * dbu(2, L, iu))
               );
-              WC_U[idx3c(k, i, iu, NCDIM)] = f32(WC_U[idx3c(k, i, iu, NCDIM)] + f32(contrib * FZSYM));
+              wcSet(k, i, iu, f32(wcGet(k, i, iu) + f32(contrib * FZSYM)));
             }
           }
 
           if (IYSYM !== 0) {
             const resYZ = SRDVELC(
-              RC[idx3(0, i)], RC[idx3(1, i)], RC[idx3(2, i)],
-              RL[idx3(0, L1)], f32(YOFF - RL[idx3(1, L1)]), f32(ZOFF - RL[idx3(2, L1)]),
-              RL[idx3(0, L2)], f32(YOFF - RL[idx3(1, L2)]), f32(ZOFF - RL[idx3(2, L2)]),
+              rcv(0, i), rcv(1, i), rcv(2, i),
+              rlv(0, L1), f32(YOFF - rlv(1, L1)), f32(ZOFF - rlv(2, L1)),
+              rlv(0, L2), f32(YOFF - rlv(1, L2)), f32(ZOFF - rlv(2, L2)),
               BETM, RCORE,
             );
             const VSRC = resYZ.UVWS;
@@ -433,12 +459,12 @@ export function VSRD(BETM, IYSYM, YSYM, IZSYM, ZSYM, SRCORE,
             for (let iu = 0; iu < NU; iu += 1) {
               for (let k = 0; k < 3; k += 1) {
                 const contrib = f32(
-                  f32(VSRC[k] * SRC_U[idx2(L, iu, NLDIM)])
-                  + f32(VDBL[idx3(k, 0)] * DBL_U[idx3c(0, L, iu, NLDIM)])
-                  - f32(VDBL[idx3(k, 1)] * DBL_U[idx3c(1, L, iu, NLDIM)])
-                  - f32(VDBL[idx3(k, 2)] * DBL_U[idx3c(2, L, iu, NLDIM)])
+                  f32(VSRC[k] * srcu(L, iu))
+                  + f32(VDBL[idx3(k, 0)] * dbu(0, L, iu))
+                  - f32(VDBL[idx3(k, 1)] * dbu(1, L, iu))
+                  - f32(VDBL[idx3(k, 2)] * dbu(2, L, iu))
                 );
-                WC_U[idx3c(k, i, iu, NCDIM)] = f32(WC_U[idx3c(k, i, iu, NCDIM)] + f32(contrib * FYSYM * FZSYM));
+                wcSet(k, i, iu, f32(wcGet(k, i, iu) + f32(contrib * FYSYM * FZSYM)));
               }
             }
           }
@@ -456,6 +482,25 @@ export function SRDSET(BETM, XYZREF, IYSYM,
   SRC_U = new Float32Array(NLDIM * 6), DBL_U = new Float32Array(3 * NLDIM * 6)) {
   const PI = 3.14159265;
   const beta = f32(BETM);
+  const stateLayout = RL.length >= (4 * NLDIM);
+  const srcStateLayout = SRC_U.length >= (NLDIM * (6 + 1));
+  const dblStateLayout = DBL_U.length >= (4 * NLDIM * (6 + 1));
+  const rlv = (r, l) => (stateLayout ? RL[(r + 1) + 4 * l] : RL[idx3(r, l)]);
+  const rad = (l) => (stateLayout ? RADL[l] : RADL[l]);
+  const setSrcU = (l, iu0, val) => {
+    if (srcStateLayout) {
+      SRC_U[idx2(l, iu0 + 1, NLDIM)] = val;
+    } else {
+      SRC_U[idx2(l, iu0, NLDIM)] = val;
+    }
+  };
+  const setDblU = (k0, l, iu0, val) => {
+    if (dblStateLayout) {
+      DBL_U[idx3f(k0 + 1, l, iu0 + 1, 4, NLDIM)] = val;
+    } else {
+      DBL_U[idx3c(k0, l, iu0, NLDIM)] = val;
+    }
+  };
 
   const DRL = new Float32Array(3);
   const ESL = new Float32Array(3);
@@ -464,22 +509,22 @@ export function SRDSET(BETM, XYZREF, IYSYM,
   const RLREF = new Float32Array(3);
 
   for (let ib = 0; ib < NBODY; ib += 1) {
-    const L1b = LFRST[ib] - 1;
+    const L1b = stateLayout ? LFRST[ib] : (LFRST[ib] - 1);
     const L2b = L1b + NL[ib] - 1;
-    const BLEN = f32(Math.abs(f32(RL[idx3(0, L2b)] - RL[idx3(0, L1b)])));
+    const BLEN = f32(Math.abs(f32(rlv(0, L2b) - rlv(0, L1b))));
     let SDFAC = 1.0;
-    if (IYSYM === 1 && f32(RL[idx3(1, L1b)]) <= f32(0.001 * BLEN)) {
+    if (IYSYM === 1 && f32(rlv(1, L1b)) <= f32(0.001 * BLEN)) {
       SDFAC = 0.5;
     }
 
     for (let ilseg = 0; ilseg < NL[ib] - 1; ilseg += 1) {
-      const L1 = LFRST[ib] - 1 + ilseg;
-      const L2 = LFRST[ib] - 1 + ilseg + 1;
+      const L1 = stateLayout ? (LFRST[ib] + ilseg) : (LFRST[ib] - 1 + ilseg);
+      const L2 = L1 + 1;
       const L = L1;
 
-      DRL[0] = f32(f32(RL[idx3(0, L2)] - RL[idx3(0, L1)]) / beta);
-      DRL[1] = f32(RL[idx3(1, L2)] - RL[idx3(1, L1)]);
-      DRL[2] = f32(RL[idx3(2, L2)] - RL[idx3(2, L1)]);
+      DRL[0] = f32(f32(rlv(0, L2) - rlv(0, L1)) / beta);
+      DRL[1] = f32(rlv(1, L2) - rlv(1, L1));
+      DRL[2] = f32(rlv(2, L2) - rlv(2, L1));
 
       const DRLMAG = f32(Math.sqrt(f32(f32(DRL[0] * DRL[0]) + f32(DRL[1] * DRL[1]) + f32(DRL[2] * DRL[2]))));
       const DRLMI = DRLMAG === 0.0 ? 0.0 : f32(1.0 / DRLMAG);
@@ -488,12 +533,12 @@ export function SRDSET(BETM, XYZREF, IYSYM,
       ESL[1] = f32(DRL[1] * DRLMI);
       ESL[2] = f32(DRL[2] * DRLMI);
 
-      const ADEL = f32(f32(PI * (f32(RADL[L2] * RADL[L2]) - f32(RADL[L1] * RADL[L1]))) * SDFAC);
-      const AAVG = f32(f32(PI * 0.5 * (f32(RADL[L2] * RADL[L2]) + f32(RADL[L1] * RADL[L1]))) * SDFAC);
+      const ADEL = f32(f32(PI * (f32(rad(L2) * rad(L2)) - f32(rad(L1) * rad(L1)))) * SDFAC);
+      const AAVG = f32(f32(PI * 0.5 * (f32(rad(L2) * rad(L2)) + f32(rad(L1) * rad(L1)))) * SDFAC);
 
-      RLREF[0] = f32(0.5 * f32(RL[idx3(0, L2)] + RL[idx3(0, L1)]) - XYZREF[0]);
-      RLREF[1] = f32(0.5 * f32(RL[idx3(1, L2)] + RL[idx3(1, L1)]) - XYZREF[1]);
-      RLREF[2] = f32(0.5 * f32(RL[idx3(2, L2)] + RL[idx3(2, L1)]) - XYZREF[2]);
+      RLREF[0] = f32(0.5 * f32(rlv(0, L2) + rlv(0, L1)) - XYZREF[0]);
+      RLREF[1] = f32(0.5 * f32(rlv(1, L2) + rlv(1, L1)) - XYZREF[1]);
+      RLREF[2] = f32(0.5 * f32(rlv(2, L2) + rlv(2, L1)) - XYZREF[2]);
 
       for (let iu = 0; iu < 6; iu += 1) {
         UREL[0] = 0.0;
@@ -517,10 +562,10 @@ export function SRDSET(BETM, XYZREF, IYSYM,
         const UN2 = f32(UREL[1] - f32(US * ESL[1]));
         const UN3 = f32(UREL[2] - f32(US * ESL[2]));
 
-        SRC_U[idx2(L, iu, NLDIM)] = f32(ADEL * US);
-        DBL_U[idx3c(0, L, iu, NLDIM)] = f32(f32(AAVG * UN1) * f32(DRLMAG * 2.0));
-        DBL_U[idx3c(1, L, iu, NLDIM)] = f32(f32(AAVG * UN2) * f32(DRLMAG * 2.0));
-        DBL_U[idx3c(2, L, iu, NLDIM)] = f32(f32(AAVG * UN3) * f32(DRLMAG * 2.0));
+        setSrcU(L, iu, f32(ADEL * US));
+        setDblU(0, L, iu, f32(f32(AAVG * UN1) * f32(DRLMAG * 2.0)));
+        setDblU(1, L, iu, f32(f32(AAVG * UN2) * f32(DRLMAG * 2.0)));
+        setDblU(2, L, iu, f32(f32(AAVG * UN3) * f32(DRLMAG * 2.0)));
       }
     }
   }

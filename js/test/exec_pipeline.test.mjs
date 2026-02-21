@@ -6,6 +6,8 @@ import { Worker } from 'node:worker_threads';
 import {
   parseAVL,
   buildSolverModel,
+  buildExecState,
+  buildGeometry,
   repoRootDir,
   applyZSymmetry,
   applyYSymmetry,
@@ -178,6 +180,22 @@ test('buildSolverModel resolves airfoil files', async () => {
   const section = model.surfaces[0]?.sections?.[0];
   assert.ok(section, 'expected a section');
   assert.ok(section.airfoilCamber, 'expected airfoil camber slope');
+});
+
+test('buildGeometry populates BODY node arrays for supra', async () => {
+  const text = await readRunFile('supra.avl');
+  const model = await buildSolverModel(text, { baseDir: runsDir });
+  const state = buildExecState(model, { alpha: 0, beta: 0, vel: 1, rho: 1, gee: 1, unitl: 0.0254 });
+  buildGeometry(state, model);
+
+  assert.ok(state.NBODY >= 1, 'expected at least one body');
+  assert.ok(state.NLNODE >= 2, 'expected body node count');
+  assert.ok(state.LFRST[0] >= 1, 'expected first body node index');
+  assert.ok(state.NL[0] >= 2, 'expected first body node length');
+  assert.ok(Number.isFinite(state.RL[4 * state.LFRST[0] + 1]), 'expected RL x coord');
+  assert.ok(Number.isFinite(state.RL[4 * state.LFRST[0] + 2]), 'expected RL y coord');
+  assert.ok(Number.isFinite(state.RL[4 * state.LFRST[0] + 3]), 'expected RL z coord');
+  assert.ok(Number.isFinite(state.RADL[state.LFRST[0]]), 'expected RADL radius');
 });
 
 function runExecInWorker(text, options, timeoutMs = 2000) {

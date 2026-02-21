@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { EXEC } from './aoper.js';
 import { MAKESURF, ENCALC, SDUPL } from './amake.js';
 import { GETCAM } from './airutil.js';
-import { AKIMA, NRMLIZ } from './sgutil.js';
+import { AKIMA, NRMLIZ, SPACER } from './sgutil.js';
 import { parseAVL, parseNumbers } from '../shared/avl_parser.js';
 
 export { parseAVL };
@@ -52,6 +52,60 @@ function interpY(curve, x) {
     }
   }
   return curve[curve.length - 1]?.[1] ?? 0.0;
+}
+
+export function parseBodyText(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const coords = [];
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('#') || trimmed.startsWith('!') || trimmed.startsWith('%')) continue;
+    const nums = parseNumbers(raw);
+    if (nums.length >= 2) coords.push([nums[0], nums[1]]);
+  }
+  if (coords.length >= 2) {
+    let area = 0;
+    for (let i = 0; i < coords.length - 1; i += 1) {
+      const x0 = Number(coords[i][0]) || 0;
+      const y0 = Number(coords[i][1]) || 0;
+      const x1 = Number(coords[i + 1][0]) || 0;
+      const y1 = Number(coords[i + 1][1]) || 0;
+      const rx = x1 + x0;
+      const ry = y1 + y0;
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      area += 0.25 * (rx * dy - ry * dx);
+    }
+    if (area < 0) coords.reverse();
+  }
+  return coords;
+}
+
+function buildBodyThread(coords, samples = 50) {
+  if (!Array.isArray(coords) || coords.length < 3) return null;
+  const n = coords.length;
+  const X = new Float32Array(n);
+  const Y = new Float32Array(n);
+  for (let i = 0; i < n; i += 1) {
+    X[i] = Number(coords[i][0]) || 0;
+    Y[i] = Number(coords[i][1]) || 0;
+  }
+  const nIn = Math.max(2, Math.round(samples));
+  const XBOD = new Float32Array(nIn);
+  const YBOD = new Float32Array(nIn);
+  const TBOD = new Float32Array(nIn);
+  GETCAM(X, Y, n, XBOD, YBOD, TBOD, nIn, false);
+  return {
+    x: Array.from(XBOD),
+    y: Array.from(YBOD),
+    t: Array.from(TBOD),
+  };
+}
+
+function bodyNodeCount(body) {
+  const n = Math.round(Number(body?.nBody) || 0);
+  return n >= 2 ? n : 0;
 }
 
 export function buildCamberSlope(coords, samples = 50) {
@@ -109,7 +163,7 @@ export function buildNacaSlope(code, samples = 60) {
 }
 
 export async function buildSolverModel(text, options = {}) {
-  const { airfoilResolver, baseDir } = options;
+  const { airfoilResolver, bodyResolver, baseDir } = options;
   const model = parseAVL(text);
   const controlMap = new Map();
   const surfaces = [];
@@ -122,6 +176,7 @@ export async function buildSolverModel(text, options = {}) {
       return null;
     }
   });
+  const resolveBody = bodyResolver || resolveAirfoil;
 
   for (const surf of model.surfaces) {
     const baseIndex = surfaces.length + 1;
@@ -153,6 +208,17 @@ export async function buildSolverModel(text, options = {}) {
         sec.airfoilCamber = buildNacaSlope('0000');
       }
       sec.claf = 1.0;
+    }
+  }
+  if (Array.isArray(model.bodies)) {
+    for (const body of model.bodies) {
+      let coords = body.bodyCoords;
+      if (!coords && body.bodyFile) {
+        const textData = await resolveBody(body.bodyFile);
+        if (textData) coords = parseBodyText(textData);
+      }
+      body.bodyCoords = coords || [];
+      body.bodyThread = buildBodyThread(body.bodyCoords);
     }
   }
   model.surfaces = surfaces;
@@ -231,6 +297,8 @@ export function applyYDuplicate(model) {
 }
 
 export function buildExecState(model, options = {}) {
+  const unitlOpt = Number(options.unitl);
+  const unitlUse = Number.isFinite(unitlOpt) && unitlOpt > 0 ? unitlOpt : 1.0;
   const defaults = {
     vel: 30,
     rho: 1.225,
@@ -304,6 +372,15 @@ export function buildExecState(model, options = {}) {
     sum + (typeof surf.yduplicate === 'number' ? 1 : 0)
   ), 0);
   const NSURF = model.surfaces.length + dupCount;
+  const bodies = Array.isArray(model.bodies) ? model.bodies : [];
+  const solvableBodies = bodies.filter((body) => (
+    bodyNodeCount(body) >= 2 && body.bodyThread
+    && Array.isArray(body.bodyThread.x) && body.bodyThread.x.length >= 2
+    && Array.isArray(body.bodyThread.y) && body.bodyThread.y.length >= 2
+    && Array.isArray(body.bodyThread.t) && body.bodyThread.t.length >= 2
+  ));
+  const NBODY = solvableBodies.length;
+  const NLNODE = solvableBodies.reduce((sum, body) => sum + bodyNodeCount(body), 0);
   const NCONTROL = model.controlMap?.size ?? 0;
   const NDESIGN = 0;
   const NUMAX = 6;
@@ -326,7 +403,7 @@ export function buildExecState(model, options = {}) {
   const NVMAX = Math.max(1, NVOR);
   const NSTRMAX = Math.max(1, NSTRIP);
   const NRMAX = 1;
-  const NLMAX = 1;
+  const NLMAX = Math.max(1, NLNODE);
   const IVMAX = IVTOT + NDMAX;
   const ICMAX = ICTOT + NDMAX;
 
@@ -357,9 +434,9 @@ export function buildExecState(model, options = {}) {
     ICMAX,
     NRMAX,
     NVTOT: IVTOT + NCONTROL,
-    NBODY: 0,
-    NLNODE: 0,
-    NLMAX: 1,
+    NBODY,
+    NLNODE,
+    NLMAX,
     DIM_N,
     DIM_U,
     DIM_C,
@@ -368,7 +445,7 @@ export function buildExecState(model, options = {}) {
 
     PI: Math.fround(Math.PI),
     DTR: Math.fround(Math.PI / 180.0),
-    UNITL: Math.fround(1.0),
+    UNITL: Math.fround(unitlUse),
     IYSYM: model.header.iysym ?? 0,
     IZSYM: model.header.izsym ?? 0,
     YSYM: 0.0,
@@ -429,8 +506,8 @@ export function buildExecState(model, options = {}) {
     SSURF: new Float32Array(NSURF + 1),
     CAVESURF: new Float32Array(NSURF + 1),
 
-    LFRST: new Int32Array(NLMAX + 1),
-    NL: new Int32Array(NLMAX + 1),
+    LFRST: new Int32Array(Math.max(1, NBODY)),
+    NL: new Int32Array(Math.max(1, NBODY)),
     RL: new Float32Array(4 * (NLMAX + 1)),
     RADL: new Float32Array(NLMAX + 1),
 
@@ -528,7 +605,12 @@ export function buildExecState(model, options = {}) {
     GAM_U_G: new Float32Array((NVMAX + 1) * (NUMAX + 1) * (NGMAX + 1)),
 
     DCP: new Float32Array((NVMAX + 1) * (NVMAX + 1)),
-    DCPB: new Float32Array((NVMAX + 1) * (NVMAX + 1)),
+    DCPB: new Float32Array(3 * (NLMAX + 1)),
+    CDBDY: new Float32Array(Math.max(1, NBODY)),
+    CYBDY: new Float32Array(Math.max(1, NBODY)),
+    CLBDY: new Float32Array(Math.max(1, NBODY)),
+    CFBDY: new Float32Array(3 * Math.max(1, NBODY)),
+    CMBDY: new Float32Array(3 * Math.max(1, NBODY)),
     DCP_U: new Float32Array((NVMAX + 1) * (NUMAX + 1)),
     DCP_D: new Float32Array((NVMAX + 1) * (NDMAX + 1)),
     DCP_G: new Float32Array((NVMAX + 1) * (NGMAX + 1)),
@@ -690,6 +772,8 @@ export function buildExecState(model, options = {}) {
 }
 
 export function buildGeometry(state, model) {
+  const idx2 = (i, j, dim1) => i + dim1 * j;
+
   state.NVOR = 0;
   state.NSTRIP = 0;
   let surfIndex = 0;
@@ -707,6 +791,61 @@ export function buildGeometry(state, model) {
     }
   });
   state.NSURF = surfIndex;
+
+  const bodies = Array.isArray(model.bodies) ? model.bodies : [];
+  let bodyCount = 0;
+  let nodeCursor = 1;
+  bodies.forEach((body) => {
+    const bodyThread = body.bodyThread;
+    const xb = Array.isArray(bodyThread?.x) ? bodyThread.x : [];
+    const yb = Array.isArray(bodyThread?.y) ? bodyThread.y : [];
+    const tb = Array.isArray(bodyThread?.t) ? bodyThread.t : [];
+    const nBody = bodyNodeCount(body);
+    if (nBody < 2 || xb.length < 2 || yb.length < 2 || tb.length < 2) return;
+
+    const xMin = Number(xb[0]);
+    const xMax = Number(xb[xb.length - 1]);
+    if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) return;
+    if (nodeCursor + nBody - 1 > state.NLMAX) return;
+
+    const scale = Array.isArray(body.scale) && body.scale.length >= 3 ? body.scale : [1, 1, 1];
+    const translate = Array.isArray(body.translate) && body.translate.length >= 3 ? body.translate : [0, 0, 0];
+    const xScale = Number(scale[0]) || 1;
+    const yScale = Number(scale[1]) || 1;
+    const zScale = Number(scale[2]) || 1;
+    const radiusScale = Math.sqrt(yScale * zScale);
+    const tx = Number(translate[0]) || 0;
+    const ty = Number(translate[1]) || 0;
+    const tz = Number(translate[2]) || 0;
+
+    const fspace = new Float32Array(nBody + 1);
+    SPACER(nBody, body.bSpace ?? 1, fspace);
+    const xpt = new Float32Array(nBody + 1);
+    for (let i = 1; i <= nBody; i += 1) xpt[i] = fspace[i];
+    xpt[1] = 0;
+    xpt[nBody] = 1;
+
+    for (let i = 1; i <= nBody; i += 1) {
+      const l = nodeCursor + i - 1;
+      const s = xpt[i];
+      const xLocal = xMin + (xMax - xMin) * s;
+      const yCenter = AKIMA(xb, yb, xb.length, xLocal).YY;
+      const thickness = AKIMA(xb, tb, xb.length, xLocal).YY;
+      // Body RL vectors follow Fortran-style stride-4 layout with components at 1..3.
+      state.RL[idx2(1, l, 4)] = Math.fround(xScale * xLocal + tx);
+      state.RL[idx2(2, l, 4)] = Math.fround(ty);
+      state.RL[idx2(3, l, 4)] = Math.fround(zScale * yCenter + tz);
+      state.RADL[l] = Math.fround(0.5 * thickness * radiusScale);
+    }
+
+    state.LFRST[bodyCount] = nodeCursor;
+    state.NL[bodyCount] = nBody;
+    bodyCount += 1;
+    nodeCursor += nBody;
+  });
+  state.NBODY = bodyCount;
+  state.NLNODE = Math.max(0, nodeCursor - 1);
+
   ENCALC(state);
 }
 

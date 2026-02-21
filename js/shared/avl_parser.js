@@ -9,6 +9,7 @@ const KEYWORD_PREFIXES = new Set([
   'SECT',
   'BODY',
   'COMP',
+  'INDE',
   'YDUP',
   'SCAL',
   'TRAN',
@@ -17,6 +18,7 @@ const KEYWORD_PREFIXES = new Set([
   'NOLO',
   'NACA',
   'AFIL',
+  'BFIL',
   'AIRF',
   'CONT',
 ]);
@@ -97,10 +99,24 @@ function parseAirfoilBlock(lines, indexRef) {
   return coords;
 }
 
+function parseAfilInlinePath(trimmedLine) {
+  const parts = stripInlineComment(trimmedLine).trim().split(/\s+/).slice(1);
+  if (parts.length) {
+    const pathTokens = parts.filter((token) => !Number.isFinite(Number(token)));
+    if (pathTokens.length) {
+      const inlinePath = normalizeAirfoilPath(pathTokens.join(' '));
+      if (inlinePath) return inlinePath;
+    }
+  }
+  return '';
+}
+
 export function parseAVL(text) {
   const lines = String(text || '').split(/\r?\n/);
   const surfaces = [];
+  const bodies = [];
   const inlineAirfoils = [];
+  const bodyFiles = [];
   const indexRef = { i: 0 };
 
   const header = {
@@ -152,7 +168,56 @@ export function parseAVL(text) {
     const line = nextLine();
     if (!line) break;
     const key = line.slice(0, 4).toUpperCase();
-    if (key !== 'SURF') continue;
+    if (key !== 'SURF' && key !== 'BODY') continue;
+
+    if (key === 'BODY') {
+      const bodyName = nextLine() || 'Body';
+      const spacing = readValueLine();
+      const body = {
+        name: bodyName,
+        nBody: spacing[0] ?? 0,
+        bSpace: spacing[1] ?? 1,
+        scale: [1, 1, 1],
+        translate: [0, 0, 0],
+        yduplicate: null,
+        bodyFile: null,
+      };
+
+      while (indexRef.i < lines.length) {
+        const mark = lines[indexRef.i] ?? '';
+        const trimmed = mark.trim();
+        if (!trimmed || isCommentLine(trimmed)) {
+          indexRef.i += 1;
+          continue;
+        }
+        const subkey = trimmed.slice(0, 4).toUpperCase();
+        if (subkey === 'SURF' || subkey === 'BODY') break;
+        indexRef.i += 1;
+
+        if (subkey === 'YDUP') {
+          const nums = parseNumbers(trimmed.slice(4));
+          const vals = nums.length ? nums : readValueLine();
+          body.yduplicate = vals[0] ?? body.yduplicate;
+        } else if (subkey === 'SCAL') {
+          const nums = parseNumbers(trimmed.slice(4));
+          const vals = nums.length ? nums : readValueLine();
+          if (vals.length >= 3) body.scale = vals.slice(0, 3);
+        } else if (subkey === 'TRAN') {
+          const nums = parseNumbers(trimmed.slice(4));
+          const vals = nums.length ? nums : readValueLine();
+          if (vals.length >= 3) body.translate = vals.slice(0, 3);
+        } else if (subkey === 'BFIL') {
+          const parts = stripInlineComment(trimmed).trim().split(/\s+/).slice(1);
+          let pathValue = parts.join(' ');
+          if (!pathValue) pathValue = nextLine() || '';
+          const normalized = normalizeAirfoilPath(pathValue);
+          body.bodyFile = normalized || null;
+          if (normalized) bodyFiles.push(normalized);
+        }
+      }
+      bodies.push(body);
+      continue;
+    }
 
     const surfaceName = nextLine() || 'Surface';
     const spacing = readValueLine();
@@ -183,7 +248,7 @@ export function parseAVL(text) {
       if (subkey === 'SURF' || subkey === 'BODY') break;
       indexRef.i += 1;
 
-      if (subkey === 'COMP') {
+      if (subkey === 'COMP' || subkey === 'INDE') {
         const nums = parseNumbers(trimmed.slice(4));
         const vals = nums.length ? nums : readValueLine();
         surface.component = vals[0] ?? surface.component;
@@ -234,10 +299,31 @@ export function parseAVL(text) {
         currentSection.naca = match ? match[1] : null;
       } else if (subkey === 'AFIL') {
         if (!currentSection) continue;
-        const parts = stripInlineComment(trimmed).split(/\s+/);
-        let pathValue = parts.length > 1 ? parts.slice(1).join(' ') : '';
-        if (!pathValue) pathValue = nextLine() || '';
-        const normalized = normalizeAirfoilPath(pathValue);
+        let normalized = parseAfilInlinePath(trimmed);
+        if (!normalized) {
+          while (indexRef.i < lines.length) {
+            const probeRaw = lines[indexRef.i] ?? '';
+            const probe = stripInlineComment(probeRaw).trim();
+            if (!probe || isCommentLine(probeRaw)) {
+              indexRef.i += 1;
+              continue;
+            }
+            const probeKey = probe.slice(0, 4).toUpperCase();
+            if (probeKey === 'AFIL') {
+              indexRef.i += 1;
+              normalized = parseAfilInlinePath(probe);
+              if (normalized) break;
+              continue;
+            }
+            if (isKeywordLine(probe)) {
+              normalized = '';
+              break;
+            }
+            normalized = normalizeAirfoilPath(probe);
+            indexRef.i += 1;
+            break;
+          }
+        }
         currentSection.airfoilFile = normalized || null;
         if (normalized) inlineAirfoils.push(normalized);
       } else if (subkey === 'AIRF') {
@@ -251,6 +337,11 @@ export function parseAVL(text) {
     surfaces.push(surface);
   }
 
-  return { header, surfaces, airfoilFiles: inlineAirfoils };
+  return {
+    header,
+    surfaces,
+    bodies,
+    airfoilFiles: inlineAirfoils,
+    bodyFiles,
+  };
 }
-

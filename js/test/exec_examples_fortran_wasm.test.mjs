@@ -30,6 +30,7 @@ const CASES = [
   { file: 'circle.avl', tol: { force: 5e-4, moment: 1e-3, stripGeom: 1e-4, stripAero: 2e-3, xnp: 5e-3 } },
   { file: 'hershey.avl', tol: { force: 5e-4, moment: 1e-3, stripGeom: 1e-4, stripAero: 2e-3, xnp: 5e-3 } },
   { file: 'ellip.avl', tol: { force: 1e-3, moment: 2e-3, stripGeom: 1e-4, stripAero: 2e-3, xnp: 1e-2 } },
+  { file: 'supra.avl', tol: { force: 2e-3, moment: 3e-3, stripGeom: 2e-4, stripAero: 2e-1, xnp: 2e-2 } },
 ];
 
 function idx2(i, j, dim1) {

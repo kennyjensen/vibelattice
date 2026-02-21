@@ -169,6 +169,41 @@ export function MAKESURF(state, isurf, surf) {
     }
     IPTLOC[1] = 1;
     IPTLOC[NSEC] = npt;
+
+    // Match Fortran MAKESURF behavior: adjust spacing so section locations
+    // align exactly with strip-edge nodes. This prevents controls from
+    // unintentionally spanning across section breaks.
+    for (let isec = 2; isec <= NSEC - 1; isec += 1) {
+      let ipt1 = IPTLOC[isec - 1];
+      let ipt2 = IPTLOC[isec];
+      if (ipt1 === ipt2) {
+        throw new Error(`MAKESURF: insufficient spanwise vortices near section ${isec} on surface ${surf?.name || isurf}`);
+      }
+      let ypt1 = YPT[ipt1];
+      let denom = f32(YPT[ipt2] - YPT[ipt1]);
+      let yscale = denom === 0.0 ? 1.0 : f32((YZLEN[isec] - YZLEN[isec - 1]) / denom);
+      for (let ipt = ipt1; ipt <= ipt2 - 1; ipt += 1) {
+        YPT[ipt] = f32(YZLEN[isec - 1] + f32(yscale * f32(YPT[ipt] - ypt1)));
+      }
+      for (let ivs = ipt1; ivs <= ipt2 - 1; ivs += 1) {
+        YCP[ivs] = f32(YZLEN[isec - 1] + f32(yscale * f32(YCP[ivs] - ypt1)));
+      }
+
+      ipt1 = IPTLOC[isec];
+      ipt2 = IPTLOC[isec + 1];
+      if (ipt1 === ipt2) {
+        throw new Error(`MAKESURF: insufficient spanwise vortices near section ${isec} on surface ${surf?.name || isurf}`);
+      }
+      ypt1 = YPT[ipt1];
+      denom = f32(YPT[ipt2] - YPT[ipt1]);
+      yscale = denom === 0.0 ? 1.0 : f32((YPT[ipt2] - YZLEN[isec]) / denom);
+      for (let ipt = ipt1; ipt <= ipt2 - 1; ipt += 1) {
+        YPT[ipt] = f32(YZLEN[isec] + f32(yscale * f32(YPT[ipt] - ypt1)));
+      }
+      for (let ivs = ipt1; ivs <= ipt2 - 1; ivs += 1) {
+        YCP[ivs] = f32(YZLEN[isec] + f32(yscale * f32(YCP[ivs] - ypt1)));
+      }
+    }
   }
 
   NJ[isurf] = 0;

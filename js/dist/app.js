@@ -1,14 +1,16 @@
 import { TRMSET_CORE } from './atrim.js';
 import { EXEC } from './aoper.js';
+import { APPGET } from '../src/amass.js';
 import { MAKESURF, ENCALC, SDUPL } from './amake.js';
 import { GETCAM } from './airutil.js';
-import { AKIMA, NRMLIZ } from './sgutil.js';
+import { AKIMA, NRMLIZ, SPACER } from './sgutil.js';
 import {
   addInducedVelocityFromVorvelc as addInducedVelocityFromVorvelcKernel,
   addInducedVelocityFromHorseshoe as addInducedVelocityFromHorseshoeKernel,
   buildSolverHorseshoesFromExec,
 } from './flow_induced.js';
 import { parseAVL } from '../shared/avl_parser.js';
+import { parseNumbers } from '../shared/avl_parser.js';
 
 let THREE = null;
 let OrbitControls = null;
@@ -145,6 +147,7 @@ const els = {
 
 const uiState = {
   filename: null,
+  sourceUrl: null,
   text: '',
   surfaceColors: [0xff0000, 0xff8c00, 0xffff00, 0x00ff00, 0x00ffff, 0x0000ff, 0x8a2be2, 0xff00ff],
   trefftzData: null,
@@ -209,12 +212,89 @@ let trefftzBusyShowTimer = null;
 let trefftzBusyHideTimer = null;
 let trimRequestId = 0;
 let execRequestId = 0;
-let autoTrimTimer = null;
+let execRerunPending = false;
+let trimRerunPending = false;
 let suspendAutoTrim = false;
+const AUTO_UPDATE_STAGE = {
+  AIRCRAFT: 1 << 0,
+  FLIGHT: 1 << 1,
+  CONSTRAINTS: 1 << 2,
+  EXEC: 1 << 3,
+  EIGEN: 1 << 4,
+};
+let autoUpdateMask = 0;
+let autoUpdateTimer = null;
+let autoUpdateRunning = false;
+const autoUpdateTrace = [];
 let lastTrimState = null;
 let loadingGroup = null;
 let outputFontFitRaf = 0;
 let fileSummarySyncing = false;
+
+function recordAutoUpdateTrace(stage, detail = '') {
+  const entry = `${stage}${detail ? `:${detail}` : ''}`;
+  autoUpdateTrace.push(entry);
+  if (autoUpdateTrace.length > 300) autoUpdateTrace.shift();
+}
+
+function runAutoUpdatePipeline() {
+  if (autoUpdateRunning) return;
+  autoUpdateRunning = true;
+  try {
+    while (autoUpdateMask) {
+      let mask = autoUpdateMask;
+      autoUpdateMask = 0;
+
+      if (mask & AUTO_UPDATE_STAGE.AIRCRAFT) {
+        recordAutoUpdateTrace('stage', 'aircraft');
+        loadGeometryFromText(uiState.text, false, true);
+        mask |= AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN;
+      }
+      if (mask & AUTO_UPDATE_STAGE.FLIGHT) {
+        recordAutoUpdateTrace('stage', 'flight');
+        updateFlightConditions();
+      }
+      if (mask & AUTO_UPDATE_STAGE.CONSTRAINTS) {
+        recordAutoUpdateTrace('stage', 'constraints');
+        updateConstraintDuplicates();
+      }
+      if (mask & AUTO_UPDATE_STAGE.EXEC) {
+        recordAutoUpdateTrace('stage', 'exec');
+        applyTrim();
+      } else if (mask & AUTO_UPDATE_STAGE.EIGEN) {
+        recordAutoUpdateTrace('stage', 'eigen');
+        drawEigenPlot();
+      }
+    }
+  } finally {
+    autoUpdateRunning = false;
+    if (autoUpdateMask && !autoUpdateTimer && !suspendAutoTrim) {
+      autoUpdateTimer = setTimeout(() => {
+        autoUpdateTimer = null;
+        runAutoUpdatePipeline();
+      }, 0);
+    }
+  }
+}
+
+function requestAutoUpdate(mask, { delayMs = 120, immediate = false } = {}) {
+  if (!mask) return;
+  autoUpdateMask |= mask;
+  if (immediate) {
+    if (autoUpdateTimer) {
+      clearTimeout(autoUpdateTimer);
+      autoUpdateTimer = null;
+    }
+    runAutoUpdatePipeline();
+    return;
+  }
+  if (suspendAutoTrim) return;
+  if (autoUpdateTimer) clearTimeout(autoUpdateTimer);
+  autoUpdateTimer = setTimeout(() => {
+    autoUpdateTimer = null;
+    runAutoUpdatePipeline();
+  }, delayMs);
+}
 const AVL_KEYWORDS = new Set([
   'SURFACE', 'SECTION', 'BODY', 'PATCH', 'COMPONENT', 'INDEX', 'YDUPLICATE', 'NOWAKE',
   'NOALBE', 'NOLOAD', 'NOSTALL', 'SCALE', 'TRANSLATE', 'ANGLE', 'NACA', 'AIRFOIL',
@@ -1081,7 +1161,9 @@ function queueTemplateParamApply() {
     uiState.text = els.fileText.value;
     loadGeometryFromText(uiState.text, false);
     resetTrimSeed();
-    scheduleAutoTrim();
+    requestAutoUpdate(
+      AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    );
   }, 80);
 }
 
@@ -1516,7 +1598,10 @@ function applyAircraftNameRename() {
   setFileTextValue(updated);
   loadGeometryFromText(uiState.text, false);
   resetTrimSeed();
-  applyTrim({ useSeed: false });
+  requestAutoUpdate(
+    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    { immediate: true },
+  );
 }
 
 function applyAircraftRefRename() {
@@ -1548,7 +1633,10 @@ function applyAircraftRefRename() {
   setFileTextValue(updated);
   loadGeometryFromText(uiState.text, false);
   resetTrimSeed();
-  applyTrim({ useSeed: false });
+  requestAutoUpdate(
+    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    { immediate: true },
+  );
 }
 
 function updateTrefftzBusy() {
@@ -1794,6 +1882,24 @@ function ensureExecWorker() {
         clearTimeout(execTimeoutId);
         execTimeoutId = null;
       }
+      if (trimRerunPending) {
+        trimRerunPending = false;
+        setTimeout(() => applyTrim(), 0);
+        return;
+      }
+      if (execRerunPending && uiState.text.trim()) {
+        execRerunPending = false;
+        execInProgress = true;
+        updateTrefftzBusy();
+        logDebug('EXEC rerun after worker error.');
+        try {
+          runExecFromText(uiState.text);
+        } catch (err) {
+          logDebug(`EXEC rerun failed: ${err?.message ?? err}`);
+          execInProgress = false;
+          updateTrefftzBusy();
+        }
+      }
     } else if (msg.type === 'trimResult') {
       if (msg.requestId !== trimRequestId) {
         return;
@@ -1805,6 +1911,10 @@ function ensureExecWorker() {
         lastTrimState = extractTrimSeed(msg.state);
       } catch (err) {
         logDebug(`Trim apply failed: ${err?.message ?? err}`);
+      }
+      if (trimRerunPending) {
+        trimRerunPending = false;
+        setTimeout(() => applyTrim(), 0);
       }
     } else if (msg.type === 'result') {
       if (msg.requestId !== execRequestId) {
@@ -1821,6 +1931,24 @@ function ensureExecWorker() {
       } catch (err) {
         logDebug(`EXEC apply failed: ${err?.message ?? err}`);
       }
+      if (trimRerunPending) {
+        trimRerunPending = false;
+        setTimeout(() => applyTrim(), 0);
+        return;
+      }
+      if (execRerunPending && uiState.text.trim()) {
+        execRerunPending = false;
+        execInProgress = true;
+        updateTrefftzBusy();
+        logDebug('EXEC rerun queued update.');
+        try {
+          runExecFromText(uiState.text);
+        } catch (err) {
+          logDebug(`EXEC rerun failed: ${err?.message ?? err}`);
+          execInProgress = false;
+          updateTrefftzBusy();
+        }
+      }
     }
   };
   execWorker.onerror = (evt) => {
@@ -1831,6 +1959,24 @@ function ensureExecWorker() {
     if (execTimeoutId) {
       clearTimeout(execTimeoutId);
       execTimeoutId = null;
+    }
+    if (trimRerunPending) {
+      trimRerunPending = false;
+      setTimeout(() => applyTrim(), 0);
+      return;
+    }
+    if (execRerunPending && uiState.text.trim()) {
+      execRerunPending = false;
+      execInProgress = true;
+      updateTrefftzBusy();
+      logDebug('EXEC rerun after worker crash.');
+      try {
+        runExecFromText(uiState.text);
+      } catch (err) {
+        logDebug(`EXEC rerun failed: ${err?.message ?? err}`);
+        execInProgress = false;
+        updateTrefftzBusy();
+      }
     }
   };
   return execWorker;
@@ -1856,6 +2002,10 @@ const airfoilUploadInvalid = new Set();
 const providedAirfoilFiles = new Set();
 const airfoilDisplayNames = new Map();
 let requiredAirfoilFiles = [];
+const bodyProfileCache = new Map();
+const bodyProfilePending = new Map();
+const bodyProfileFailed = new Set();
+let requiredBodyFiles = [];
 
 function fmt(value, digits = 3) {
   if (!Number.isFinite(value)) return '-';
@@ -1891,11 +2041,13 @@ function formatSurfaceDisplayName(rawName, index = 1) {
 
 function getHeaderRefs() {
   const header = uiState.modelHeader || {};
+  const massProps = uiState.massProps || null;
+  const unitlFromMass = Number(massProps?.lunitScale);
   return {
     sref: Number(header.sref ?? 1.0),
     cref: Number(header.cref ?? 1.0),
     bref: Number(header.bref ?? 1.0),
-    unitl: Number(header.unitl ?? 1.0),
+    unitl: Number.isFinite(unitlFromMass) && unitlFromMass > 0 ? unitlFromMass : 1.0,
   };
 }
 
@@ -1915,6 +2067,34 @@ function renderControlRows(entries) {
   }).join('');
   els.outControlRows.innerHTML = html;
   scheduleOutputGridFontFit();
+}
+
+function clearComputedOutputsForNewGeometry() {
+  uiState.lastExecResult = null;
+  if (els.outAlpha) els.outAlpha.textContent = '-';
+  if (els.outBeta) els.outBeta.textContent = '-';
+  if (els.outMach) els.outMach.textContent = '-';
+  if (els.outPb2v) els.outPb2v.textContent = '-';
+  if (els.outQc2v) els.outQc2v.textContent = '-';
+  if (els.outRb2v) els.outRb2v.textContent = '-';
+  if (els.outCL) els.outCL.textContent = '-';
+  if (els.outCY) els.outCY.textContent = '-';
+  if (els.outCD) els.outCD.textContent = '-';
+  if (els.outCXtot) els.outCXtot.textContent = '-';
+  if (els.outCYtot) els.outCYtot.textContent = '-';
+  if (els.outCZtot) els.outCZtot.textContent = '-';
+  if (els.outCltot) els.outCltot.textContent = '-';
+  if (els.outCmtot) els.outCmtot.textContent = '-';
+  if (els.outCntot) els.outCntot.textContent = '-';
+  if (els.outCDvis) els.outCDvis.textContent = '-';
+  if (els.outCDind) els.outCDind.textContent = '-';
+  if (els.outEff) els.outEff.textContent = '-';
+  if (els.outDef) els.outDef.textContent = '-';
+  renderControlRows([]);
+  renderStabilityGrid(null);
+  renderBodyDerivGrid(null);
+  renderSurfaceForcesGrid(null);
+  renderHingeGrid(null, null);
 }
 
 function renderStabilityGrid(result) {
@@ -2414,9 +2594,12 @@ function readMassPropsFromUI() {
     iyz: num(els.massIyz, 0),
     g: Number.isFinite(Number(els.gee?.value)) ? Number(els.gee.value) : 9.81,
     rho: Number.isFinite(Number(els.rho?.value)) ? Number(els.rho.value) : 1.225,
-    lunit: 'm',
-    munit: 'kg',
-    tunit: 's',
+    lunit: String(uiState.massProps?.lunit || 'm'),
+    munit: String(uiState.massProps?.munit || 'kg'),
+    tunit: String(uiState.massProps?.tunit || 's'),
+    lunitScale: Number(uiState.massProps?.lunitScale) || 1.0,
+    munitScale: Number(uiState.massProps?.munitScale) || 1.0,
+    tunitScale: Number(uiState.massProps?.tunitScale) || 1.0,
   };
 }
 
@@ -2451,6 +2634,9 @@ function makeDefaultMassProps() {
     lunit: 'm',
     munit: 'kg',
     tunit: 's',
+    lunitScale: 1.0,
+    munitScale: 1.0,
+    tunitScale: 1.0,
   };
 }
 
@@ -2482,7 +2668,16 @@ function renderMassProps(props = null) {
 
 function parseMassFileText(text) {
   const lines = String(text || '').split(/\r?\n/);
-  const vars = { g: null, rho: null, lunit: 'm', munit: 'kg', tunit: 's' };
+  const vars = {
+    g: null,
+    rho: null,
+    lunit: 'm',
+    munit: 'kg',
+    tunit: 's',
+    lunitScale: 1.0,
+    munitScale: 1.0,
+    tunitScale: 1.0,
+  };
   const scale = new Array(10).fill(1);
   const add = new Array(10).fill(0);
   const rows = [];
@@ -2498,7 +2693,10 @@ function parseMassFileText(text) {
       const key = varMatch[1].toLowerCase();
       const val = Number(varMatch[2]);
       if (key === 'lunit' || key === 'munit' || key === 'tunit') {
-        vars[key] = String(varMatch[3] || varMatch[2] || vars[key]).replace(/[^A-Za-z]/g, '') || vars[key];
+        const scaleKey = `${key}Scale`;
+        if (Number.isFinite(val) && val > 0) vars[scaleKey] = val;
+        const unitToken = String(varMatch[3] || vars[key] || '').replace(/[^A-Za-z]/g, '');
+        if (unitToken) vars[key] = unitToken;
       } else if (Number.isFinite(val)) {
         vars[key] = val;
       }
@@ -2526,11 +2724,26 @@ function parseMassFileText(text) {
   });
 
   if (!rows.length) throw new Error('No mass rows found.');
+  const lscale = Number.isFinite(vars.lunitScale) && vars.lunitScale > 0 ? vars.lunitScale : 1.0;
+  const mscale = Number.isFinite(vars.munitScale) && vars.munitScale > 0 ? vars.munitScale : 1.0;
+  const inertiaScale = mscale * lscale * lscale;
+  const scaledRows = rows.map((r) => ({
+    mass: r.mass * mscale,
+    x: r.x * lscale,
+    y: r.y * lscale,
+    z: r.z * lscale,
+    ixx: r.ixx * inertiaScale,
+    iyy: r.iyy * inertiaScale,
+    izz: r.izz * inertiaScale,
+    ixy: r.ixy * inertiaScale,
+    ixz: r.ixz * inertiaScale,
+    iyz: r.iyz * inertiaScale,
+  }));
   let massSum = 0;
   let sx = 0;
   let sy = 0;
   let sz = 0;
-  rows.forEach((r) => {
+  scaledRows.forEach((r) => {
     massSum += r.mass;
     sx += r.mass * r.x;
     sy += r.mass * r.y;
@@ -2547,7 +2760,7 @@ function parseMassFileText(text) {
   let ixy0 = 0;
   let ixz0 = 0;
   let iyz0 = 0;
-  rows.forEach((r) => {
+  scaledRows.forEach((r) => {
     ixx0 += r.ixx + r.mass * (r.y * r.y + r.z * r.z);
     iyy0 += r.iyy + r.mass * (r.x * r.x + r.z * r.z);
     izz0 += r.izz + r.mass * (r.x * r.x + r.y * r.y);
@@ -2572,17 +2785,23 @@ function parseMassFileText(text) {
     lunit: vars.lunit,
     munit: vars.munit,
     tunit: vars.tunit,
+    lunitScale: lscale,
+    munitScale: mscale,
+    tunitScale: Number.isFinite(vars.tunitScale) && vars.tunitScale > 0 ? vars.tunitScale : 1.0,
   };
 }
 
 function serializeMassFile(props) {
   const p = props || readMassPropsFromUI();
+  const lunitScale = Number(p.lunitScale);
+  const munitScale = Number(p.munitScale);
+  const tunitScale = Number(p.tunitScale);
   return [
     '# VibeLattice Mass Properties',
     '#',
-    `Lunit = 1.0 ${p.lunit || 'm'}`,
-    `Munit = 1.0 ${p.munit || 'kg'}`,
-    `Tunit = 1.0 ${p.tunit || 's'}`,
+    `Lunit = ${Number.isFinite(lunitScale) ? fmt(lunitScale, 6) : '1.0'} ${p.lunit || 'm'}`,
+    `Munit = ${Number.isFinite(munitScale) ? fmt(munitScale, 6) : '1.0'} ${p.munit || 'kg'}`,
+    `Tunit = ${Number.isFinite(tunitScale) ? fmt(tunitScale, 6) : '1.0'} ${p.tunit || 's'}`,
     '',
     `g   = ${fmt(p.g, 6)}`,
     `rho = ${fmt(p.rho, 6)}`,
@@ -2863,8 +3082,9 @@ function applyRunCaseToUI(entry) {
   });
 
   updateConstraintDuplicates();
-  updateFlightConditions();
-  scheduleAutoTrim();
+  requestAutoUpdate(
+    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+  );
 }
 
 function normalizeRunCase(raw, index) {
@@ -3038,7 +3258,6 @@ function applyLoadedRunCases(parsed, filename, source = 'Loaded') {
   renderRunCasesList();
   updateRunCasesMeta(`${source} ${parsed.cases.length} run case(s) from ${filename}`);
   applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
-  drawEigenPlot();
 }
 
 function applyLoadedMassProps(props, filename, source = 'Loaded') {
@@ -3051,8 +3270,9 @@ function applyLoadedMassProps(props, filename, source = 'Loaded') {
     if (els.gee) setNumericInput(els.gee, props.g, 4);
     if (els.rho) setNumericInput(els.rho, props.rho, 6);
   }
-  updateFlightConditions();
-  scheduleAutoTrim();
+  requestAutoUpdate(
+    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+  );
   logDebug(`${source} mass file: ${filename}`);
 }
 
@@ -3330,8 +3550,12 @@ function rebuildConstraintUI(model) {
     row.querySelectorAll('select, input').forEach((el) => {
       el.addEventListener('change', updateConstraintDuplicates);
       el.addEventListener('input', updateConstraintDuplicates);
-      el.addEventListener('change', scheduleAutoTrim);
-      el.addEventListener('input', scheduleAutoTrim);
+      el.addEventListener('change', () => requestAutoUpdate(
+        AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+      ));
+      el.addEventListener('input', () => requestAutoUpdate(
+        AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+      ));
     });
   });
   updateConstraintDuplicates();
@@ -3372,6 +3596,36 @@ function readFileAsText(file) {
 
 function basenamePath(path) {
   return String(path || '').split(/[\\/]/).pop() || String(path || '');
+}
+
+function toAbsoluteUrlMaybe(raw) {
+  try {
+    return new URL(String(raw || ''), window.location.href).toString();
+  } catch {
+    return null;
+  }
+}
+
+function buildDependencyCandidateUrls(path) {
+  const cleanPath = normalizeAirfoilPath(path);
+  if (!cleanPath) return [];
+  const out = [];
+  const seen = new Set();
+  const add = (urlLike) => {
+    if (!urlLike) return;
+    const abs = toAbsoluteUrlMaybe(urlLike);
+    if (!abs || seen.has(abs)) return;
+    seen.add(abs);
+    out.push(abs);
+  };
+
+  const sourceUrl = String(uiState.sourceUrl || '').trim();
+  if (sourceUrl) add(new URL(cleanPath, sourceUrl).toString());
+
+  add(cleanPath);
+  add(`../third_party/avl/runs/${cleanPath}`);
+  add(`../../third_party/avl/runs/${cleanPath}`);
+  return out;
 }
 
 function runsFileCandidateUrls(filename) {
@@ -3457,14 +3711,14 @@ async function handleFileLoad(file) {
   const isAvl = lower.endsWith('.avl');
   uiState.text = text;
   uiState.filename = file.name;
+  uiState.sourceUrl = null;
   setFileTextValue(uiState.text);
   els.fileMeta.textContent = `Loaded: ${file.name} (${file.size} bytes)`;
-  loadGeometryFromText(uiState.text, true);
+  loadGeometryFromText(uiState.text, true, true);
   if (isAvl) {
     resetAuxPanelsForNewAvl();
   }
   resetTrimSeed();
-  applyTrim({ useSeed: false });
   logDebug(`Loaded file: ${file.name}`);
 }
 
@@ -3484,14 +3738,35 @@ async function loadMassPropsFromFile(file, source = 'Loaded') {
 async function handleFileSelection(files) {
   const all = Array.from(files || []);
   if (!all.length) return;
+  const prevSuspend = suspendAutoTrim;
+  suspendAutoTrim = true;
+  try {
 
-  const avlFiles = [];
-  const runFiles = [];
-  const massFiles = [];
-  const textFiles = [];
-  for (const file of all) {
-    const lower = String(file.name || '').toLowerCase();
-    if (lower.endsWith('.dat')) {
+    const avlFiles = [];
+    const airfoilFiles = [];
+    const runFiles = [];
+    const massFiles = [];
+    const textFiles = [];
+    for (const file of all) {
+      const lower = String(file.name || '').toLowerCase();
+      if (lower.endsWith('.dat')) {
+        airfoilFiles.push(file);
+        continue;
+      }
+      if (lower.endsWith('.avl')) avlFiles.push(file);
+      else if (lower.endsWith('.run')) runFiles.push(file);
+      else if (lower.endsWith('.mass')) massFiles.push(file);
+      else if (lower.endsWith('.txt')) textFiles.push(file);
+    }
+
+    const primaryAvl = avlFiles[0] || textFiles[0] || null;
+    if (primaryAvl) {
+      recordAutoUpdateTrace('file', 'avl');
+      await handleFileLoad(primaryAvl);
+    }
+
+    for (const file of airfoilFiles) {
+      recordAutoUpdateTrace('file', 'airfoil');
       try {
         const text = await readFileAsText(file);
         const ok = applyAirfoilTextForKey(file.name, text);
@@ -3500,46 +3775,46 @@ async function handleFileSelection(files) {
       } catch {
         logDebug(`Failed to read airfoil dependency: ${file.name}`);
       }
-      continue;
     }
-    if (lower.endsWith('.avl')) avlFiles.push(file);
-    else if (lower.endsWith('.run')) runFiles.push(file);
-    else if (lower.endsWith('.mass')) massFiles.push(file);
-    else if (lower.endsWith('.txt')) textFiles.push(file);
-  }
 
-  const primaryAvl = avlFiles[0] || textFiles[0] || null;
-  if (primaryAvl) {
-    await handleFileLoad(primaryAvl);
-    const isAvl = String(primaryAvl.name || '').toLowerCase().endsWith('.avl');
-    if (isAvl && !runFiles.length && !massFiles.length) {
-      await loadCompanionRunAndMassForAvl(primaryAvl.name, 'Loaded companion');
+    if (primaryAvl) {
+      const isAvl = String(primaryAvl.name || '').toLowerCase().endsWith('.avl');
+      if (isAvl && !runFiles.length && !massFiles.length) {
+        await loadCompanionRunAndMassForAvl(primaryAvl.name, 'Loaded companion');
+      }
+    } else if (!runFiles.length && !massFiles.length) {
+      renderRequiredAirfoilFiles();
+      els.fileMeta.textContent = `Loaded dependencies: ${all.length} file(s)`;
     }
-  } else if (!runFiles.length && !massFiles.length) {
+
+    if (massFiles[0]) {
+      recordAutoUpdateTrace('file', 'mass');
+      try {
+        await loadMassPropsFromFile(massFiles[0], 'Loaded');
+      } catch (err) {
+        if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massFiles[0].name}`;
+        logDebug(`Mass file load failed: ${err?.message ?? err}`);
+      }
+    }
+    if (runFiles[0]) {
+      recordAutoUpdateTrace('file', 'run');
+      try {
+        await loadRunCasesFromFile(runFiles[0], 'Loaded');
+      } catch (err) {
+        updateRunCasesMeta(`Failed to load ${runFiles[0].name}`);
+        logDebug(`Run cases load failed: ${err?.message ?? err}`);
+      }
+    }
+
+    // Repaint dependency status after model parse.
     renderRequiredAirfoilFiles();
-    scheduleAutoTrim();
-    els.fileMeta.textContent = `Loaded dependencies: ${all.length} file(s)`;
+  } finally {
+    suspendAutoTrim = prevSuspend;
   }
-
-  if (runFiles[0]) {
-    try {
-      await loadRunCasesFromFile(runFiles[0], 'Loaded');
-    } catch (err) {
-      updateRunCasesMeta(`Failed to load ${runFiles[0].name}`);
-      logDebug(`Run cases load failed: ${err?.message ?? err}`);
-    }
-  }
-  if (massFiles[0]) {
-    try {
-      await loadMassPropsFromFile(massFiles[0], 'Loaded');
-    } catch (err) {
-      if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massFiles[0].name}`;
-      logDebug(`Mass file load failed: ${err?.message ?? err}`);
-    }
-  }
-
-  // Repaint dependency status after model parse.
-  renderRequiredAirfoilFiles();
+  requestAutoUpdate(
+    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    { immediate: true },
+  );
 }
 
 async function loadDefaultAVL() {
@@ -3563,6 +3838,7 @@ async function loadDefaultAVL() {
       if (!text.trim()) continue;
       uiState.text = text;
       uiState.filename = 'plane.avl';
+      uiState.sourceUrl = url;
       setFileTextValue(text);
       if (els.fileMeta) els.fileMeta.textContent = 'Loaded: plane.avl (default)';
       logDebug('Loaded default file: plane.avl');
@@ -3575,6 +3851,7 @@ async function loadDefaultAVL() {
   if (embedded.trim()) {
     uiState.text = embedded;
     uiState.filename = 'plane.avl';
+    uiState.sourceUrl = null;
     setFileTextValue(embedded);
     if (els.fileMeta) els.fileMeta.textContent = 'Loaded: plane.avl (embedded)';
     logDebug('Loaded embedded default file: plane.avl');
@@ -3591,6 +3868,21 @@ async function fetchTextFromCandidates(candidates) {
       const text = await res.text();
       if (!text.trim()) continue;
       return text;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+async function fetchTextFromCandidatesWithUrl(candidates) {
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const text = await res.text();
+      if (!text.trim()) continue;
+      return { text, url };
     } catch {
       // try next
     }
@@ -3661,6 +3953,24 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
   const base = basenamePath(String(avlFilename || '').replace(/\.[^.]+$/, '')).toLowerCase();
   if (!base) return;
 
+  if (availableMassCompanionBases.has(base)) {
+    const massName = `${base}.mass`;
+    const massText = await fetchRunsFileText(massName);
+    if (massText) {
+      try {
+        const props = parseMassFileText(massText);
+        applyLoadedMassProps(props, massName, source);
+      } catch (err) {
+        if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massName}`;
+        logDebug(`Companion mass load failed (${massName}): ${err?.message ?? err}`);
+      }
+    } else {
+      logDebug(`Companion mass file not found: ${massName}`);
+    }
+  } else {
+    logDebug(`Skipping companion mass load (not indexed): ${base}.mass`);
+  }
+
   if (availableRunCompanionBases.has(base)) {
     const runName = `${base}.run`;
     const runText = await fetchRunsFileText(runName);
@@ -3679,41 +3989,27 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
   } else {
     logDebug(`Skipping companion run load (not indexed): ${base}.run`);
   }
-
-  if (availableMassCompanionBases.has(base)) {
-    const massName = `${base}.mass`;
-    const massText = await fetchRunsFileText(massName);
-    if (massText) {
-      try {
-        const props = parseMassFileText(massText);
-        applyLoadedMassProps(props, massName, source);
-      } catch (err) {
-        if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massName}`;
-        logDebug(`Companion mass load failed (${massName}): ${err?.message ?? err}`);
-      }
-    } else {
-      logDebug(`Companion mass file not found: ${massName}`);
-    }
-  } else {
-    logDebug(`Skipping companion mass load (not indexed): ${base}.mass`);
-  }
 }
 
 async function loadExampleFromRuns(avlName) {
   const normalized = normalizeExampleAvlName(avlName);
   if (!normalized) return;
-  const avlText = await fetchRunsFileText(normalized);
-  if (!avlText) {
+  const prevSuspend = suspendAutoTrim;
+  suspendAutoTrim = true;
+  try {
+  const avlLoaded = await fetchTextFromCandidatesWithUrl(runsFileCandidateUrls(normalized));
+  if (!avlLoaded?.text) {
     if (els.fileMeta) els.fileMeta.textContent = `Failed to load example: ${normalized}`;
     logDebug(`Example AVL not found: ${normalized}`);
     return;
   }
 
-  uiState.text = avlText;
+  uiState.text = avlLoaded.text;
   uiState.filename = normalized;
-  setFileTextValue(avlText);
+  uiState.sourceUrl = avlLoaded.url || null;
+  setFileTextValue(avlLoaded.text);
   if (els.fileMeta) els.fileMeta.textContent = `Loaded example: ${normalized}`;
-  loadGeometryFromText(uiState.text, true);
+  loadGeometryFromText(uiState.text, true, true);
   resetAuxPanelsForNewAvl();
 
   const airfoilPromise = ensureRequiredAirfoilsLoaded();
@@ -3721,11 +4017,32 @@ async function loadExampleFromRuns(avlName) {
   await airfoilPromise;
 
   resetTrimSeed();
-  applyTrim({ useSeed: false });
+  } finally {
+    suspendAutoTrim = prevSuspend;
+  }
+  requestAutoUpdate(
+    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    { immediate: true },
+  );
   logDebug(`Loaded example bundle: ${normalized}`);
 }
 
 async function loadDefaultRunAndMass() {
+  const massCandidates = [
+    new URL('./third_party/avl/runs/plane.mass', window.location.href).toString(),
+    new URL('../third_party/avl/runs/plane.mass', window.location.href).toString(),
+    new URL('../../third_party/avl/runs/plane.mass', window.location.href).toString(),
+  ];
+  const massText = await fetchTextFromCandidates(massCandidates);
+  if (massText) {
+    try {
+      const props = parseMassFileText(massText);
+      applyLoadedMassProps(props, 'plane.mass', 'Loaded default');
+    } catch (err) {
+      logDebug(`Default mass load failed: ${err?.message ?? err}`);
+    }
+  }
+
   const runCandidates = [
     new URL('./third_party/avl/runs/plane.run', window.location.href).toString(),
     new URL('../third_party/avl/runs/plane.run', window.location.href).toString(),
@@ -3739,21 +4056,6 @@ async function loadDefaultRunAndMass() {
       logDebug('Loaded default run cases: plane.run');
     } catch (err) {
       logDebug(`Default run-case load failed: ${err?.message ?? err}`);
-    }
-  }
-
-  const massCandidates = [
-    new URL('./third_party/avl/runs/plane.mass', window.location.href).toString(),
-    new URL('../third_party/avl/runs/plane.mass', window.location.href).toString(),
-    new URL('../../third_party/avl/runs/plane.mass', window.location.href).toString(),
-  ];
-  const massText = await fetchTextFromCandidates(massCandidates);
-  if (massText) {
-    try {
-      const props = parseMassFileText(massText);
-      applyLoadedMassProps(props, 'plane.mass', 'Loaded default');
-    } catch (err) {
-      logDebug(`Default mass load failed: ${err?.message ?? err}`);
     }
   }
 }
@@ -3777,18 +4079,9 @@ els.loadExampleSelect?.addEventListener('change', async (evt) => {
   }
 });
 
-els.bank?.addEventListener('input', scheduleAutoTrim);
-els.cl?.addEventListener('input', scheduleAutoTrim);
-els.vel?.addEventListener('input', scheduleAutoTrim);
-els.mass?.addEventListener('input', scheduleAutoTrim);
-els.rho?.addEventListener('input', scheduleAutoTrim);
-els.gee?.addEventListener('input', scheduleAutoTrim);
-els.flightMode?.addEventListener('change', scheduleAutoTrim);
-els.clLoop?.addEventListener('input', scheduleAutoTrim);
-els.velLoop?.addEventListener('input', scheduleAutoTrim);
-els.radLoop?.addEventListener('input', scheduleAutoTrim);
-els.facLoop?.addEventListener('input', scheduleAutoTrim);
-els.useWasmExec?.addEventListener('change', scheduleAutoTrim);
+els.useWasmExec?.addEventListener('change', () => {
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
 
 els.saveBtn.addEventListener('click', () => {
   const text = els.fileText.value;
@@ -3882,9 +4175,10 @@ els.massPropsSaveBtn?.addEventListener('click', () => {
       if (els.mass && Number.isFinite(totalMass)) {
         setNumericInput(els.mass, totalMass, 4);
       }
-      updateFlightConditions();
     }
-    scheduleAutoTrim();
+    requestAutoUpdate(
+      AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    );
   });
 });
 
@@ -3914,7 +4208,9 @@ els.massPropsSaveBtn?.addEventListener('click', () => {
     props[key] = next;
     uiState.massProps = props;
     renderMassProps(props);
-    scheduleAutoTrim();
+    requestAutoUpdate(
+      AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    );
   });
 });
 
@@ -4017,24 +4313,56 @@ els.eigenPlot?.addEventListener('touchcancel', handleEigenTouchEnd, { passive: f
 
 els.flightMode?.addEventListener('change', () => {
   syncFlightModePanels();
-  updateFlightConditions();
+  requestAutoUpdate(
+    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+  );
 });
 
 if (els.flightMode) {
   syncFlightModePanels();
 }
 
-els.cl?.addEventListener('input', () => updateFlightConditions('cl'));
-els.vel?.addEventListener('input', () => updateFlightConditions('vel'));
-els.bank?.addEventListener('input', () => updateFlightConditions());
-els.rho?.addEventListener('input', () => updateFlightConditions());
-els.gee?.addEventListener('input', () => updateFlightConditions());
-els.mass?.addEventListener('input', () => updateFlightConditions());
+els.cl?.addEventListener('input', () => {
+  updateFlightConditions('cl');
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
+els.vel?.addEventListener('input', () => {
+  updateFlightConditions('vel');
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
+els.bank?.addEventListener('input', () => {
+  updateFlightConditions();
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
+els.rho?.addEventListener('input', () => {
+  updateFlightConditions();
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
+els.gee?.addEventListener('input', () => {
+  updateFlightConditions();
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
+els.mass?.addEventListener('input', () => {
+  updateFlightConditions();
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
 
-els.clLoop?.addEventListener('input', () => updateFlightConditions('cl'));
-els.velLoop?.addEventListener('input', () => updateFlightConditions('vel'));
-els.radLoop?.addEventListener('input', () => updateFlightConditions('rad'));
-els.facLoop?.addEventListener('input', () => updateFlightConditions());
+els.clLoop?.addEventListener('input', () => {
+  updateFlightConditions('cl');
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
+els.velLoop?.addEventListener('input', () => {
+  updateFlightConditions('vel');
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
+els.radLoop?.addEventListener('input', () => {
+  updateFlightConditions('rad');
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
+els.facLoop?.addEventListener('input', () => {
+  updateFlightConditions();
+  requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
+});
 
 let fileUpdateTimer = null;
 els.fileText.addEventListener('input', () => {
@@ -4045,7 +4373,10 @@ els.fileText.addEventListener('input', () => {
   syncTemplateParamsFromText(uiState.text);
   clearTimeout(fileUpdateTimer);
   fileUpdateTimer = setTimeout(() => {
-    loadGeometryFromText(uiState.text, true);
+    loadGeometryFromText(uiState.text, true, true);
+    requestAutoUpdate(
+      AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    );
   }, 250);
 });
 els.fileText.addEventListener('scroll', syncFileEditorScroll);
@@ -4160,6 +4491,11 @@ function makeTrimState(controlMap = null) {
 
 function applyTrim({ useSeed = true } = {}) {
   logDebug('Trim requested.');
+  if (trimInProgress || execInProgress) {
+    trimRerunPending = true;
+    logDebug('Trim queued: solver busy.');
+    return;
+  }
   updateFlightConditions();
   let state;
   try {
@@ -4167,17 +4503,6 @@ function applyTrim({ useSeed = true } = {}) {
   } catch (err) {
     logDebug(`Trim setup failed: ${err?.message ?? err}`);
     return;
-  }
-  if (execWorker && (trimInProgress || execInProgress)) {
-    execWorker.terminate();
-    execWorker = null;
-    trimInProgress = false;
-    execInProgress = false;
-    updateTrefftzBusy();
-    if (execTimeoutId) {
-      clearTimeout(execTimeoutId);
-      execTimeoutId = null;
-    }
   }
   trimInProgress = true;
   updateTrefftzBusy();
@@ -4262,9 +4587,11 @@ function applyTrimResults(state) {
   if (uiState.text.trim()) {
     setTimeout(() => {
       if (execInProgress) {
-        logDebug('EXEC skipped: already running.');
+        execRerunPending = true;
+        logDebug('EXEC busy; queued rerun.');
         return;
       }
+      execRerunPending = false;
       execInProgress = true;
       updateTrefftzBusy();
       logDebug('EXEC scheduled.');
@@ -4280,15 +4607,6 @@ function applyTrimResults(state) {
 }
 
 els.trimBtn.addEventListener('click', () => applyTrim());
-
-function scheduleAutoTrim() {
-  if (suspendAutoTrim) return;
-  if (autoTrimTimer) clearTimeout(autoTrimTimer);
-  autoTrimTimer = setTimeout(() => {
-    autoTrimTimer = null;
-    applyTrim();
-  }, 200);
-}
 
 if (els.downloadForcesStrip) {
   els.downloadForcesStrip.addEventListener('click', () => {
@@ -4829,6 +5147,12 @@ function updateTrefftz(cl) {
 
 if (typeof window !== 'undefined') {
   window.__trefftzTestHook = {
+    clearAutoUpdateTrace() {
+      autoUpdateTrace.length = 0;
+    },
+    getAutoUpdateTrace() {
+      return autoUpdateTrace.slice();
+    },
     setTrefftzData(data) {
       uiState.trefftzData = data;
       updateTrefftz(Number(els.cl?.value || 0));
@@ -4888,6 +5212,33 @@ if (typeof window !== 'undefined') {
       const panelLinePos = panelSpacingGroup?.getObjectByName?.('panel-spacing-lines')?.geometry?.getAttribute?.('position');
       const vortexBoundPos = vortexGroup?.getObjectByName?.('bound-vortices')?.geometry?.getAttribute?.('position');
       const vortexLegPos = vortexGroup?.getObjectByName?.('leg-vortices')?.geometry?.getAttribute?.('position');
+      let vortexLegDxMean = 0;
+      let vortexLegDyAbsMean = 0;
+      let vortexLegDzAbsMean = 0;
+      if (vortexLegPos?.count && vortexLegPos.count >= 2) {
+        let n = 0;
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        for (let i = 0; i + 1 < vortexLegPos.count; i += 2) {
+          const x0 = Number(vortexLegPos.getX(i));
+          const y0 = Number(vortexLegPos.getY(i));
+          const z0 = Number(vortexLegPos.getZ(i));
+          const x1 = Number(vortexLegPos.getX(i + 1));
+          const y1 = Number(vortexLegPos.getY(i + 1));
+          const z1 = Number(vortexLegPos.getZ(i + 1));
+          if (![x0, y0, z0, x1, y1, z1].every(Number.isFinite)) continue;
+          sx += (x1 - x0);
+          sy += Math.abs(y1 - y0);
+          sz += Math.abs(z1 - z0);
+          n += 1;
+        }
+        if (n > 0) {
+          vortexLegDxMean = sx / n;
+          vortexLegDyAbsMean = sy / n;
+          vortexLegDzAbsMean = sz / n;
+        }
+      }
       return {
         showPanelSpacing: Boolean(uiState.showPanelSpacing),
         showVortices: Boolean(uiState.showVortices),
@@ -4902,6 +5253,176 @@ if (typeof window !== 'undefined') {
         panelSpacingLineSegments: Math.floor((Number(panelLinePos?.count) || 0) / 2),
         vortexBoundSegments: Math.floor((Number(vortexBoundPos?.count) || 0) / 2),
         vortexLegSegments: Math.floor((Number(vortexLegPos?.count) || 0) / 2),
+        vortexLegDxMean,
+        vortexLegDyAbsMean,
+        vortexLegDzAbsMean,
+      };
+    },
+    getDisplaySpanPanelSummary() {
+      const surfaces = Array.isArray(uiState.displayModel?.surfaces) ? uiState.displayModel.surfaces : [];
+      return surfaces.map((surface) => {
+        const counts = buildSurfaceSpanPanelCounts(surface);
+        return {
+          name: String(surface?.name || ''),
+          counts,
+          total: counts.reduce((sum, n) => sum + (Number(n) || 0), 0),
+        };
+      });
+    },
+    getBodyVisualState() {
+      let bodyMeshCount = 0;
+      let bodyMeshVisible = 0;
+      let bodyWireCount = 0;
+      let bodyWireVisible = 0;
+      let bodyWireSegments = 0;
+      let bodyMeshColorHex = null;
+      let bodyWireColorHex = null;
+      let bodyWireStationXs = [];
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let surfaceMaxX = -Infinity;
+      if (aircraft && THREE) {
+        const box = new THREE.Box3();
+        aircraft.traverse((obj) => {
+          if (obj?.isMesh && obj.name === 'body-mesh') {
+            bodyMeshCount += 1;
+            if (obj.visible) bodyMeshVisible += 1;
+            if (!bodyMeshColorHex && obj.material?.color) {
+              bodyMeshColorHex = `#${obj.material.color.getHexString()}`;
+            }
+            box.setFromObject(obj);
+            if (!box.isEmpty()) {
+              minX = Math.min(minX, box.min.x);
+              maxX = Math.max(maxX, box.max.x);
+            }
+          }
+          if (obj?.isMesh && obj.name === 'surface-skin') {
+            box.setFromObject(obj);
+            if (!box.isEmpty()) surfaceMaxX = Math.max(surfaceMaxX, box.max.x);
+          }
+          if (obj?.isLineSegments && obj.name === 'body-wire') {
+            bodyWireCount += 1;
+            if (obj.visible) bodyWireVisible += 1;
+            if (!bodyWireColorHex && obj.material?.color) {
+              bodyWireColorHex = `#${obj.material.color.getHexString()}`;
+            }
+            if (!bodyWireStationXs.length && Array.isArray(obj.userData?.stationXs)) {
+              bodyWireStationXs = obj.userData.stationXs
+                .map((v) => Number(v))
+                .filter((v) => Number.isFinite(v));
+            }
+            const count = Number(obj.geometry?.getAttribute?.('position')?.count) || 0;
+            bodyWireSegments += Math.floor(count / 2);
+          }
+        });
+      }
+      return {
+        bodyMeshCount,
+        bodyMeshVisible,
+        bodyWireCount,
+        bodyWireVisible,
+        bodyWireSegments,
+        minX: Number.isFinite(minX) ? minX : null,
+        maxX: Number.isFinite(maxX) ? maxX : null,
+        surfaceMaxX: Number.isFinite(surfaceMaxX) ? surfaceMaxX : null,
+        bodyMeshColorHex,
+        bodyWireColorHex,
+        bodyWireStationXs,
+        requiredBodyFiles: Array.isArray(requiredBodyFiles) ? [...requiredBodyFiles] : [],
+      };
+    },
+    getSurfaceVisualState() {
+      let airfoilOutlineCount = 0;
+      let airfoilOutlineVisible = 0;
+      let camberLineCount = 0;
+      let camberLineVisible = 0;
+      let airfoilMaxThicknessRatio = 0;
+      let airfoilMaxXSpan = 0;
+      let airfoilMaxZSpan = 0;
+      let labelCount = 0;
+      let labelMinWidth = Infinity;
+      let labelMaxWidth = 0;
+      let labelMaxChord = 0;
+      let labelMinWidthToChord = Infinity;
+      let labelMaxWidthToChord = 0;
+      if (aircraft) {
+        aircraft.traverse((obj) => {
+          if (obj?.isLine && obj.name === 'surface-airfoil-outline') {
+            airfoilOutlineCount += 1;
+            if (obj.visible) airfoilOutlineVisible += 1;
+            const ux = Number(obj.userData?.xSpan);
+            const uz = Number(obj.userData?.zSpan);
+            if (Number.isFinite(ux) && Number.isFinite(uz) && ux > 1e-9) {
+              const ur = uz / ux;
+              if (ur > airfoilMaxThicknessRatio) airfoilMaxThicknessRatio = ur;
+              if (ux > airfoilMaxXSpan) airfoilMaxXSpan = ux;
+              if (uz > airfoilMaxZSpan) airfoilMaxZSpan = uz;
+            }
+            const pos = obj.geometry?.getAttribute?.('position');
+            if (pos?.count >= 2) {
+              let xmin = Infinity;
+              let xmax = -Infinity;
+              let zmin = Infinity;
+              let zmax = -Infinity;
+              const arr = pos.array;
+              const stride = Number(pos.itemSize) || 3;
+              for (let i = 0; i < pos.count; i += 1) {
+                const base = i * stride;
+                const x = Number(arr?.[base]);
+                const z = Number(arr?.[base + 2]);
+                if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+                if (x < xmin) xmin = x;
+                if (x > xmax) xmax = x;
+                if (z < zmin) zmin = z;
+                if (z > zmax) zmax = z;
+              }
+              const xSpan = xmax - xmin;
+              const zSpan = zmax - zmin;
+              if (Number.isFinite(xSpan) && Number.isFinite(zSpan) && xSpan > 1e-9) {
+                const ratio = zSpan / xSpan;
+                if (ratio > airfoilMaxThicknessRatio) airfoilMaxThicknessRatio = ratio;
+                if (xSpan > airfoilMaxXSpan) airfoilMaxXSpan = xSpan;
+                if (zSpan > airfoilMaxZSpan) airfoilMaxZSpan = zSpan;
+              }
+            }
+          }
+          if (obj?.isLine && obj.name === 'surface-camber-line') {
+            camberLineCount += 1;
+            if (obj.visible) camberLineVisible += 1;
+          }
+          if (obj?.isSprite && obj?.userData?.surfaceLabel) {
+            labelCount += 1;
+            const w = Number(obj.scale?.x);
+            const chord = Number(obj.userData?.chordWorld);
+            if (Number.isFinite(w)) {
+              if (w < labelMinWidth) labelMinWidth = w;
+              if (w > labelMaxWidth) labelMaxWidth = w;
+            }
+            if (Number.isFinite(chord) && chord > 1e-9) {
+              if (chord > labelMaxChord) labelMaxChord = chord;
+              const ratio = w / chord;
+              if (Number.isFinite(ratio)) {
+                if (ratio < labelMinWidthToChord) labelMinWidthToChord = ratio;
+                if (ratio > labelMaxWidthToChord) labelMaxWidthToChord = ratio;
+              }
+            }
+          }
+        });
+      }
+      return {
+        airfoilOutlineCount,
+        airfoilOutlineVisible,
+        airfoilMaxThicknessRatio,
+        airfoilMaxXSpan,
+        airfoilMaxZSpan,
+        camberLineCount,
+        camberLineVisible,
+        labelCount,
+        labelMinWidth: Number.isFinite(labelMinWidth) ? labelMinWidth : 0,
+        labelMaxWidth,
+        labelMaxChord,
+        labelMinWidthToChord: Number.isFinite(labelMinWidthToChord) ? labelMinWidthToChord : 0,
+        labelMaxWidthToChord,
       };
     },
     getVortexLegSymmetryStats(options = {}) {
@@ -5019,7 +5540,10 @@ if (typeof window !== 'undefined') {
         uiState.text = els.fileText?.value || uiState.text || '';
         loadGeometryFromText(uiState.text, false);
         resetTrimSeed();
-        scheduleAutoTrim();
+        requestAutoUpdate(
+          AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+          { immediate: true },
+        );
       }
       return true;
     },
@@ -5989,7 +6513,7 @@ function parseAirfoilFileDetails(text) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
     if (trimmed.startsWith('#') || trimmed.startsWith('!') || trimmed.startsWith('%')) continue;
-    const nums = trimmed.split(/\s+/).map((v) => Number(v)).filter((v) => Number.isFinite(v));
+    const nums = parseNumbers(trimmed);
     if (nums.length >= 2) {
       coords.push([nums[0], nums[1]]);
       seenData = true;
@@ -5999,7 +6523,64 @@ function parseAirfoilFileDetails(text) {
       displayName = trimmed;
     }
   }
-  return { coords: normalizeAirfoilCoords(coords), displayName };
+  return { coords, displayName };
+}
+
+function parseBodyProfileText(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const coords = [];
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('#') || trimmed.startsWith('!') || trimmed.startsWith('%')) continue;
+    const nums = parseNumbers(trimmed);
+    if (nums.length >= 2) coords.push([nums[0], nums[1]]);
+  }
+  return coords;
+}
+
+function normalizeBodyCoordsWinding(coords) {
+  if (!Array.isArray(coords) || coords.length < 2) return Array.isArray(coords) ? coords : [];
+  let area = 0;
+  for (let i = 0; i < coords.length - 1; i += 1) {
+    const x0 = Number(coords[i][0]) || 0;
+    const y0 = Number(coords[i][1]) || 0;
+    const x1 = Number(coords[i + 1][0]) || 0;
+    const y1 = Number(coords[i + 1][1]) || 0;
+    const rx = x1 + x0;
+    const ry = y1 + y0;
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    area += 0.25 * (rx * dy - ry * dx);
+  }
+  if (area < 0) return coords.slice().reverse();
+  return coords;
+}
+
+function buildBodyThread(coords, samples = 50) {
+  if (!Array.isArray(coords) || coords.length < 3) return null;
+  const n = coords.length;
+  const X = new Float32Array(n);
+  const Y = new Float32Array(n);
+  for (let i = 0; i < n; i += 1) {
+    X[i] = Number(coords[i][0]) || 0;
+    Y[i] = Number(coords[i][1]) || 0;
+  }
+  const nIn = Math.max(2, Math.round(samples));
+  const XBOD = new Float32Array(nIn);
+  const YBOD = new Float32Array(nIn);
+  const TBOD = new Float32Array(nIn);
+  GETCAM(X, Y, n, XBOD, YBOD, TBOD, nIn, false);
+  return {
+    x: Array.from(XBOD),
+    y: Array.from(YBOD),
+    t: Array.from(TBOD),
+  };
+}
+
+function bodyNodeCount(body) {
+  const n = Math.round(Number(body?.nBody) || 0);
+  return n >= 2 ? n : 0;
 }
 
 function normalizeAirfoilPath(path) {
@@ -6017,6 +6598,53 @@ function setRequiredAirfoilFiles(paths) {
     seen.add(p);
     requiredAirfoilFiles.push(p);
   });
+}
+
+function setRequiredBodyFiles(paths) {
+  const seen = new Set();
+  requiredBodyFiles = [];
+  (paths || []).forEach((entry) => {
+    const p = normalizeAirfoilPath(entry);
+    if (!p || seen.has(p)) return;
+    seen.add(p);
+    requiredBodyFiles.push(p);
+  });
+}
+
+function fetchBodyProfile(path) {
+  const cleanPath = normalizeAirfoilPath(path);
+  if (!cleanPath) return null;
+  if (bodyProfileCache.has(cleanPath)) return Promise.resolve();
+  if (bodyProfilePending.has(cleanPath)) return bodyProfilePending.get(cleanPath) || null;
+  if (bodyProfileFailed.has(cleanPath)) return null;
+  const candidates = buildDependencyCandidateUrls(cleanPath);
+  const promise = (async () => {
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const text = await res.text();
+        const coords = normalizeBodyCoordsWinding(parseBodyProfileText(text));
+        if (coords.length >= 3) {
+          bodyProfileCache.set(cleanPath, coords);
+          bodyProfileFailed.delete(cleanPath);
+          return;
+        }
+      } catch {
+        // try next
+      }
+    }
+    bodyProfileFailed.add(cleanPath);
+  })()
+    .finally(() => {
+      bodyProfilePending.delete(cleanPath);
+      loadGeometryFromText(uiState.text, false);
+      requestAutoUpdate(
+        AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+      );
+    });
+  bodyProfilePending.set(cleanPath, promise);
+  return promise;
 }
 
 function getAirfoilRequirementStatus(path) {
@@ -6037,7 +6665,9 @@ function handleAirfoilUpload(path, file) {
       if (uiState.text) {
         loadGeometryFromText(uiState.text, false);
       }
-      scheduleAutoTrim();
+      requestAutoUpdate(
+        AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+      );
     } catch {
       const key = normalizeAirfoilPath(path);
       if (key) {
@@ -6187,11 +6817,7 @@ function fetchAirfoil(path) {
   if (airfoilCache.has(cleanPath)) return Promise.resolve();
   if (airfoilPending.has(cleanPath)) return airfoilPending.get(cleanPath) || null;
   if (airfoilFailed.has(cleanPath)) return null;
-  const candidates = [
-    new URL(cleanPath, window.location.href).toString(),
-    new URL(`../third_party/avl/runs/${cleanPath}`, window.location.href).toString(),
-    new URL(`../../third_party/avl/runs/${cleanPath}`, window.location.href).toString(),
-  ];
+  const candidates = buildDependencyCandidateUrls(cleanPath);
   const promise = (async () => {
     for (const url of candidates) {
       try {
@@ -6217,6 +6843,9 @@ function fetchAirfoil(path) {
       airfoilPending.delete(cleanPath);
       loadGeometryFromText(uiState.text, false);
       renderRequiredAirfoilFiles();
+      requestAutoUpdate(
+        AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+      );
     });
   airfoilPending.set(cleanPath, promise);
   renderRequiredAirfoilFiles();
@@ -6282,6 +6911,19 @@ function buildSolverModel(text) {
     });
   });
   model.surfaces = surfaces;
+  const bodies = Array.isArray(model.bodies) ? model.bodies : [];
+  bodies.forEach((body) => {
+    const path = normalizeAirfoilPath(body?.bodyFile);
+    if (!path) {
+      body.bodyCoords = [];
+      body.bodyThread = null;
+      return;
+    }
+    const coords = bodyProfileCache.get(path) || [];
+    body.bodyCoords = coords;
+    body.bodyThread = buildBodyThread(coords, bodyNodeCount(body) || 50);
+  });
+  model.bodies = bodies;
   model.controlMap = controlMap;
   return model;
 }
@@ -6491,7 +7133,10 @@ function applySurfaceRenderMode() {
   surfaceSkinMeshes.forEach((mesh) => { mesh.visible = showSurface; });
   const showPressureOverlay = showSurface && uiState.showPressure && Boolean(uiState.pressureField);
   surfacePressureMeshes.forEach((mesh) => { mesh.visible = showPressureOverlay; });
-  surfaceWireObjects.forEach((obj) => { obj.visible = showWire; });
+  surfaceWireObjects.forEach((obj) => {
+    const keepInSurface = Boolean(obj?.userData?.showInSurfaceMode);
+    obj.visible = showWire || (showSurface && keepInSurface);
+  });
   updatePressureSurfaceColors();
 }
 
@@ -6564,17 +7209,66 @@ function pushLineSegment(verts, a, b) {
   verts.push(a[0], a[1], a[2], b[0], b[1], b[2]);
 }
 
-function resolveSectionSpanPanels(surface, sectionA, sectionB) {
-  const candidates = [
-    Number(sectionA?.nSpan),
-    Number(sectionB?.nSpan),
-    Number(surface?.nSpan),
-  ];
-  for (let i = 0; i < candidates.length; i += 1) {
-    const val = candidates[i];
-    if (Number.isFinite(val) && val > 0) return Math.max(1, Math.round(val));
+function buildSurfaceSpanPanelCounts(surface) {
+  const sections = Array.isArray(surface?.sections) ? surface.sections : [];
+  const nsec = sections.length;
+  if (nsec < 2) return [];
+
+  const nvs1 = Math.max(0, Math.round(Number(surface?.nSpan) || 0));
+  if (nvs1 > 0) {
+    const scale = Array.isArray(surface?.scale) && surface.scale.length >= 3
+      ? surface.scale
+      : [1, 1, 1];
+    const yScale = Number(scale[1]) || 1;
+    const zScale = Number(scale[2]) || 1;
+    const yzlen = new Array(nsec).fill(0);
+    for (let i = 1; i < nsec; i += 1) {
+      const dy = (Number(sections[i]?.yle) - Number(sections[i - 1]?.yle)) * yScale;
+      const dz = (Number(sections[i]?.zle) - Number(sections[i - 1]?.zle)) * zScale;
+      yzlen[i] = yzlen[i - 1] + Math.hypot(dy, dz);
+    }
+    const nspace = (2 * nvs1) + 1;
+    const stations = buildFortranSpacerStations(nspace, Number(surface?.sSpace) || 1);
+    const yStart = yzlen[0];
+    const yEnd = yzlen[nsec - 1];
+    const ySpan = yEnd - yStart;
+    const ypt = new Array(nvs1 + 1).fill(yStart);
+    for (let ivs = 1; ivs <= nvs1; ivs += 1) {
+      ypt[ivs] = yStart + (ySpan * stations[2 * ivs]);
+    }
+    const iptloc = new Array(nsec).fill(0);
+    iptloc[0] = 0;
+    iptloc[nsec - 1] = nvs1;
+    for (let isec = 1; isec <= nsec - 2; isec += 1) {
+      let best = Infinity;
+      let bestIdx = 0;
+      const target = yzlen[isec];
+      for (let ipt = 0; ipt <= nvs1; ipt += 1) {
+        const d = Math.abs(target - ypt[ipt]);
+        if (d < best) {
+          best = d;
+          bestIdx = ipt;
+        }
+      }
+      iptloc[isec] = bestIdx;
+    }
+    const counts = [];
+    for (let isec = 0; isec < nsec - 1; isec += 1) {
+      counts.push(Math.max(0, iptloc[isec + 1] - iptloc[isec]));
+    }
+    return counts;
   }
-  return 1;
+
+  const counts = [];
+  for (let i = 0; i < nsec - 1; i += 1) {
+    const left = Number(sections[i]?.nSpan);
+    const right = Number(sections[i + 1]?.nSpan);
+    let count = 0;
+    if (Number.isFinite(left) && left > 0) count = Math.round(left);
+    else if (Number.isFinite(right) && right > 0) count = Math.round(right);
+    counts.push(Math.max(0, count));
+  }
+  return counts;
 }
 
 function buildPanelSpacingGroup(model) {
@@ -6584,11 +7278,13 @@ function buildPanelSpacingGroup(model) {
   model.surfaces.forEach((surface) => {
     if (!surface?.sections?.length || surface.sections.length < 2) return;
     const transform = createSectionPointTransform(surface, controlDeflections);
+    const spanCounts = buildSurfaceSpanPanelCounts(surface);
     for (let s = 0; s < surface.sections.length - 1; s += 1) {
       const a = surface.sections[s];
       const b = surface.sections[s + 1];
       const nChord = Math.max(1, Math.round(Number(surface.nChord) || 1));
-      const nSpan = resolveSectionSpanPanels(surface, a, b);
+      const nSpan = Math.max(0, Math.round(Number(spanCounts[s]) || 0));
+      if (nSpan <= 0) continue;
       const pointAt = (u, c) => {
         const xA = a.xle + a.chord * c;
         const xB = b.xle + b.chord * c;
@@ -6629,20 +7325,22 @@ function buildVortexData(model) {
   const legVerts = [];
   const segments = [];
   const controlDeflections = createControlDeflectionMap();
-  const cref = Math.max(0.4, Number(model.header?.cref) || 1);
   const bref = Math.max(0.8, Number(model.header?.bref) || 2);
-  const legLength = Math.max(1.8 * cref, 0.35 * bref);
+  // Fortran AVL plot draws wake legs as +X lines of length 2*BREF.
+  const legLength = 2 * bref;
   // AVL's horseshoe trailing legs are aligned with body +X.
   const wakeDir = { x: 1, y: 0, z: 0 };
   const sampleTarget = 220;
   model.surfaces.forEach((surface) => {
     if (!surface?.sections?.length || surface.sections.length < 2) return;
     const transform = createSectionPointTransform(surface, controlDeflections);
+    const spanCounts = buildSurfaceSpanPanelCounts(surface);
     for (let s = 0; s < surface.sections.length - 1; s += 1) {
       const a = surface.sections[s];
       const b = surface.sections[s + 1];
       const nChord = Math.max(1, Math.round(Number(surface.nChord) || 1));
-      const nSpan = resolveSectionSpanPanels(surface, a, b);
+      const nSpan = Math.max(0, Math.round(Number(spanCounts[s]) || 0));
+      if (nSpan <= 0) continue;
       const sampleStride = Math.max(1, Math.ceil((nChord * nSpan) / sampleTarget));
       const pointAt = (u, c) => {
         const xA = a.xle + a.chord * c;
@@ -6665,16 +7363,21 @@ function buildVortexData(model) {
           const cBound = (i + 0.25) / nChord;
           const p0 = pointAt(u0, cBound);
           const p1 = pointAt(u1, cBound);
-          const leg0 = [p0[0] + wakeDir.x * legLength, p0[1] + wakeDir.y * legLength, p0[2] + wakeDir.z * legLength];
-          const leg1 = [p1[0] + wakeDir.x * legLength, p1[1] + wakeDir.y * legLength, p1[2] + wakeDir.z * legLength];
           const gamma = 1 / Math.max(1, nChord);
           pushLineSegment(boundVerts, p0, p1);
-          pushLineSegment(legVerts, p0, leg0);
-          pushLineSegment(legVerts, p1, leg1);
           segments.push({ a: p0, b: p1, gamma, kind: 'bound', tip: atTipBoundary });
-          // Signed trailing legs so interior legs tend to cancel while tip-vortex legs remain.
-          segments.push({ a: p1, b: leg1, gamma, kind: 'leg', tip: atTipBoundary });
-          segments.push({ a: p0, b: leg0, gamma: -gamma, kind: 'leg', tip: atTipBoundary });
+        }
+      }
+
+      if (!surface.nowake) {
+        // Match Fortran wake plotting: one trailing leg per span station at TE.
+        const jStart = s > 0 ? 1 : 0; // avoid duplicate leg on shared section boundaries
+        for (let j = jStart; j <= nSpan; j += 1) {
+          const u = j / nSpan;
+          const te = pointAt(u, 1.0);
+          const wake = [te[0] + wakeDir.x * legLength, te[1], te[2]];
+          pushLineSegment(legVerts, te, wake);
+          segments.push({ a: te, b: wake, gamma: 0, kind: 'leg', tip: (j === 0 || j === nSpan) });
         }
       }
     }
@@ -7493,11 +8196,24 @@ function buildSurfaceMesh(surface, color) {
     outline.push(...a, ...b);
   };
 
-  const applyTransforms = (p) => {
-    const v = new THREE.Vector3(p[0], p[1], p[2]);
-    v.multiply(new THREE.Vector3(...surface.scale));
-    v.add(new THREE.Vector3(...surface.translate));
-    return [v.x, v.y, v.z];
+  const applyTransforms = (section, p) => {
+    const sx = Number(surface.scale?.[0] ?? 1);
+    const sy = Number(surface.scale?.[1] ?? 1);
+    const sz = Number(surface.scale?.[2] ?? 1);
+    const tx = Number(surface.translate?.[0] ?? 0);
+    const ty = Number(surface.translate?.[1] ?? 0);
+    const tz = Number(surface.translate?.[2] ?? 0);
+    const xle = Number(section?.xle ?? 0);
+    const yle = Number(section?.yle ?? 0);
+    const zle = Number(section?.zle ?? 0);
+    const dx = Number(p?.[0] ?? 0) - xle;
+    const dy = Number(p?.[1] ?? 0) - yle;
+    const dz = Number(p?.[2] ?? 0) - zle;
+    return [
+      sx * xle + tx + sx * dx,
+      sy * yle + ty + sy * dy,
+      sz * zle + tz + sx * dz,
+    ];
   };
 
   const rotateSectionPoint = (section, point) => {
@@ -7541,7 +8257,7 @@ function buildSurfaceMesh(surface, color) {
   const transformSectionPoint = (section, rawPoint) => {
     const flap = applyControlDeflections(section, rawPoint);
     const rotated = rotateSectionPoint(section, flap);
-    return applyTransforms(rotated);
+    return applyTransforms(section, rotated);
   };
 
   const buildSectionProfilePoints = (section) => {
@@ -7756,16 +8472,35 @@ function buildSurfaceMesh(surface, color) {
     const camGeom = new THREE.BufferGeometry();
     camGeom.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
     const camLine = new THREE.Line(camGeom, sectionMat);
+    camLine.name = 'surface-camber-line';
     camLine.userData.renderKind = 'wire';
+    camLine.userData.showInSurfaceMode = true;
     group.add(camLine);
   });
 
   airfoilOutlines.forEach((line) => {
     const flat = line.flat();
+    let xmin = Infinity;
+    let xmax = -Infinity;
+    let zmin = Infinity;
+    let zmax = -Infinity;
+    for (let i = 0; i + 2 < flat.length; i += 3) {
+      const x = Number(flat[i]);
+      const z = Number(flat[i + 2]);
+      if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+      if (x < xmin) xmin = x;
+      if (x > xmax) xmax = x;
+      if (z < zmin) zmin = z;
+      if (z > zmax) zmax = z;
+    }
     const foilGeom = new THREE.BufferGeometry();
     foilGeom.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
     const foilLine = new THREE.Line(foilGeom, sectionMat);
+    foilLine.name = 'surface-airfoil-outline';
     foilLine.userData.renderKind = 'wire';
+    foilLine.userData.showInSurfaceMode = true;
+    foilLine.userData.xSpan = Number.isFinite(xmax - xmin) ? (xmax - xmin) : 0;
+    foilLine.userData.zSpan = Number.isFinite(zmax - zmin) ? (zmax - zmin) : 0;
     group.add(foilLine);
   });
 
@@ -7823,7 +8558,8 @@ function buildSurfaceMesh(surface, color) {
   ctx.font = '28px Consolas, "Courier New", monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(formatSurfaceDisplayName(surface.name || 'Surface', 1), 128, 64);
+  const surfaceLabel = formatSurfaceDisplayName(surface.name || 'Surface', 1);
+  ctx.fillText(surfaceLabel, 128, 64);
   const tex = new THREE.CanvasTexture(labelCanvas);
   const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true });
   const sprite = new THREE.Sprite(spriteMat);
@@ -7834,19 +8570,233 @@ function buildSurfaceMesh(surface, color) {
     return acc;
   }, { x: 0, y: 0, z: 0 });
   const denom = surface.sections.length || 1;
-  const labelPos = applyTransforms([center.x / denom, center.y / denom, center.z / denom]);
+  const cx = center.x / denom;
+  const cy = center.y / denom;
+  const cz = center.z / denom;
+  const sx = Number(surface.scale?.[0] ?? 1);
+  const sy = Number(surface.scale?.[1] ?? 1);
+  const sz = Number(surface.scale?.[2] ?? 1);
+  const tx = Number(surface.translate?.[0] ?? 0);
+  const ty = Number(surface.translate?.[1] ?? 0);
+  const tz = Number(surface.translate?.[2] ?? 0);
+  const labelPos = [sx * cx + tx, sy * cy + ty, sz * cz + tz];
+  const xVals = surface.sections.map((s) => Number(s?.xle ?? 0));
+  const yVals = surface.sections.map((s) => Number(s?.yle ?? 0));
+  const zVals = surface.sections.map((s) => Number(s?.zle ?? 0));
+  const chords = surface.sections.map((s) => Number(s?.chord ?? 0)).filter((v) => Number.isFinite(v) && v > 0);
+  const xr = (xVals.length ? (Math.max(...xVals) - Math.min(...xVals)) : 0);
+  const yr = (yVals.length ? (Math.max(...yVals) - Math.min(...yVals)) : 0);
+  const zr = (zVals.length ? (Math.max(...zVals) - Math.min(...zVals)) : 0);
+  const avgChord = chords.length ? (chords.reduce((a, b) => a + b, 0) / chords.length) : 0;
+  const crefRaw = Number(uiState.modelHeader?.cref);
+  const chordWorld = Math.max(0.25, Number.isFinite(crefRaw) && crefRaw > 0 ? crefRaw : (avgChord * sx));
+  const sampleWidthPx = Math.max(1, Number(ctx.measureText('XXXXXXXXXX').width) || 1);
+  const labelWidth = chordWorld * (labelCanvas.width / sampleWidthPx);
   sprite.position.set(labelPos[0], labelPos[1], labelPos[2] + 0.2);
-  sprite.scale.set(1.6, 0.8, 1);
+  sprite.scale.set(labelWidth, labelWidth * (labelCanvas.height / labelCanvas.width), 1);
+  sprite.userData.surfaceLabel = true;
+  sprite.userData.labelText = surfaceLabel;
+  sprite.userData.labelWidth = labelWidth;
+  sprite.userData.chordWorld = chordWorld;
   sprite.userData.renderKind = 'wire';
   group.add(sprite);
 
   return group;
 }
 
+function buildBodyRadiusProfile(rawCoords) {
+  const coords = Array.isArray(rawCoords)
+    ? rawCoords
+      .map((pair) => [Number(pair?.[0]), Math.abs(Number(pair?.[1]))])
+      .filter(([x, r]) => Number.isFinite(x) && Number.isFinite(r))
+    : [];
+  if (coords.length < 2) return [];
+  coords.sort((a, b) => a[0] - b[0]);
+  const xmin = coords[0][0];
+  const xmax = coords[coords.length - 1][0];
+  const tol = Math.max(1e-5, Math.abs(xmax - xmin) * 1e-4);
+  const collapsed = [];
+  let gx = coords[0][0];
+  let gr = coords[0][1];
+  let gc = 1;
+  for (let i = 1; i < coords.length; i += 1) {
+    const [x, r] = coords[i];
+    if (Math.abs(x - gx) <= tol) {
+      gx = ((gx * gc) + x) / (gc + 1);
+      gr = Math.max(gr, r);
+      gc += 1;
+    } else {
+      collapsed.push([gx, gr]);
+      gx = x;
+      gr = r;
+      gc = 1;
+    }
+  }
+  collapsed.push([gx, gr]);
+  return collapsed.filter(([, r]) => r > 1e-8);
+}
+
+function radiusAtStation(profile, x) {
+  if (!Array.isArray(profile) || profile.length < 2 || !Number.isFinite(x)) return 0;
+  if (x <= profile[0][0]) return Number(profile[0][1]) || 0;
+  if (x >= profile[profile.length - 1][0]) return Number(profile[profile.length - 1][1]) || 0;
+  for (let i = 0; i < profile.length - 1; i += 1) {
+    const x0 = Number(profile[i][0]);
+    const r0 = Number(profile[i][1]);
+    const x1 = Number(profile[i + 1][0]);
+    const r1 = Number(profile[i + 1][1]);
+    if (!Number.isFinite(x0) || !Number.isFinite(r0) || !Number.isFinite(x1) || !Number.isFinite(r1)) continue;
+    if (x >= x0 && x <= x1) {
+      const t = Math.abs(x1 - x0) > 1e-12 ? ((x - x0) / (x1 - x0)) : 0;
+      return r0 + t * (r1 - r0);
+    }
+  }
+  return 0;
+}
+
+function buildFortranSpacerStations(n, pspace) {
+  const count = Math.max(2, Math.round(Number(n) || 0));
+  const p = Number.isFinite(Number(pspace)) ? Number(pspace) : 1;
+  const pabs = Math.abs(p);
+  const nabs = Math.floor(pabs) + 1;
+  let peq = 0;
+  let pcos = 0;
+  let psin = 0;
+  if (nabs <= 1) {
+    peq = 1 - pabs;
+    pcos = pabs;
+    psin = 0;
+  } else if (nabs === 2) {
+    peq = 0;
+    pcos = 2 - pabs;
+    psin = pabs - 1;
+  } else {
+    peq = pabs - 2;
+    pcos = 0;
+    psin = 3 - pabs;
+  }
+  const pi = Math.PI;
+  const stations = [];
+  for (let k = 1; k <= count; k += 1) {
+    const frac = (k - 1) / (count - 1);
+    const theta = frac * pi;
+    const cosTerm = (1 - Math.cos(theta)) / 2;
+    let x = (peq * frac) + (pcos * cosTerm);
+    if (p >= 0) x += psin * (1 - Math.cos(theta / 2));
+    if (p <= 0) x += psin * Math.sin(theta / 2);
+    stations.push(Math.max(0, Math.min(1, x)));
+  }
+  stations[0] = 0;
+  stations[stations.length - 1] = 1;
+  return stations;
+}
+
+function buildBodyRingWireGeometry(profile, nBody = 0, bSpace = 1, radialSegments = 24) {
+  if (!THREE || !Array.isArray(profile) || profile.length < 2) return null;
+  const xMin = Number(profile[0][0]);
+  const xMax = Number(profile[profile.length - 1][0]);
+  if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || Math.abs(xMax - xMin) < 1e-9) return null;
+  const stations = buildFortranSpacerStations(nBody, bSpace);
+  const segs = Math.max(8, Math.round(radialSegments));
+  const verts = [];
+  const stationXs = [];
+  for (let i = 0; i < stations.length; i += 1) {
+    const tStation = stations[i];
+    const x = xMin + (xMax - xMin) * tStation;
+    const r = Math.max(0, radiusAtStation(profile, x));
+    if (!(r > 1e-6)) continue;
+    stationXs.push(x);
+    const y = -x; // same local station convention as LatheGeometry input
+    for (let k = 0; k < segs; k += 1) {
+      const a0 = (2 * Math.PI * k) / segs;
+      const a1 = (2 * Math.PI * (k + 1)) / segs;
+      const x0 = r * Math.cos(a0);
+      const z0 = r * Math.sin(a0);
+      const x1 = r * Math.cos(a1);
+      const z1 = r * Math.sin(a1);
+      verts.push(x0, y, z0, x1, y, z1);
+    }
+  }
+  if (!verts.length) return null;
+  const wireGeom = new THREE.BufferGeometry();
+  wireGeom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  return { geometry: wireGeom, stationXs };
+}
+
+function buildBodyMesh(body, color) {
+  if (!THREE || !body) return null;
+  const path = normalizeAirfoilPath(body.bodyFile);
+  if (!path) return null;
+  const coords = bodyProfileCache.get(path);
+  if (!Array.isArray(coords) || coords.length < 3) return null;
+  const profile = buildBodyRadiusProfile(coords);
+  if (profile.length < 2) return null;
+
+  // BODY/BFILE x stations in AVL are along body +X; negate here so nose/tail orientation
+  // matches the wing/frame orientation used elsewhere in this viewer.
+  const points = profile.map(([x, r]) => new THREE.Vector2(r, -x));
+  const geom = new THREE.LatheGeometry(points, 28);
+  const bodyColor = new THREE.Color(0xd1d5db);
+  const mat = new THREE.MeshStandardMaterial({
+    color: bodyColor,
+    metalness: 0.12,
+    roughness: 0.58,
+    transparent: true,
+    opacity: 0.9,
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.name = 'body-mesh';
+  mesh.userData.renderKind = 'skin';
+  mesh.userData.baseColor = bodyColor.clone();
+  mesh.userData.pressureBaseColor = bodyColor.clone();
+  mesh.rotation.z = Math.PI / 2;
+
+  const scale = Array.isArray(body.scale) && body.scale.length >= 3 ? body.scale : [1, 1, 1];
+  const translate = Array.isArray(body.translate) && body.translate.length >= 3 ? body.translate : [0, 0, 0];
+  mesh.scale.set(Number(scale[0]) || 1, Number(scale[1]) || 1, Number(scale[2]) || 1);
+  mesh.position.set(Number(translate[0]) || 0, Number(translate[1]) || 0, Number(translate[2]) || 0);
+
+  const group = new THREE.Group();
+  group.add(mesh);
+  const wireData = buildBodyRingWireGeometry(profile, body.nBody, body.bSpace, 24);
+  if (!wireData?.geometry) return group;
+  const wireMat = new THREE.LineBasicMaterial({
+    color: bodyColor,
+    transparent: true,
+    opacity: 0.95,
+    depthTest: false,
+  });
+  const wire = new THREE.LineSegments(wireData.geometry, wireMat);
+  wire.name = 'body-wire';
+  wire.userData.renderKind = 'wire';
+  wire.userData.stationXs = Array.isArray(wireData.stationXs) ? [...wireData.stationXs] : [];
+  wire.renderOrder = 5;
+  wire.rotation.z = mesh.rotation.z;
+  wire.scale.copy(mesh.scale);
+  wire.position.copy(mesh.position);
+  group.add(wire);
+  if (typeof body.yduplicate === 'number') {
+    const mirrored = mesh.clone();
+    mirrored.position.set(mesh.position.x, (2 * body.yduplicate) - mesh.position.y, mesh.position.z);
+    group.add(mirrored);
+    const mirroredWire = wire.clone();
+    mirroredWire.position.set(wire.position.x, (2 * body.yduplicate) - wire.position.y, wire.position.z);
+    group.add(mirroredWire);
+  }
+  return group;
+}
+
 function buildAircraftFromAVL(model) {
   const group = new THREE.Group();
-  if (!model.surfaces.length) return buildPlaceholderAircraft();
-  model.surfaces.forEach((surface, idx) => {
+  const bodies = Array.isArray(model.bodies) ? model.bodies : [];
+  const surfaces = Array.isArray(model.surfaces) ? model.surfaces : [];
+  if (!surfaces.length && !bodies.length) return buildPlaceholderAircraft();
+  bodies.forEach((body, idx) => {
+    const color = uiState.surfaceColors[idx % uiState.surfaceColors.length];
+    const bodyMesh = buildBodyMesh(body, color);
+    if (bodyMesh) group.add(bodyMesh);
+  });
+  surfaces.forEach((surface, idx) => {
     const color = uiState.surfaceColors[idx % uiState.surfaceColors.length];
     const surfGroup = buildSurfaceMesh(surface, color);
     group.add(surfGroup);
@@ -7897,7 +8847,7 @@ function rebuildAircraftVisual(shouldFit = false) {
   surfacePressureMeshes = [];
   surfaceWireObjects = [];
   aircraft.traverse((obj) => {
-    if (obj?.isMesh && obj.name === 'surface-skin') surfaceSkinMeshes.push(obj);
+    if (obj?.isMesh && (obj.name === 'surface-skin' || obj.name === 'body-mesh')) surfaceSkinMeshes.push(obj);
     if (obj?.isMesh && obj.name === 'surface-pressure-overlay') surfacePressureMeshes.push(obj);
     if (obj?.userData?.renderKind === 'wire') surfaceWireObjects.push(obj);
   });
@@ -8291,8 +9241,12 @@ function updateLoadingVisualization() {
   aircraft.add(loadingGroup);
 }
 
-function loadGeometryFromText(text, shouldFit = true) {
+function loadGeometryFromText(text, shouldFit = true, clearOutputs = false) {
   if (!scene) return;
+  if (clearOutputs) {
+    clearComputedOutputsForNewGeometry();
+  }
+  const previousConstraintRows = readConstraintRows();
   const rawText = String(text || '');
   syncTemplateParamsFromText(rawText);
   const resolvedText = resolveTemplateParamsInText(rawText);
@@ -8310,6 +9264,30 @@ function loadGeometryFromText(text, shouldFit = true) {
       applyRunCaseToUI(uiState.runCases[idx]);
     }
     uiState.needsRunCaseConstraintSync = false;
+  } else if (Array.isArray(previousConstraintRows) && previousConstraintRows.length) {
+    const prevByVar = new Map();
+    previousConstraintRows.forEach((row) => {
+      const key = String(row?.variable || '');
+      if (!key) return;
+      prevByVar.set(key, {
+        constraint: String(row?.constraint || 'none'),
+        numeric: Number(row?.numeric),
+      });
+    });
+    readConstraintRows().forEach((row) => {
+      const prior = prevByVar.get(row.variable);
+      if (!prior) return;
+      if (row.select) {
+        const nextConstraint = String(prior.constraint || 'none');
+        if ([...row.select.options].some((opt) => opt.value === nextConstraint)) {
+          row.select.value = nextConstraint;
+        }
+      }
+      if (row.value && Number.isFinite(prior.numeric)) {
+        row.value.value = String(prior.numeric);
+      }
+    });
+    updateConstraintDuplicates();
   }
   const withDup = applyYDuplicate(parsed);
   const withY = (typeof applyYSymmetry === 'function') ? applyYSymmetry(withDup) : withDup;
@@ -8329,9 +9307,13 @@ function loadGeometryFromText(text, shouldFit = true) {
   });
   logDebug(dbg.join('\n'));
   setRequiredAirfoilFiles(model.airfoilFiles);
+  setRequiredBodyFiles(model.bodyFiles);
   renderRequiredAirfoilFiles();
   requiredAirfoilFiles.forEach((path) => {
     if (!resolveProvidedAirfoilKey(path)) fetchAirfoil(path);
+  });
+  requiredBodyFiles.forEach((path) => {
+    if (!bodyProfileCache.has(path)) fetchBodyProfile(path);
   });
   uiState.displayModel = model;
   rebuildAircraftVisual(Boolean(shouldFit));
@@ -8344,6 +9326,8 @@ function loadGeometryFromText(text, shouldFit = true) {
 }
 
 function buildExecState(model) {
+  const unitlMass = Number(uiState.massProps?.lunitScale);
+  const unitlUse = Number.isFinite(unitlMass) && unitlMass > 0 ? unitlMass : 1.0;
   const IVALFA = 1;
   const IVBETA = 2;
   const IVROTX = 3;
@@ -8407,6 +9391,15 @@ function buildExecState(model) {
     sum + (typeof surf.yduplicate === 'number' ? 1 : 0)
   ), 0);
   const NSURF = model.surfaces.length + dupCount;
+  const bodies = Array.isArray(model.bodies) ? model.bodies : [];
+  const solvableBodies = bodies.filter((body) => (
+    bodyNodeCount(body) >= 2 && body.bodyThread
+    && Array.isArray(body.bodyThread.x) && body.bodyThread.x.length >= 2
+    && Array.isArray(body.bodyThread.y) && body.bodyThread.y.length >= 2
+    && Array.isArray(body.bodyThread.t) && body.bodyThread.t.length >= 2
+  ));
+  const NBODY = solvableBodies.length;
+  const NLNODE = solvableBodies.reduce((sum, body) => sum + bodyNodeCount(body), 0);
   const NCONTROL = model.controlMap?.size ?? 0;
   const NDESIGN = 0;
   const NUMAX = 6;
@@ -8429,13 +9422,14 @@ function buildExecState(model) {
   const NVMAX = Math.max(1, NVOR);
   const NSTRMAX = Math.max(1, NSTRIP);
   const NRMAX = 1;
+  const NLMAX = Math.max(1, NLNODE);
   const IVMAX = IVTOT + NDMAX;
   const ICMAX = ICTOT + NDMAX;
   const DIM_N = NVMAX + 1;
   const DIM_U = NUMAX + 1;
   const DIM_C = NDMAX + 1;
   const DIM_G = NGMAX + 1;
-  const DIM_L = 2;
+  const DIM_L = NLMAX + 1;
 
   const state = {
     IVALFA, IVBETA, IVROTX, IVROTY, IVROTZ, IVTOT,
@@ -8457,9 +9451,9 @@ function buildExecState(model) {
     ICMAX,
     NRMAX,
     NVTOT: IVTOT + NCONTROL,
-    NBODY: 0,
-    NLNODE: 0,
-    NLMAX: 1,
+    NBODY,
+    NLNODE,
+    NLMAX,
     DIM_N,
     DIM_U,
     DIM_C,
@@ -8468,7 +9462,7 @@ function buildExecState(model) {
 
     PI: Math.fround(Math.PI),
     DTR: Math.fround(Math.PI / 180.0),
-    UNITL: 1.0,
+    UNITL: unitlUse,
     IYSYM: model.header.iysym ?? 0,
     IZSYM: model.header.izsym ?? 0,
     YSYM: 0.0,
@@ -8529,10 +9523,10 @@ function buildExecState(model) {
     SSURF: new Float32Array(NSURF + 1),
     CAVESURF: new Float32Array(NSURF + 1),
 
-    LFRST: new Int32Array(2),
-    NL: new Int32Array(2),
-    RL: new Float32Array(4 * 2),
-    RADL: new Float32Array(2),
+    LFRST: new Int32Array(Math.max(1, NBODY)),
+    NL: new Int32Array(Math.max(1, NBODY)),
+    RL: new Float32Array(4 * (NLMAX + 1)),
+    RADL: new Float32Array(NLMAX + 1),
 
     IJFRST: new Int32Array(NSTRMAX + 1),
     NVSTRP: new Int32Array(NSTRMAX + 1),
@@ -8703,6 +9697,11 @@ function buildExecState(model) {
     CYTOT_U: new Float32Array((NUMAX + 1)),
     CYTOT_D: new Float32Array((NDMAX + 1)),
     CYTOT_G: new Float32Array((NGMAX + 1)),
+    CDBDY: new Float32Array(Math.max(1, NBODY)),
+    CYBDY: new Float32Array(Math.max(1, NBODY)),
+    CLBDY: new Float32Array(Math.max(1, NBODY)),
+    CFBDY: new Float32Array(3 * Math.max(1, NBODY)),
+    CMBDY: new Float32Array(3 * Math.max(1, NBODY)),
 
     CMLE_LSTRP: new Float32Array(NSTRMAX + 1),
     CMC4_LSTRP: new Float32Array(NSTRMAX + 1),
@@ -8820,6 +9819,57 @@ function buildGeometry(state, model) {
     }
   });
   state.NSURF = surfIndex;
+  const idx2 = (i, j, dim1) => i + dim1 * j;
+  const bodies = Array.isArray(model.bodies) ? model.bodies : [];
+  let bodyCount = 0;
+  let nodeCursor = 1;
+  bodies.forEach((body) => {
+    const bodyThread = body.bodyThread;
+    const xb = Array.isArray(bodyThread?.x) ? bodyThread.x : [];
+    const yb = Array.isArray(bodyThread?.y) ? bodyThread.y : [];
+    const tb = Array.isArray(bodyThread?.t) ? bodyThread.t : [];
+    const nBody = bodyNodeCount(body);
+    if (nBody < 2 || xb.length < 2 || yb.length < 2 || tb.length < 2) return;
+    const xMin = Number(xb[0]);
+    const xMax = Number(xb[xb.length - 1]);
+    if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) return;
+    if (nodeCursor + nBody - 1 > state.NLMAX) return;
+
+    const scale = Array.isArray(body.scale) && body.scale.length >= 3 ? body.scale : [1, 1, 1];
+    const translate = Array.isArray(body.translate) && body.translate.length >= 3 ? body.translate : [0, 0, 0];
+    const xScale = Number(scale[0]) || 1;
+    const yScale = Number(scale[1]) || 1;
+    const zScale = Number(scale[2]) || 1;
+    const radiusScale = Math.sqrt(yScale * zScale);
+    const tx = Number(translate[0]) || 0;
+    const ty = Number(translate[1]) || 0;
+    const tz = Number(translate[2]) || 0;
+
+    const fspace = new Float32Array(nBody + 1);
+    SPACER(nBody, body.bSpace ?? 1, fspace);
+    const xpt = new Float32Array(nBody + 1);
+    for (let i = 1; i <= nBody; i += 1) xpt[i] = fspace[i];
+    xpt[1] = 0;
+    xpt[nBody] = 1;
+
+    for (let i = 1; i <= nBody; i += 1) {
+      const l = nodeCursor + i - 1;
+      const s = xpt[i];
+      const xLocal = xMin + (xMax - xMin) * s;
+      const yCenter = AKIMA(xb, yb, xb.length, xLocal).YY;
+      const thickness = AKIMA(xb, tb, xb.length, xLocal).YY;
+      state.RL[idx2(1, l, 4)] = Math.fround(xScale * xLocal + tx);
+      state.RL[idx2(2, l, 4)] = Math.fround(ty);
+      state.RL[idx2(3, l, 4)] = Math.fround(zScale * yCenter + tz);
+      state.RADL[l] = Math.fround(0.5 * thickness * radiusScale);
+    }
+    state.LFRST[bodyCount] = nodeCursor;
+    state.NL[bodyCount] = nBody;
+    bodyCount += 1;
+    nodeCursor += nBody;
+  });
+  state.NBODY = bodyCount;
+  state.NLNODE = Math.max(0, nodeCursor - 1);
   ENCALC(state);
 }
 
@@ -8833,7 +9883,7 @@ function runExecFromText(text) {
   const model = buildSolverModel(resolvedText);
   uiState.execSurfaceNames = buildExecSurfaceNames(model);
   const state = buildExecState(model);
-  state.LNASA_SA = true;
+  state.LNASA_SA = false;
   try {
     const rows = readConstraintRows();
     if (rows.length) {
@@ -8860,6 +9910,13 @@ function runExecFromText(text) {
     // ignore logging failures
   }
   buildGeometry(state, model);
+  if (state.LMASS) {
+    try {
+      APPGET(state);
+    } catch (err) {
+      logDebug(`APPGET failed: ${err?.message ?? err}`);
+    }
+  }
   const worker = ensureExecWorker();
   if (!worker) {
     EXEC(state, 20, 0, 1);
@@ -8972,12 +10029,30 @@ function runExecFromText(text) {
     execWorker = null;
     execInProgress = false;
     updateTrefftzBusy();
+    if (trimRerunPending) {
+      trimRerunPending = false;
+      setTimeout(() => applyTrim(), 0);
+      return;
+    }
+    if (execRerunPending && uiState.text.trim()) {
+      execRerunPending = false;
+      execInProgress = true;
+      updateTrefftzBusy();
+      logDebug('EXEC rerun after timeout.');
+      try {
+        runExecFromText(uiState.text);
+      } catch (err) {
+        logDebug(`EXEC rerun failed: ${err?.message ?? err}`);
+        execInProgress = false;
+        updateTrefftzBusy();
+      }
+    }
   }, 70000);
 
   execRequestId += 1;
   const useWasm = Boolean(els.useWasmExec?.checked);
   if (useWasm) {
-    logDebug('EXEC wasm toggle enabled; using wasm-enabled kernels.');
+    logDebug('EXEC wasm toggle enabled; using JS parity solve and wasm eigen path.');
   }
   worker.postMessage({ state, requestId: execRequestId, useWasm });
   const dt = performance.now() - t0;
@@ -9099,16 +10174,11 @@ function applyExecResults(result) {
   if (uiState.selectedEigenMode >= uiState.eigenModes.length) {
     uiState.selectedEigenMode = -1;
   }
-  drawEigenPlot();
   uiState.pressureField = buildPressureFieldFromExec(result);
   rebuildAircraftVisual(false);
   updateLoadingVisualization();
   const schedule = (fn) => {
-    if (typeof requestIdleCallback === 'function') {
-      requestIdleCallback(fn, { timeout: 200 });
-    } else {
-      setTimeout(fn, 0);
-    }
+    setTimeout(fn, 0);
   };
   const renderLinesChunked = (el, lines, chunk = 200) => {
     if (!el) return;
@@ -9145,6 +10215,9 @@ function applyExecResults(result) {
   if (Number.isFinite(result.ALFA) && els.outAlpha) els.outAlpha.textContent = fmtSignedAligned(result.ALFA / (Math.PI / 180), 3);
   if (Number.isFinite(result.BETA) && els.outBeta) els.outBeta.textContent = fmtSignedAligned(result.BETA / (Math.PI / 180), 3);
   if (Number.isFinite(result.CLTOT) && els.outCL) els.outCL.textContent = fmtSignedAligned(result.CLTOT, 5);
+  // Do not overwrite user/run-case flight-condition inputs from solved outputs.
+  // In AVL OPER, the parameter row (e.g. CL) remains the commanded value while
+  // totals show solved coefficients.
   if (Number.isFinite(result.CDTOT) && els.outCD) els.outCD.textContent = fmtSignedAligned(result.CDTOT, 5);
   if (Number.isFinite(vee) && els.outV) els.outV.textContent = fmt(vee, 2);
   if (Number.isFinite(phi) && els.outBank) els.outBank.textContent = fmt(phi, 2);
@@ -9291,6 +10364,8 @@ function applyExecResults(result) {
     logDebug(`Trefftz sample: ${JSON.stringify(sample)}`);
     schedule(() => updateTrefftz(Number(els.cl.value)));
   }
+  recordAutoUpdateTrace('stage', 'eigen');
+  drawEigenPlot();
 }
 function fitCameraToObject(obj) {
   if (!camera || !controls || !THREE) return;
@@ -9363,7 +10438,10 @@ async function bootApp() {
   drawEigenPlot();
   resetTrimSeed();
   suspendAutoTrim = false;
-  applyTrim({ useSeed: false });
+  requestAutoUpdate(
+    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    { immediate: true },
+  );
 }
 
 bootApp().catch((err) => logDebug(`Boot failed: ${err?.message ?? err}`));

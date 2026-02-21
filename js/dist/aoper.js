@@ -6,10 +6,10 @@
 // Port of AVL aoper.f (EXEC) with float32 math for numerical fidelity.
 
 import { SETUP, GUCALC, GDCALC, GAMSUM, VELSUM, preloadAicWasm, preloadAsetpLuWasm } from './asetup.js';
-import { AERO, VINFAB } from './aero.js';
-import { loadAoperLinSolveWasm } from './aoper_linsolve_wasm.js';
 import { loadAsetupWasm } from './asetup_wasm.js';
+import { AERO, VINFAB } from './aero.js';
 import { loadAeroWasm } from './aero_wasm.js';
+import { loadAoperLinSolveWasm } from './aoper_linsolve_wasm.js';
 
 const f32 = Math.fround;
 let wasmLinSolve = null;
@@ -334,6 +334,19 @@ export function EXEC(state, NITER, INFO, IR) {
   }
   syncVinfWrot1(state, vinf1, wrot1);
 
+  // Build initial control/design sensitivities before first AERO call.
+  // Trim Jacobian rows use *_D terms on iteration 1, matching AVL flow.
+  if (state.NCONTROL > 0) {
+    withAsetpVinfWrot(state, vinf1, wrot1, () => {
+      GDCALC(state, state.NCONTROL, state.LCONDEF, state.ENC_D, state.GAM_D);
+    });
+  }
+  if (state.NDESIGN > 0) {
+    withAsetpVinfWrot(state, vinf1, wrot1, () => {
+      GDCALC(state, state.NDESIGN, state.LDESDEF, state.ENC_G, state.GAM_G);
+    });
+  }
+
   runAsetupSums(state, vinf1, wrot1);
 
   if (state.USE_WASM_AERO && wasmAero && state.NCONTROL === 0) {
@@ -354,6 +367,9 @@ export function EXEC(state, NITER, INFO, IR) {
     const ddc = new Float64Array(state.NDMAX + 1);
     const work = new Float64Array(ivmax + 1);
     const ivsys = new Int32Array(ivmax + 1);
+    if (state.DEBUG_TRIM) {
+      state.__trimIters = [];
+    }
 
     for (let iter = 1; iter <= niter; iter += 1) {
       let ca;
@@ -576,11 +592,15 @@ export function EXEC(state, NITER, INFO, IR) {
       }
 
       if (state.USE_WASM_SOLVE && wasmLinSolve) {
+        const vresRhs = state.DEBUG_TRIM ? Array.from(vres.slice(1, state.NVTOT + 1)) : null;
         const solved = wasmLinSolve.solveLinearSystem(vsys, vres, ivmax + 1, state.NVTOT);
         vres.set(solved);
+        if (state.DEBUG_TRIM) state.__trimLastRhs = vresRhs;
       } else {
+        const vresRhs = state.DEBUG_TRIM ? Array.from(vres.slice(1, state.NVTOT + 1)) : null;
         LUDCMP_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, work);
         BAKSUB_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, vres);
+        if (state.DEBUG_TRIM) state.__trimLastRhs = vresRhs;
       }
 
       let badSolve = false;
@@ -602,6 +622,33 @@ export function EXEC(state, NITER, INFO, IR) {
       for (let n = 1; n <= state.NCONTROL; n += 1) {
         const iv = state.IVTOT + n;
         ddc[n] = -vres[iv];
+      }
+      if (state.DEBUG_TRIM) {
+        const iconMap = [];
+        for (let iv = 1; iv <= state.NVTOT; iv += 1) {
+          iconMap.push(state.ICON[idx2(iv, ir, state.IVMAX)]);
+        }
+        const jac = [];
+        for (let r = 1; r <= state.NVTOT; r += 1) {
+          const row = [];
+          for (let c = 1; c <= state.NVTOT; c += 1) {
+            row.push(vsys[idxA(r, c, ivmax + 1)]);
+          }
+          jac.push(row);
+        }
+        state.__trimIters.push({
+          iter,
+          dal,
+          dbe,
+          dwx,
+          dwy,
+          dwz,
+          ddc: Array.from(ddc.slice(1, state.NCONTROL + 1)),
+          vres: Array.from(vres.slice(1, state.NVTOT + 1)),
+          rhs: Array.isArray(state.__trimLastRhs) ? state.__trimLastRhs : null,
+          icon: iconMap,
+          jac,
+        });
       }
 
       const dmax = 1.5708;

@@ -334,6 +334,19 @@ export function EXEC(state, NITER, INFO, IR) {
   }
   syncVinfWrot1(state, vinf1, wrot1);
 
+  // Build initial control/design sensitivities before first AERO call.
+  // Trim Jacobian rows use *_D terms on iteration 1, matching AVL flow.
+  if (state.NCONTROL > 0) {
+    withAsetpVinfWrot(state, vinf1, wrot1, () => {
+      GDCALC(state, state.NCONTROL, state.LCONDEF, state.ENC_D, state.GAM_D);
+    });
+  }
+  if (state.NDESIGN > 0) {
+    withAsetpVinfWrot(state, vinf1, wrot1, () => {
+      GDCALC(state, state.NDESIGN, state.LDESDEF, state.ENC_G, state.GAM_G);
+    });
+  }
+
   runAsetupSums(state, vinf1, wrot1);
 
   if (state.USE_WASM_AERO && wasmAero && state.NCONTROL === 0) {
@@ -579,11 +592,15 @@ export function EXEC(state, NITER, INFO, IR) {
       }
 
       if (state.USE_WASM_SOLVE && wasmLinSolve) {
+        const vresRhs = state.DEBUG_TRIM ? Array.from(vres.slice(1, state.NVTOT + 1)) : null;
         const solved = wasmLinSolve.solveLinearSystem(vsys, vres, ivmax + 1, state.NVTOT);
         vres.set(solved);
+        if (state.DEBUG_TRIM) state.__trimLastRhs = vresRhs;
       } else {
+        const vresRhs = state.DEBUG_TRIM ? Array.from(vres.slice(1, state.NVTOT + 1)) : null;
         LUDCMP_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, work);
         BAKSUB_COL64(ivmax + 1, state.NVTOT, vsys, ivsys, vres);
+        if (state.DEBUG_TRIM) state.__trimLastRhs = vresRhs;
       }
 
       let badSolve = false;
@@ -607,6 +624,18 @@ export function EXEC(state, NITER, INFO, IR) {
         ddc[n] = -vres[iv];
       }
       if (state.DEBUG_TRIM) {
+        const iconMap = [];
+        for (let iv = 1; iv <= state.NVTOT; iv += 1) {
+          iconMap.push(state.ICON[idx2(iv, ir, state.IVMAX)]);
+        }
+        const jac = [];
+        for (let r = 1; r <= state.NVTOT; r += 1) {
+          const row = [];
+          for (let c = 1; c <= state.NVTOT; c += 1) {
+            row.push(vsys[idxA(r, c, ivmax + 1)]);
+          }
+          jac.push(row);
+        }
         state.__trimIters.push({
           iter,
           dal,
@@ -615,6 +644,10 @@ export function EXEC(state, NITER, INFO, IR) {
           dwy,
           dwz,
           ddc: Array.from(ddc.slice(1, state.NCONTROL + 1)),
+          vres: Array.from(vres.slice(1, state.NVTOT + 1)),
+          rhs: Array.isArray(state.__trimLastRhs) ? state.__trimLastRhs : null,
+          icon: iconMap,
+          jac,
         });
       }
 

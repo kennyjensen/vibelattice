@@ -318,16 +318,16 @@ export function SETUP(state) {
         state.NVMAX));
     } else {
       SRDSET(state.BETM, state.XYZREF, state.IYSYM,
-        state.NBODY, state.LFRST, state.NLMAX,
+        state.NBODY, state.LFRST, state.DIM_L,
         state.NL, state.RL, state.RADL,
         state.SRC_U, state.DBL_U);
 
       VSRD(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM, state.SRCORE,
-        state.NBODY, state.LFRST, state.NLMAX,
+        state.NBODY, state.LFRST, state.DIM_L,
         state.NL, state.RL, state.RADL,
         6, state.SRC_U, state.DBL_U,
         state.NVOR, state.RC,
-        state.WCSRD_U, state.NVMAX);
+        state.WCSRD_U, state.DIM_N);
     }
     state.LSRD = true;
   }
@@ -355,11 +355,11 @@ export function SETUP(state) {
         state.WV_GAM, state.NVMAX);
 
       VSRD(state.BETM, state.IYSYM, state.YSYM, state.IZSYM, state.ZSYM, state.SRCORE,
-        state.NBODY, state.LFRST, state.NLMAX,
+        state.NBODY, state.LFRST, state.DIM_L,
         state.NL, state.RL, state.RADL,
         6, state.SRC_U, state.DBL_U,
         state.NVOR, state.RV,
-        state.WVSRD_U, state.NVMAX);
+        state.WVSRD_U, state.DIM_N);
     }
     state.LVEL = true;
   }
