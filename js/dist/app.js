@@ -10052,7 +10052,7 @@ function runExecFromText(text) {
   execRequestId += 1;
   const useWasm = Boolean(els.useWasmExec?.checked);
   if (useWasm) {
-    logDebug('EXEC wasm toggle enabled; using JS parity solve and wasm eigen path.');
+    logDebug('EXEC wasm toggle enabled; using wasm-enabled kernels.');
   }
   worker.postMessage({ state, requestId: execRequestId, useWasm });
   const dt = performance.now() - t0;

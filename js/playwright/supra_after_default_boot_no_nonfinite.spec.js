@@ -56,7 +56,7 @@ test('loading supra after default boot run keeps outputs finite and populated', 
     expect(dashCounts.hinge).toBe(0);
 
     expect(logs.some((line) => line.includes('Trefftz non-finite'))).toBeFalsy();
-    expect(logs.some((line) => line.includes('EXEC kernels: solve=js'))).toBeTruthy();
+    expect(logs.some((line) => line.includes('EXEC kernels: solve=wasm gam=wasm aero=wasm aic=wasm lu=wasm'))).toBeTruthy();
   } finally {
     await app.close();
   }

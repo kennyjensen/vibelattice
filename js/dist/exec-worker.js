@@ -458,15 +458,12 @@ onmessage = async (evt) => {
     } catch (err) {
       log(`EXEC precheck failed: ${err?.message ?? err}`);
     }
-    // Keep EXEC on the JS parity path.
-    // The wasm linear solve path can produce non-finite strip/Trefftz outputs
-    // for some multi-file load/update sequences (e.g. default plane -> supra).
-    // Preserve useWasm for eigenmode computation below only.
-    state.USE_WASM_SOLVE = false;
-    state.USE_WASM_GAM = false;
-    state.USE_WASM_AERO = false;
-    state.USE_WASM_AIC = false;
-    state.USE_WASM_LU = false;
+    // Honor UI toggle across all EXEC kernels.
+    state.USE_WASM_SOLVE = Boolean(useWasm);
+    state.USE_WASM_GAM = Boolean(useWasm);
+    state.USE_WASM_AERO = Boolean(useWasm);
+    state.USE_WASM_AIC = Boolean(useWasm);
+    state.USE_WASM_LU = Boolean(useWasm);
     log(`EXEC kernels: solve=${state.USE_WASM_SOLVE ? 'wasm' : 'js'} gam=${state.USE_WASM_GAM ? 'wasm' : 'js'} aero=${state.USE_WASM_AERO ? 'wasm' : 'js'} aic=${state.USE_WASM_AIC ? 'wasm' : 'js'} lu=${state.USE_WASM_LU ? 'wasm' : 'js'} (uiWasm=${Boolean(useWasm)})`);
     if (state.LMASS) {
       try {
