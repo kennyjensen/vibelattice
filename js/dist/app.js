@@ -3855,26 +3855,29 @@ async function loadDefaultAVL() {
     syncFileEditorScroll();
     return;
   }
-  const candidates = [
-    new URL('./third_party/avl/runs/plane.avl', window.location.href).toString(),
-    new URL('../third_party/avl/runs/plane.avl', window.location.href).toString(),
-    new URL('../../third_party/avl/runs/plane.avl', window.location.href).toString(),
-  ];
-  for (const url of candidates) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const text = await res.text();
-      if (!text.trim()) continue;
-      uiState.text = text;
-      uiState.filename = 'plane.avl';
-      uiState.sourceUrl = url;
-      setFileTextValue(text);
-      if (els.fileMeta) els.fileMeta.textContent = 'Loaded: plane.avl (default)';
-      logDebug('Loaded default file: plane.avl');
-      return;
-    } catch {
-      // try next
+  const defaultNames = ['supra.avl', 'plane.avl'];
+  for (const defaultName of defaultNames) {
+    const candidates = [
+      new URL(`./third_party/avl/runs/${defaultName}`, window.location.href).toString(),
+      new URL(`../third_party/avl/runs/${defaultName}`, window.location.href).toString(),
+      new URL(`../../third_party/avl/runs/${defaultName}`, window.location.href).toString(),
+    ];
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const text = await res.text();
+        if (!text.trim()) continue;
+        uiState.text = text;
+        uiState.filename = defaultName;
+        uiState.sourceUrl = url;
+        setFileTextValue(text);
+        if (els.fileMeta) els.fileMeta.textContent = `Loaded: ${defaultName} (default)`;
+        logDebug(`Loaded default file: ${defaultName}`);
+        return;
+      } catch {
+        // try next
+      }
     }
   }
   const embedded = document.getElementById('defaultPlane')?.textContent || '';
@@ -3887,7 +3890,45 @@ async function loadDefaultAVL() {
     logDebug('Loaded embedded default file: plane.avl');
     return;
   }
-  logDebug('Default file plane.avl not found.');
+  logDebug('Default files supra.avl/plane.avl not found.');
+}
+
+async function loadDefaultRunAndMass() {
+  const defaultBases = ['supra', 'plane'];
+  for (const base of defaultBases) {
+    const massName = `${base}.mass`;
+    const massCandidates = [
+      new URL(`./third_party/avl/runs/${massName}`, window.location.href).toString(),
+      new URL(`../third_party/avl/runs/${massName}`, window.location.href).toString(),
+      new URL(`../../third_party/avl/runs/${massName}`, window.location.href).toString(),
+    ];
+    const massText = await fetchTextFromCandidates(massCandidates);
+    if (massText) {
+      try {
+        const props = parseMassFileText(massText);
+        applyLoadedMassProps(props, massName, 'Loaded default');
+      } catch (err) {
+        logDebug(`Default mass load failed: ${err?.message ?? err}`);
+      }
+      const runName = `${base}.run`;
+      const runCandidates = [
+        new URL(`./third_party/avl/runs/${runName}`, window.location.href).toString(),
+        new URL(`../third_party/avl/runs/${runName}`, window.location.href).toString(),
+        new URL(`../../third_party/avl/runs/${runName}`, window.location.href).toString(),
+      ];
+      const runText = await fetchTextFromCandidates(runCandidates);
+      if (runText) {
+        try {
+          const parsed = parseRunsPayload(runText);
+          applyLoadedRunCases(parsed, runName, 'Loaded default');
+          logDebug(`Loaded default run cases: ${runName}`);
+        } catch (err) {
+          logDebug(`Default run-case load failed: ${err?.message ?? err}`);
+        }
+      }
+      return;
+    }
+  }
 }
 
 async function fetchTextFromCandidates(candidates) {
@@ -4075,38 +4116,6 @@ async function loadExampleFromRuns(avlName) {
   logDebug(`Loaded example bundle: ${normalized}`);
 }
 
-async function loadDefaultRunAndMass() {
-  const massCandidates = [
-    new URL('./third_party/avl/runs/plane.mass', window.location.href).toString(),
-    new URL('../third_party/avl/runs/plane.mass', window.location.href).toString(),
-    new URL('../../third_party/avl/runs/plane.mass', window.location.href).toString(),
-  ];
-  const massText = await fetchTextFromCandidates(massCandidates);
-  if (massText) {
-    try {
-      const props = parseMassFileText(massText);
-      applyLoadedMassProps(props, 'plane.mass', 'Loaded default');
-    } catch (err) {
-      logDebug(`Default mass load failed: ${err?.message ?? err}`);
-    }
-  }
-
-  const runCandidates = [
-    new URL('./third_party/avl/runs/plane.run', window.location.href).toString(),
-    new URL('../third_party/avl/runs/plane.run', window.location.href).toString(),
-    new URL('../../third_party/avl/runs/plane.run', window.location.href).toString(),
-  ];
-  const runText = await fetchTextFromCandidates(runCandidates);
-  if (runText) {
-    try {
-      const parsed = parseRunsPayload(runText);
-      applyLoadedRunCases(parsed, 'plane.run', 'Loaded default');
-      logDebug('Loaded default run cases: plane.run');
-    } catch (err) {
-      logDebug(`Default run-case load failed: ${err?.message ?? err}`);
-    }
-  }
-}
 
 els.fileInput.addEventListener('change', async (evt) => {
   const files = evt.target.files;

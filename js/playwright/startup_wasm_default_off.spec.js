@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import http from 'node:http';
-test('startup keeps wasm exec toggle off by default on root entrypoint', async ({ page }) => {
+test('startup keeps wasm exec toggle on by default on root entrypoint and loads supra', async ({ page }) => {
   const root = path.resolve('.');
   const server = http.createServer(async (req, res) => {
     const reqPath = (req.url || '/').split('?')[0];
@@ -31,8 +31,8 @@ test('startup keeps wasm exec toggle off by default on root entrypoint', async (
   try {
     for (const entry of ['/index.html']) {
       await page.goto(`http://127.0.0.1:${port}${entry}`, { waitUntil: 'domcontentloaded' });
-      await expect(page.locator('#useWasmExec')).not.toBeChecked();
-      await expect(page.locator('#fileMeta')).toContainText('Loaded: plane.avl', { timeout: 30000 });
+      await expect(page.locator('#useWasmExec')).toBeChecked();
+      await expect(page.locator('#fileMeta')).toContainText('Loaded: supra.avl', { timeout: 30000 });
       const debugText = await page.locator('#debugLog').innerText();
       expect(debugText).not.toContain('App module failed');
     }
