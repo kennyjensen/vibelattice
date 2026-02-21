@@ -1,29 +1,20 @@
 <!doctype html>
 <html lang="en">
 <head>
-<!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-Q6EYYWH9QE"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-
-  gtag('config', 'G-Q6EYYWH9QE');
-</script>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>VibeLattice</title>
   <link rel="stylesheet" href="./js/dist/styles.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <link rel="stylesheet" href="./third_party/vendor/katex/dist/katex.min.css" />
   <script type="importmap">
   {
     "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/"
+      "three": "./third_party/vendor/three/build/three.module.js",
+      "three/addons/": "./third_party/vendor/three/examples/jsm/"
     }
   }
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script src="./third_party/vendor/katex/dist/katex.min.js"></script>
 </head>
 <body class="vf-theme">
   <header class="app-header">
@@ -101,9 +92,6 @@
               <div class="file-ref-row"><span class="label-text">Sref</span><input id="fileSref" type="number" step="0.01" /></div>
               <div class="file-ref-row"><span class="label-text">Cref</span><input id="fileCref" type="number" step="0.01" /></div>
               <div class="file-ref-row"><span class="label-text">Bref</span><input id="fileBref" type="number" step="0.01" /></div>
-              <div class="file-ref-row"><span class="label-text">Xref</span><input id="fileXref" type="number" step="0.01" /></div>
-              <div class="file-ref-row"><span class="label-text">Yref</span><input id="fileYref" type="number" step="0.01" /></div>
-              <div class="file-ref-row"><span class="label-text">Zref</span><input id="fileZref" type="number" step="0.01" /></div>
             </div>
           </div>
           <div id="airfoilFilesPanel" class="airfoil-files hidden">
@@ -153,6 +141,17 @@
             </label>
             <label class="flight-row"><span class="label-text">Load factor</span>
               <input id="facLoop" type="number" step="0.1" value="0" />
+            </label>
+          </div>
+          <div class="grid-2 flight-grid">
+            <label class="flight-row"><span class="label-text">Xcg</span>
+              <input id="xcg" type="number" step="0.0001" />
+            </label>
+            <label class="flight-row"><span class="label-text">Ycg</span>
+              <input id="ycg" type="number" step="0.0001" />
+            </label>
+            <label class="flight-row"><span class="label-text">Zcg</span>
+              <input id="zcg" type="number" step="0.0001" />
             </label>
           </div>
         </div>
@@ -547,6 +546,5 @@ rudder  1.0  0.0  0. 0. 0.  1
       .then(() => window.__debugLog?.('App module loaded.'))
       .catch((err) => window.__debugLog?.(`App module failed: ${err?.message ?? err}`));
   </script>
-  <script async defer src="https://buttons.github.io/buttons.js"></script>
 </body>
 </html>

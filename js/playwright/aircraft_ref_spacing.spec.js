@@ -32,10 +32,7 @@ test('editing aircraft refs preserves line spacing and keeps decimal digits', as
     set('fileSref', '9');
     set('fileCref', '8');
     set('fileBref', '7');
-    set('fileXref', '6');
-    set('fileYref', '5');
-    set('fileZref', '4');
-    document.getElementById('fileZref')?.dispatchEvent(new Event('change', { bubbles: true }));
+    document.getElementById('fileBref')?.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.waitForTimeout(300);
 
@@ -51,23 +48,19 @@ test('editing aircraft refs preserves line spacing and keeps decimal digits', as
   };
 
   const bS = splitTriple(before.sref);
-  const bX = splitTriple(before.xref);
   const aS = splitTriple(after.sref);
-  const aX = splitTriple(after.xref);
 
   expect(bS).not.toBeNull();
-  expect(bX).not.toBeNull();
   expect(aS).not.toBeNull();
-  expect(aX).not.toBeNull();
 
   // Preserve inter-number spacing separators.
   expect(aS.s1).toBe(bS.s1);
   expect(aS.s2).toBe(bS.s2);
-  expect(aX.s1).toBe(bX.s1);
-  expect(aX.s2).toBe(bX.s2);
+  // Reference location line is no longer editable from Aircraft refs.
+  expect(after.xref).toBe(before.xref);
 
   // Always keep at least one digit after decimal.
-  [aS.t1, aS.t2, aS.t3, aX.t1, aX.t2, aX.t3].forEach((token) => {
+  [aS.t1, aS.t2, aS.t3].forEach((token) => {
     expect(token).toMatch(/^-?\d+\.\d+$/);
   });
 });

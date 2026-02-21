@@ -19,9 +19,22 @@ test('aircraft reference parameters are one-per-row editable inputs', async ({ p
     const fieldIds = rowEls.map((row) => row.querySelector('input, select')?.id || '');
     const fieldTypes = rowEls.map((row) => row.querySelector('input')?.getAttribute('type') || '');
 
-    const hasLegacyStrongRefs = Boolean(
-      summary.querySelector('#fileSref strong, #fileCref strong, #fileBref strong, #fileXref strong, #fileYref strong, #fileZref strong'),
+    const hasLegacyAircraftRefInputs = Boolean(
+      summary.querySelector('#fileXref, #fileYref, #fileZref'),
     );
+    const flightCg = ['xcg', 'ycg', 'zcg'].map((id) => {
+      const input = document.getElementById(id);
+      const row = input?.closest('.flight-row');
+      return {
+        id,
+        exists: Boolean(input),
+        label: row?.querySelector('.label-text')?.textContent?.trim() || '',
+        type: input?.getAttribute('type') || '',
+      };
+    });
+    const flightRowIds = Array.from(document.querySelectorAll('.flight-conditions .flight-row'))
+      .map((row) => row.querySelector('input, select')?.id || '')
+      .filter(Boolean);
 
     return {
       rowCount: rowEls.length,
@@ -29,15 +42,23 @@ test('aircraft reference parameters are one-per-row editable inputs', async ({ p
       fieldTags,
       fieldIds,
       fieldTypes,
-      hasLegacyStrongRefs,
+      hasLegacyAircraftRefInputs,
+      flightCg,
+      flightRowTail: flightRowIds.slice(-3),
     };
   });
 
   expect(result.missing).toBeUndefined();
-  expect(result.rowCount).toBe(9);
-  expect(result.labels).toEqual(['IYSym', 'IZSym', 'ZSym', 'Sref', 'Cref', 'Bref', 'Xref', 'Yref', 'Zref']);
-  expect(result.fieldTags).toEqual(['select', 'select', 'input', 'input', 'input', 'input', 'input', 'input', 'input']);
-  expect(result.fieldIds).toEqual(['fileIysym', 'fileIzsym', 'fileZsym', 'fileSref', 'fileCref', 'fileBref', 'fileXref', 'fileYref', 'fileZref']);
-  expect(result.fieldTypes).toEqual(['', '', 'number', 'number', 'number', 'number', 'number', 'number', 'number']);
-  expect(result.hasLegacyStrongRefs).toBe(false);
+  expect(result.rowCount).toBe(6);
+  expect(result.labels).toEqual(['IYSym', 'IZSym', 'ZSym', 'Sref', 'Cref', 'Bref']);
+  expect(result.fieldTags).toEqual(['select', 'select', 'input', 'input', 'input', 'input']);
+  expect(result.fieldIds).toEqual(['fileIysym', 'fileIzsym', 'fileZsym', 'fileSref', 'fileCref', 'fileBref']);
+  expect(result.fieldTypes).toEqual(['', '', 'number', 'number', 'number', 'number']);
+  expect(result.hasLegacyAircraftRefInputs).toBe(false);
+  expect(result.flightCg).toEqual([
+    { id: 'xcg', exists: true, label: 'Xcg', type: 'number' },
+    { id: 'ycg', exists: true, label: 'Ycg', type: 'number' },
+    { id: 'zcg', exists: true, label: 'Zcg', type: 'number' },
+  ]);
+  expect(result.flightRowTail).toEqual(['xcg', 'ycg', 'zcg']);
 });

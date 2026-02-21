@@ -5,6 +5,9 @@
       INTEGER IR, J, IOFF, NITER, N
       CHARACTER*256 FILAVL
       CHARACTER*32 ARG2
+      REAL DIR, CA, SA, RX, RY, RZ
+      REAL WROT_A(3)
+      REAL CL_AL, CM_AL, XNP
 
       PI = 4.0*ATAN(1.0)
       DTR = PI/180.0
@@ -80,8 +83,37 @@ C---- Run case parameters (match JS test values)
 
       CALL EXEC(NITER,0,IR)
 
+      IF(LNASA_SA) THEN
+        DIR = -1.0
+      ELSE
+        DIR =  1.0
+      ENDIF
+      CALL VINFAB
+      CA = COS(ALFA)
+      SA = SIN(ALFA)
+      RX = (WROT(1)*CA + WROT(3)*SA) * DIR
+      RY =  WROT(2)
+      RZ = (WROT(3)*CA - WROT(1)*SA) * DIR
+      WROT_A(1)  = -RX*SA - RZ*CA
+      WROT_A(2)  =  0.0
+      WROT_A(3)  = -RZ*SA + RX*CA
+
+      CL_AL = CLTOT_U(1)*VINF_A(1) + CLTOT_U(4)*WROT_A(1)
+     &      + CLTOT_U(2)*VINF_A(2) + CLTOT_U(5)*WROT_A(2)
+     &      + CLTOT_U(3)*VINF_A(3) + CLTOT_U(6)*WROT_A(3) + CLTOT_A
+      CM_AL = CMTOT_U(2,1)*VINF_A(1) + CMTOT_U(2,4)*WROT_A(1)
+     &      + CMTOT_U(2,2)*VINF_A(2) + CMTOT_U(2,5)*WROT_A(2)
+     &      + CMTOT_U(2,3)*VINF_A(3) + CMTOT_U(2,6)*WROT_A(3)
+      IF(CL_AL .NE. 0.0) THEN
+        XNP = XYZREF(1) - CREF*CM_AL/CL_AL
+      ELSE
+        XNP = -1.0E30
+      ENDIF
+
       WRITE(*,'(A,1X,2(ES23.15E3))') 'DERIV',
      &  CLTOT_U(5), CLTOT_D(1)
+      WRITE(*,'(A,1X,3(ES23.15E3))') 'XNP',
+     &  XNP, CL_AL, CM_AL
 
       WRITE(*,'(A,1X,3(ES23.15E3))') 'GAMU0_1', GAM_U_0(1,1),
      &  GAM_U_0(1,2), GAM_U_0(1,3)

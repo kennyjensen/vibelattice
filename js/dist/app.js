@@ -27,9 +27,6 @@ const els = {
   fileSref: document.getElementById('fileSref'),
   fileCref: document.getElementById('fileCref'),
   fileBref: document.getElementById('fileBref'),
-  fileXref: document.getElementById('fileXref'),
-  fileYref: document.getElementById('fileYref'),
-  fileZref: document.getElementById('fileZref'),
   fileIysym: document.getElementById('fileIysym'),
   fileIzsym: document.getElementById('fileIzsym'),
   fileZsym: document.getElementById('fileZsym'),
@@ -51,6 +48,9 @@ const els = {
   velLoop: document.getElementById('velLoop'),
   radLoop: document.getElementById('radLoop'),
   facLoop: document.getElementById('facLoop'),
+  xcg: document.getElementById('xcg'),
+  ycg: document.getElementById('ycg'),
+  zcg: document.getElementById('zcg'),
   trimBtn: document.getElementById('trimBtn'),
   useWasmExec: document.getElementById('useWasmExec'),
   appRoot: document.getElementById('appRoot'),
@@ -1500,9 +1500,6 @@ function renderFileHeaderSummary(header, model = null) {
   show(els.fileSref, header.sref, 2);
   show(els.fileCref, header.cref, 2);
   show(els.fileBref, header.bref, 2);
-  show(els.fileXref, header.xref, 2);
-  show(els.fileYref, header.yref, 2);
-  show(els.fileZref, header.zref, 2);
 }
 
 function applyAircraftNameRename() {
@@ -1525,6 +1522,10 @@ function applyAircraftNameRename() {
 function applyAircraftRefRename() {
   if (!els.fileText) return;
   if (fileSummarySyncing) return;
+  const header = uiState.modelHeader || {};
+  const xrefFallback = Number(header.xref);
+  const yrefFallback = Number(header.yref);
+  const zrefFallback = Number(header.zref);
   const refs = {
     iysym: Number(els.fileIysym?.value),
     izsym: Number(els.fileIzsym?.value),
@@ -1532,9 +1533,9 @@ function applyAircraftRefRename() {
     sref: Number(els.fileSref?.value),
     cref: Number(els.fileCref?.value),
     bref: Number(els.fileBref?.value),
-    xref: Number(els.fileXref?.value),
-    yref: Number(els.fileYref?.value),
-    zref: Number(els.fileZref?.value),
+    xref: Number.isFinite(xrefFallback) ? xrefFallback : 0,
+    yref: Number.isFinite(yrefFallback) ? yrefFallback : 0,
+    zref: Number.isFinite(zrefFallback) ? zrefFallback : 0,
   };
   const allFinite = Object.values(refs).every((v) => Number.isFinite(v));
   if (!allFinite) {
@@ -2059,12 +2060,17 @@ function renderStabilityGrid(result) {
   if (els.outStabilityNeutral) {
     const cla = dA(clU, result?.CLTOT_A ?? 0);
     const cma = dA(cmsaxU, 0);
-    const xrefRaw = Number.isFinite(result?.XREF) ? Number(result.XREF) : Number(uiState.modelHeader?.xref);
+    const xrefRaw = Number.isFinite(result?.XREF)
+      ? Number(result.XREF)
+      : (Number.isFinite(uiState.massProps?.xcg)
+        ? Number(uiState.massProps.xcg)
+        : Number(uiState.modelHeader?.xref));
     const crefRaw = Number.isFinite(result?.CREF) ? Number(result.CREF) : Number(uiState.modelHeader?.cref);
     let xnp = Number.NaN;
     if (Number.isFinite(cla) && Math.abs(cla) > 1e-9 && Number.isFinite(cma)
         && Number.isFinite(xrefRaw) && Number.isFinite(crefRaw) && Math.abs(crefRaw) > 1e-9) {
-      xnp = (xrefRaw / crefRaw) - (cma / cla);
+      // Match AVL output: dimensional neutral point location in length units.
+      xnp = xrefRaw - (crefRaw * (cma / cla));
     }
     els.outStabilityNeutral.textContent = `Xnp = ${Number.isFinite(xnp) ? fmtSignedNoPad(xnp, 6) : '-'}`;
   }
@@ -2390,11 +2396,16 @@ function readMassPropsFromUI() {
     const v = Number(el?.value);
     return Number.isFinite(v) ? v : fallback;
   };
+  const flightCg = {
+    x: Number(els.xcg?.value),
+    y: Number(els.ycg?.value),
+    z: Number(els.zcg?.value),
+  };
   return {
     mass: num(els.massTotal, num(els.mass, 0)),
-    xcg: num(els.massXcg, Number(uiState.modelHeader?.xref) || 0),
-    ycg: num(els.massYcg, Number(uiState.modelHeader?.yref) || 0),
-    zcg: num(els.massZcg, Number(uiState.modelHeader?.zref) || 0),
+    xcg: num(els.massXcg, Number.isFinite(flightCg.x) ? flightCg.x : (Number(uiState.modelHeader?.xref) || 0)),
+    ycg: num(els.massYcg, Number.isFinite(flightCg.y) ? flightCg.y : (Number(uiState.modelHeader?.yref) || 0)),
+    zcg: num(els.massZcg, Number.isFinite(flightCg.z) ? flightCg.z : (Number(uiState.modelHeader?.zref) || 0)),
     ixx: num(els.massIxx, 0),
     iyy: num(els.massIyy, 0),
     izz: num(els.massIzz, 0),
@@ -2409,12 +2420,26 @@ function readMassPropsFromUI() {
   };
 }
 
+function readFlightCgFromUI() {
+  const fallback = uiState.modelHeader || {};
+  const pick = (el, fb) => {
+    const v = Number(el?.value);
+    return Number.isFinite(v) ? v : fb;
+  };
+  return {
+    xcg: pick(els.xcg, Number(fallback.xref) || 0),
+    ycg: pick(els.ycg, Number(fallback.yref) || 0),
+    zcg: pick(els.zcg, Number(fallback.zref) || 0),
+  };
+}
+
 function makeDefaultMassProps() {
+  const cg = readFlightCgFromUI();
   return {
     mass: Number(els.mass?.value || 0),
-    xcg: Number(uiState.modelHeader?.xref || 0),
-    ycg: Number(uiState.modelHeader?.yref || 0),
-    zcg: Number(uiState.modelHeader?.zref || 0),
+    xcg: cg.xcg,
+    ycg: cg.ycg,
+    zcg: cg.zcg,
     ixx: 0,
     iyy: 0,
     izz: 0,
@@ -2440,6 +2465,9 @@ function renderMassProps(props = null) {
   show(els.massXcg, mp.xcg, 4);
   show(els.massYcg, mp.ycg, 4);
   show(els.massZcg, mp.zcg, 4);
+  show(els.xcg, mp.xcg, 4);
+  show(els.ycg, mp.ycg, 4);
+  show(els.zcg, mp.zcg, 4);
   show(els.massIxx, mp.ixx, 4);
   show(els.massIyy, mp.iyy, 4);
   show(els.massIzz, mp.izz, 4);
@@ -2706,6 +2734,7 @@ function renderRunCasesList() {
 
 function captureRunCaseFromUI(nameHint = '') {
   const massProps = uiState.massProps || readMassPropsFromUI();
+  const flightCg = readFlightCgFromUI();
   const rows = readConstraintRows().map((row) => ({
     variable: String(row.variable || ''),
     constraint: String(row.constraint || 'none'),
@@ -2726,9 +2755,9 @@ function captureRunCaseFromUI(nameHint = '') {
       velLoop: Number(els.velLoop?.value || 0),
       radLoop: Number(els.radLoop?.value || 0),
       facLoop: Number(els.facLoop?.value || 0),
-      xcg: Number(massProps?.xcg || 0),
-      ycg: Number(massProps?.ycg || 0),
-      zcg: Number(massProps?.zcg || 0),
+      xcg: Number((flightCg?.xcg ?? massProps?.xcg) || 0),
+      ycg: Number((flightCg?.ycg ?? massProps?.ycg) || 0),
+      zcg: Number((flightCg?.zcg ?? massProps?.zcg) || 0),
       ixx: Number(massProps?.ixx || 0),
       iyy: Number(massProps?.iyy || 0),
       izz: Number(massProps?.izz || 0),
@@ -2754,6 +2783,11 @@ function applyRunCaseToUI(entry) {
     if (!el || !Number.isFinite(num)) return;
     setNumericInput(el, num, digits);
   };
+  const setRawIfFinite = (el, value) => {
+    const num = Number(value);
+    if (!el || !Number.isFinite(num)) return;
+    el.value = String(num);
+  };
   if (els.flightMode) {
     let mode = String(inputs.flightMode || '').trim().toLowerCase();
     if (mode !== 'level' && mode !== 'looping') {
@@ -2765,16 +2799,20 @@ function applyRunCaseToUI(entry) {
     }
   }
   syncFlightModePanels();
-  setIfFinite(els.bank, inputs.bank, 2);
-  setIfFinite(els.cl, inputs.cl, 3);
-  setIfFinite(els.vel, inputs.vel, 2);
-  setIfFinite(els.mass, inputs.mass, 3);
-  setIfFinite(els.rho, inputs.rho, 4);
-  setIfFinite(els.gee, inputs.gee, 3);
-  setIfFinite(els.clLoop, inputs.clLoop, 3);
-  setIfFinite(els.velLoop, inputs.velLoop, 2);
-  setIfFinite(els.radLoop, inputs.radLoop, 2);
-  setIfFinite(els.facLoop, inputs.facLoop, 3);
+  // Preserve run-file precision when loading fields; derived updates use these values.
+  setRawIfFinite(els.bank, inputs.bank);
+  setRawIfFinite(els.cl, inputs.cl);
+  setRawIfFinite(els.vel, inputs.vel);
+  setRawIfFinite(els.mass, inputs.mass);
+  setRawIfFinite(els.rho, inputs.rho);
+  setRawIfFinite(els.gee, inputs.gee);
+  setRawIfFinite(els.clLoop, inputs.clLoop);
+  setRawIfFinite(els.velLoop, inputs.velLoop);
+  setRawIfFinite(els.radLoop, inputs.radLoop);
+  setRawIfFinite(els.facLoop, inputs.facLoop);
+  setRawIfFinite(els.xcg, inputs.xcg);
+  setRawIfFinite(els.ycg, inputs.ycg);
+  setRawIfFinite(els.zcg, inputs.zcg);
 
   const updateMassProp = (obj, key, value) => {
     const num = Number(value);
@@ -3013,6 +3051,7 @@ function applyLoadedMassProps(props, filename, source = 'Loaded') {
     if (els.gee) setNumericInput(els.gee, props.g, 4);
     if (els.rho) setNumericInput(els.rho, props.rho, 6);
   }
+  updateFlightConditions();
   scheduleAutoTrim();
   logDebug(`${source} mass file: ${filename}`);
 }
@@ -3838,6 +3877,43 @@ els.massPropsSaveBtn?.addEventListener('click', () => {
   el.addEventListener('change', () => {
     uiState.massProps = readMassPropsFromUI();
     renderMassProps(uiState.massProps);
+    if (el === els.massTotal) {
+      const totalMass = Number(uiState.massProps?.mass);
+      if (els.mass && Number.isFinite(totalMass)) {
+        setNumericInput(els.mass, totalMass, 4);
+      }
+      updateFlightConditions();
+    }
+    scheduleAutoTrim();
+  });
+});
+
+[
+  [els.xcg, 'xcg', els.massXcg],
+  [els.ycg, 'ycg', els.massYcg],
+  [els.zcg, 'zcg', els.massZcg],
+].forEach(([el, key, mirror]) => {
+  if (!el) return;
+  el.addEventListener('input', () => {
+    const next = Number(el.value);
+    if (!Number.isFinite(next)) return;
+    const props = { ...(uiState.massProps || readMassPropsFromUI()) };
+    props[key] = next;
+    uiState.massProps = props;
+    if (mirror && document.activeElement !== mirror) {
+      mirror.value = String(next);
+    }
+  });
+  el.addEventListener('change', () => {
+    const next = Number(el.value);
+    if (!Number.isFinite(next)) {
+      renderMassProps(uiState.massProps || readMassPropsFromUI());
+      return;
+    }
+    const props = { ...(uiState.massProps || readMassPropsFromUI()) };
+    props[key] = next;
+    uiState.massProps = props;
+    renderMassProps(props);
     scheduleAutoTrim();
   });
 });
@@ -3984,7 +4060,6 @@ els.fileAircraftName?.addEventListener('keydown', (evt) => {
 [
   els.fileIysym, els.fileIzsym, els.fileZsym,
   els.fileSref, els.fileCref, els.fileBref,
-  els.fileXref, els.fileYref, els.fileZref,
 ].forEach((el) => {
   if (!el) return;
   el.addEventListener('change', applyAircraftRefRename);
@@ -8677,9 +8752,18 @@ function buildExecState(model) {
   }
   state.PARVAL[idx2(IPCL, IR, IPTOT)] = Math.fround(Number(els.cl?.value || 0));
   state.PARVAL[idx2(IPPHI, IR, IPTOT)] = Math.fround(Number(els.bank?.value || 0));
-  state.PARVAL[idx2(IPXCG, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.xcg) ? uiState.massProps.xcg : (Number.isFinite(model.header.xref) ? model.header.xref : 0.0));
-  state.PARVAL[idx2(IPYCG, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ycg) ? uiState.massProps.ycg : (Number.isFinite(model.header.yref) ? model.header.yref : 0.0));
-  state.PARVAL[idx2(IPZCG, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.zcg) ? uiState.massProps.zcg : (Number.isFinite(model.header.zref) ? model.header.zref : 0.0));
+  const xcgInput = Number(els.xcg?.value);
+  const ycgInput = Number(els.ycg?.value);
+  const zcgInput = Number(els.zcg?.value);
+  state.PARVAL[idx2(IPXCG, IR, IPTOT)] = Math.fround(Number.isFinite(xcgInput)
+    ? xcgInput
+    : (Number.isFinite(uiState.massProps?.xcg) ? uiState.massProps.xcg : (Number.isFinite(model.header.xref) ? model.header.xref : 0.0)));
+  state.PARVAL[idx2(IPYCG, IR, IPTOT)] = Math.fround(Number.isFinite(ycgInput)
+    ? ycgInput
+    : (Number.isFinite(uiState.massProps?.ycg) ? uiState.massProps.ycg : (Number.isFinite(model.header.yref) ? model.header.yref : 0.0)));
+  state.PARVAL[idx2(IPZCG, IR, IPTOT)] = Math.fround(Number.isFinite(zcgInput)
+    ? zcgInput
+    : (Number.isFinite(uiState.massProps?.zcg) ? uiState.massProps.zcg : (Number.isFinite(model.header.zref) ? model.header.zref : 0.0)));
   state.PARVAL[idx2(IPIXX, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ixx) ? uiState.massProps.ixx : 0.0);
   state.PARVAL[idx2(IPIYY, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.iyy) ? uiState.massProps.iyy : 0.0);
   state.PARVAL[idx2(IPIZZ, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.izz) ? uiState.massProps.izz : 0.0);
@@ -8808,6 +8892,9 @@ function runExecFromText(text) {
       SREF: state.SREF,
       CREF: state.CREF,
       BREF: state.BREF,
+      XREF: state.XYZREF ? state.XYZREF[0] : null,
+      YREF: state.XYZREF ? state.XYZREF[1] : null,
+      ZREF: state.XYZREF ? state.XYZREF[2] : null,
       ALFA: state.ALFA,
       BETA: state.BETA,
       CLTOT: state.CLTOT,
@@ -8942,7 +9029,7 @@ function renderHingeGrid(result, parval = null) {
   const IR = 1;
   const IPVEE = 12;
   const IPRHO = 13;
-  const rows = [['', 'Chinge', 'Moment']];
+  const rows = [['', 'Chinge', 'Moment (N-m)']];
   const rhoPar = parval ? Number(parval[idx2(IPRHO, IR, 30)]) : Number.NaN;
   const veePar = parval ? Number(parval[idx2(IPVEE, IR, 30)]) : Number.NaN;
   const qdyn = (Number.isFinite(rhoPar) && Number.isFinite(veePar))

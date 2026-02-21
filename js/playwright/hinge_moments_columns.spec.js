@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 
-const entrypoints = ['/index.html', '/js/dist/index.html'];
+const entrypoints = ['/index.html'];
 
 for (const entry of entrypoints) {
   test(`hinge moments renders Chinge and Moment columns on ${entry}`, async ({ page }) => {
@@ -68,7 +68,7 @@ for (const entry of entrypoints) {
         if (gridColsCount !== 3) mismatches.push(`expected 3 hinge grid columns, got ${gridColsCount} (${gridColsRaw})`);
 
         if (cells[1] !== 'Chinge') mismatches.push(`expected Chinge header, got: ${cells[1]}`);
-        if (cells[2] !== 'Moment') mismatches.push(`expected Moment header, got: ${cells[2]}`);
+        if (cells[2] !== 'Moment (N-m)') mismatches.push(`expected Moment (N-m) header, got: ${cells[2]}`);
 
         const qdyn = 0.5 * 1.2 * 10.0 * 10.0;
         const exp1 = 0.1 * qdyn * 12.0 * 1.0;

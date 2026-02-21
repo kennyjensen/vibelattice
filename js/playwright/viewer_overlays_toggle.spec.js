@@ -105,9 +105,15 @@ test('viewer overlay buttons toggle panel spacing, vortices, and flow field inde
     const markerAlign = await page.evaluate(() => {
       const probe = window.__trefftzTestHook.sampleInducedAtWorld?.(0, 0, 0);
       const ref = window.__trefftzTestHook.getReferenceMarkerPosition?.();
-      const xref = Number((document.getElementById('fileXref') || {}).value || 0);
-      const yref = Number((document.getElementById('fileYref') || {}).value || 0);
-      const zref = Number((document.getElementById('fileZref') || {}).value || 0);
+      const lines = String(document.getElementById('fileText')?.value || '').split(/\r?\n/);
+      const refTokens = String(lines[4] || '')
+        .trim()
+        .split(/\s+/)
+        .map((t) => Number(t))
+        .filter((n) => Number.isFinite(n));
+      const xref = Number(refTokens[0] || 0);
+      const yref = Number(refTokens[1] || 0);
+      const zref = Number(refTokens[2] || 0);
       const off = probe?.offset || { x: 0, y: 0, z: 0 };
       return {
         ref,

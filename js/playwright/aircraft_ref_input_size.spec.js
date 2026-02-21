@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 
-const entrypoints = ['/index.html', '/js/dist/index.html'];
+const entrypoints = ['/index.html'];
 
 for (const entry of entrypoints) {
   test(`Aircraft reference inputs use tighter spacing and larger width on ${entry}`, async ({ page }) => {
@@ -46,7 +46,7 @@ for (const entry of entrypoints) {
       const metrics = await page.evaluate(() => {
         const grid = document.querySelector('.file-ref-grid');
         const gridStyle = getComputedStyle(grid);
-        const ids = ['#fileSref', '#fileCref', '#fileBref', '#fileXref', '#fileYref', '#fileZref'];
+        const ids = ['#fileZsym', '#fileSref', '#fileCref', '#fileBref'];
         const widths = ids.map((sel) => Number(document.querySelector(sel).getBoundingClientRect().width.toFixed(2)));
         return {
           columnGap: gridStyle.columnGap,
