@@ -4793,13 +4793,14 @@ function updateTrefftz(cl) {
     let wminData = Infinity;
     let wmaxData = -Infinity;
 
-    strips.forEach(([y, _z, cnc, clVal, clPerp, dw]) => {
+    strips.forEach(([y, _z, cnc, _clVal, clPerp, dw]) => {
       if (y < ymin) ymin = y;
       if (y > ymax) ymax = y;
       fmin = Math.min(fmin, cnc, 0.0);
       fmax = Math.max(fmax, cnc, 0.0);
-      cmin = Math.min(cmin, clPerp, clVal, 0.0);
-      cmax = Math.max(cmax, clPerp, clVal, 0.0);
+      // AVL uses CLT_LSTRP (perpendicular-velocity cl) for Trefftz C-axis range.
+      cmin = Math.min(cmin, clPerp, 0.0);
+      cmax = Math.max(cmax, clPerp, 0.0);
       const ai = -dw;
       wminData = Math.min(wminData, ai);
       wmaxData = Math.max(wmaxData, ai);
@@ -4818,33 +4819,48 @@ function updateTrefftz(cl) {
       cmin = 0.0;
       cmax = 0.1;
     }
-    {
-      const cSpanRaw = Math.abs(cmax - cmin);
-      const cPad = Math.max(0.05, 0.1 * (cSpanRaw > 1e-6 ? cSpanRaw : Math.max(Math.abs(cmax), 0.1)));
-      if (cmin >= 0) cmin = -cPad;
-      if (cmax <= 0) cmax = cPad;
-    }
-    if (cmax - cmin < 0.1) {
-      const mid = (cmin + cmax) / 2;
-      cmin = mid - 0.05;
-      cmax = mid + 0.05;
-    }
     if (!Number.isFinite(wmin) || !Number.isFinite(wmax) || Math.abs(wmax - wmin) < 1e-5) {
       wmin = 0.0;
       wmax = 0.1;
     }
-    if (wmax - wmin < 0.1) {
-      const mid = (wmin + wmax) / 2;
-      wmin = mid - 0.05;
-      wmax = mid + 0.05;
-    }
+
+    // Match AVL AXISADJ engineering-axis bounds for Trefftz plot ranges.
+    const axisAdjust = (minIn, maxIn) => {
+      let min = Number(minIn);
+      let max = Number(maxIn);
+      let span = max - min;
+      if (!Number.isFinite(span) || Math.abs(span) < 1e-12) span = 1.0;
+      const xincTbl = [0.1, 0.2, 0.25, 0.5, 1.0];
+      const xpon = Math.trunc(Math.log10(Math.abs(span)));
+      const xscale = 10 ** xpon;
+      const spanScaled = span / xscale;
+      let xinc = xincTbl[xincTbl.length - 1];
+      let ntics = 2;
+      for (let i = 0; i < xincTbl.length; i += 1) {
+        xinc = xincTbl[i];
+        ntics = 1 + Math.trunc((spanScaled / xinc) + 0.1);
+        if (ntics <= 6) break;
+      }
+      const delta = xinc * xscale;
+      min = delta * Math.floor(min / delta);
+      max = delta * Math.ceil(max / delta);
+      const adjSpan = max - min;
+      ntics = 1 + Math.trunc((adjSpan / delta) + 0.1);
+      return { min, max, span: adjSpan, delta, ntics: Math.max(2, ntics) };
+    };
+    const cAxis = axisAdjust(cmin, cmax);
+    cmin = cAxis.min;
+    cmax = cAxis.max;
+    const wAxis = axisAdjust(wmin, wmax);
+    wmin = wAxis.min;
+    wmax = wAxis.max;
 
     const wminRaw = Math.min(wmin, 0);
     const wmaxRaw = Math.max(wmax, 0);
     let wminAdj = wminRaw;
     let wmaxAdj = wmaxRaw;
 
-    const ticks = 5;
+    const ticks = Math.max(2, cAxis.ntics - 1);
     const showGridDom = true;
     const showGridCanvas = false;
     const showZeroLine = true;
@@ -5203,6 +5219,27 @@ if (typeof window !== 'undefined') {
       const result = uiState.lastExecResult;
       if (!result || typeof result !== 'object') return null;
       return JSON.parse(JSON.stringify(result));
+    },
+    getTrefftzCurveMaxes() {
+      const data = uiState.trefftzData;
+      const strips = Array.isArray(data?.strips) ? data.strips : [];
+      const cref = Number(data?.cref) || 1.0;
+      if (!strips.length) return null;
+      let maxCncOverCref = -Infinity;
+      let maxClt = -Infinity;
+      for (let i = 0; i < strips.length; i += 1) {
+        const row = strips[i];
+        const cnc = Number(row?.[2]);
+        const clt = Number(row?.[4]);
+        if (Number.isFinite(cnc)) maxCncOverCref = Math.max(maxCncOverCref, cnc / cref);
+        if (Number.isFinite(clt)) maxClt = Math.max(maxClt, clt);
+      }
+      return {
+        maxCncOverCref: Number.isFinite(maxCncOverCref) ? maxCncOverCref : null,
+        maxClt: Number.isFinite(maxClt) ? maxClt : null,
+        stripCount: strips.length,
+        cref,
+      };
     },
     renderHingeForTest(result) {
       const r = (result && typeof result === 'object') ? result : {};
