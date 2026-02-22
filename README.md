@@ -3,6 +3,22 @@
 VibeLattice is a browser-based workflow for working with AVL models, running cases, and visualizing results.
 It is built as a numerically faithful JS/WASM port of AVL logic, with UI tooling around the original AVL file formats.
 
+## Deployed Site
+
+- https://avl.vibefoil.com
+
+## Run Locally
+
+From the repo root, start a local static server:
+
+```bash
+python3 -m http.server 8080
+```
+
+Then open:
+
+- http://127.0.0.1:8080/index.html
+
 ## AVL Credit
 
 This project is based on and ports core functionality from **AVL (Athena Vortex Lattice)** by Mark Drela and Harold Youngren.
