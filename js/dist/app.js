@@ -115,6 +115,7 @@ const els = {
   viewerHome: document.getElementById('viewerHome'),
   viewerView: document.getElementById('viewerView'),
   viewerGrid: document.getElementById('viewerGrid'),
+  viewerText: document.getElementById('viewerText'),
   viewerLoad: document.getElementById('viewerLoad'),
   viewerSurface: document.getElementById('viewerSurface'),
   viewerPressure: document.getElementById('viewerPressure'),
@@ -161,6 +162,7 @@ const uiState = {
   showPanelSpacing: false,
   showVortices: false,
   showFlowField: false,
+  showSurfaceText: true,
   flowFieldMode: 'induced',
   pressureField: null,
   eigenModes: [],
@@ -4310,6 +4312,11 @@ els.viewerGrid?.addEventListener('click', () => {
   applyGridMode();
   updateViewerButtons();
 });
+els.viewerText?.addEventListener('click', () => {
+  uiState.showSurfaceText = !uiState.showSurfaceText;
+  applySurfaceLabelVisibility();
+  updateViewerButtons();
+});
 els.viewerLoad?.addEventListener('click', () => {
   uiState.showLoading = !uiState.showLoading;
   els.viewerLoad.classList.toggle('active', uiState.showLoading);
@@ -5337,6 +5344,7 @@ if (typeof window !== 'undefined') {
         showPanelSpacing: Boolean(uiState.showPanelSpacing),
         showVortices: Boolean(uiState.showVortices),
         showFlowField: Boolean(uiState.showFlowField),
+        showSurfaceText: Boolean(uiState.showSurfaceText),
         hasPanelSpacing: Boolean(panelSpacingGroup),
         hasVortices: Boolean(vortexGroup),
         hasFlow: Boolean(flowFieldGroup),
@@ -5439,6 +5447,11 @@ if (typeof window !== 'undefined') {
       let labelMaxChord = 0;
       let labelMinWidthToChord = Infinity;
       let labelMaxWidthToChord = 0;
+      let labelVisibleCount = 0;
+      let labelClipFailures = 0;
+      let labelMaxOverflowPx = 0;
+      let labelMaxTextLength = 0;
+      const labels = [];
       if (aircraft) {
         aircraft.traverse((obj) => {
           if (obj?.isLine && obj.name === 'surface-airfoil-outline') {
@@ -5488,6 +5501,7 @@ if (typeof window !== 'undefined') {
             labelCount += 1;
             const w = Number(obj.scale?.x);
             const chord = Number(obj.userData?.chordWorld);
+            if (obj.visible) labelVisibleCount += 1;
             if (Number.isFinite(w)) {
               if (w < labelMinWidth) labelMinWidth = w;
               if (w > labelMaxWidth) labelMaxWidth = w;
@@ -5500,6 +5514,37 @@ if (typeof window !== 'undefined') {
                 if (ratio > labelMaxWidthToChord) labelMaxWidthToChord = ratio;
               }
             }
+            const text = String(obj.userData?.labelText ?? '');
+            if (text.length > labelMaxTextLength) labelMaxTextLength = text.length;
+            const mapImage = obj.material?.map?.image;
+            const canvasWidthPx = Number(mapImage?.width);
+            const canvasHeightPx = Number(mapImage?.height);
+            const textWidthPx = Number(obj.userData?.labelTextWidthPx);
+            const paddingXPx = Number(obj.userData?.labelPaddingXPx);
+            const availablePx = Number.isFinite(canvasWidthPx) && Number.isFinite(paddingXPx)
+              ? Math.max(0, canvasWidthPx - (paddingXPx * 2))
+              : null;
+            const overflowPx = Number.isFinite(textWidthPx) && Number.isFinite(availablePx)
+              ? Math.max(0, textWidthPx - availablePx)
+              : null;
+            const explicitFit = obj.userData?.labelFits;
+            const clipped = Number.isFinite(overflowPx)
+              ? (overflowPx > 0.5)
+              : (explicitFit === false);
+            if (clipped) {
+              labelClipFailures += 1;
+              if (Number.isFinite(overflowPx) && overflowPx > labelMaxOverflowPx) labelMaxOverflowPx = overflowPx;
+            }
+            labels.push({
+              text,
+              visible: Boolean(obj.visible),
+              canvasWidthPx: Number.isFinite(canvasWidthPx) ? canvasWidthPx : null,
+              canvasHeightPx: Number.isFinite(canvasHeightPx) ? canvasHeightPx : null,
+              textWidthPx: Number.isFinite(textWidthPx) ? textWidthPx : null,
+              paddingXPx: Number.isFinite(paddingXPx) ? paddingXPx : null,
+              labelFits: explicitFit !== false,
+              overflowPx: Number.isFinite(overflowPx) ? overflowPx : null,
+            });
           }
         });
       }
@@ -5512,11 +5557,16 @@ if (typeof window !== 'undefined') {
         camberLineCount,
         camberLineVisible,
         labelCount,
+        labelVisibleCount,
+        labelClipFailures,
+        labelMaxOverflowPx,
+        labelMaxTextLength,
         labelMinWidth: Number.isFinite(labelMinWidth) ? labelMinWidth : 0,
         labelMaxWidth,
         labelMaxChord,
         labelMinWidthToChord: Number.isFinite(labelMinWidthToChord) ? labelMinWidthToChord : 0,
         labelMaxWidthToChord,
+        labels,
       };
     },
     getVortexLegSymmetryStats(options = {}) {
@@ -7220,6 +7270,16 @@ function updatePressureSurfaceColors() {
   });
 }
 
+function applySurfaceLabelVisibility() {
+  if (!aircraft) return;
+  const showText = Boolean(uiState.showSurfaceText);
+  aircraft.traverse((obj) => {
+    if (obj?.isSprite && obj?.userData?.surfaceLabel) {
+      obj.visible = showText;
+    }
+  });
+}
+
 function applySurfaceRenderMode() {
   const mode = uiState.surfaceRenderMode;
   const showSurface = mode === 'surface' || mode === 'both';
@@ -7231,6 +7291,7 @@ function applySurfaceRenderMode() {
     const keepInSurface = Boolean(obj?.userData?.showInSurfaceMode);
     obj.visible = showWire || (showSurface && keepInSurface);
   });
+  applySurfaceLabelVisibility();
   updatePressureSurfaceColors();
 }
 
@@ -8643,17 +8704,36 @@ function buildSurfaceMesh(surface, color) {
     group.add(overlayMesh);
   }
 
+  const surfaceLabel = formatSurfaceDisplayName(surface.name || 'Surface', 1);
   const labelCanvas = document.createElement('canvas');
   const ctx = labelCanvas.getContext('2d');
-  labelCanvas.width = 256;
-  labelCanvas.height = 128;
-  ctx.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
-  ctx.fillStyle = '#e2e8f0';
-  ctx.font = '28px Consolas, "Courier New", monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const surfaceLabel = formatSurfaceDisplayName(surface.name || 'Surface', 1);
-  ctx.fillText(surfaceLabel, 128, 64);
+  const fontSizePx = 28;
+  const paddingXPx = 24;
+  const paddingYPx = 18;
+  let textWidthPx = Math.max(1, surfaceLabel.length * (fontSizePx * 0.55));
+  let textHeightPx = fontSizePx;
+  if (ctx) {
+    ctx.font = `${fontSizePx}px Consolas, "Courier New", monospace`;
+    const metrics = ctx.measureText(surfaceLabel);
+    textWidthPx = Math.max(1, Number(metrics.width) || textWidthPx);
+    const ascent = Number(metrics.actualBoundingBoxAscent);
+    const descent = Number(metrics.actualBoundingBoxDescent);
+    textHeightPx = Math.max(
+      fontSizePx,
+      (Number.isFinite(ascent) ? ascent : (fontSizePx * 0.72))
+      + (Number.isFinite(descent) ? descent : (fontSizePx * 0.28)),
+    );
+  }
+  labelCanvas.width = Math.max(192, Math.ceil(textWidthPx + (paddingXPx * 2)));
+  labelCanvas.height = Math.max(72, Math.ceil(textHeightPx + (paddingYPx * 2)));
+  if (ctx) {
+    ctx.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = `${fontSizePx}px Consolas, "Courier New", monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(surfaceLabel, labelCanvas.width * 0.5, labelCanvas.height * 0.5);
+  }
   const tex = new THREE.CanvasTexture(labelCanvas);
   const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true });
   const sprite = new THREE.Sprite(spriteMat);
@@ -8684,14 +8764,19 @@ function buildSurfaceMesh(surface, color) {
   const avgChord = chords.length ? (chords.reduce((a, b) => a + b, 0) / chords.length) : 0;
   const crefRaw = Number(uiState.modelHeader?.cref);
   const chordWorld = Math.max(0.25, Number.isFinite(crefRaw) && crefRaw > 0 ? crefRaw : (avgChord * sx));
-  const sampleWidthPx = Math.max(1, Number(ctx.measureText('XXXXXXXXXX').width) || 1);
-  const labelWidth = chordWorld * (labelCanvas.width / sampleWidthPx);
+  const sampleWidthPx = Math.max(1, Number(ctx?.measureText('XXXXXXXXXX').width) || 1);
+  const labelWidthPx = Math.max(sampleWidthPx, textWidthPx + (paddingXPx * 2));
+  const labelWidth = chordWorld * (labelWidthPx / sampleWidthPx);
   sprite.position.set(labelPos[0], labelPos[1], labelPos[2] + 0.2);
   sprite.scale.set(labelWidth, labelWidth * (labelCanvas.height / labelCanvas.width), 1);
   sprite.userData.surfaceLabel = true;
   sprite.userData.labelText = surfaceLabel;
   sprite.userData.labelWidth = labelWidth;
   sprite.userData.chordWorld = chordWorld;
+  sprite.userData.labelTextWidthPx = textWidthPx;
+  sprite.userData.labelCanvasWidthPx = labelCanvas.width;
+  sprite.userData.labelPaddingXPx = paddingXPx;
+  sprite.userData.labelFits = textWidthPx <= (labelCanvas.width - (paddingXPx * 2) + 0.5);
   sprite.userData.renderKind = 'wire';
   group.add(sprite);
 
@@ -8943,7 +9028,7 @@ function rebuildAircraftVisual(shouldFit = false) {
   aircraft.traverse((obj) => {
     if (obj?.isMesh && (obj.name === 'surface-skin' || obj.name === 'body-mesh')) surfaceSkinMeshes.push(obj);
     if (obj?.isMesh && obj.name === 'surface-pressure-overlay') surfacePressureMeshes.push(obj);
-    if (obj?.userData?.renderKind === 'wire') surfaceWireObjects.push(obj);
+    if (obj?.userData?.renderKind === 'wire' && !obj?.userData?.surfaceLabel) surfaceWireObjects.push(obj);
   });
   updateBank(Number(els.bank.value));
   const bounds = computeBounds(aircraft);
@@ -9019,6 +9104,10 @@ function updateViewerButtons() {
   els.viewerGrid.title = `Grid: ${gridLabel.toUpperCase()}`;
   if (els.viewerLoad) {
     els.viewerLoad.classList.toggle('active', uiState.showLoading);
+  }
+  if (els.viewerText) {
+    els.viewerText.classList.toggle('active', uiState.showSurfaceText);
+    els.viewerText.title = uiState.showSurfaceText ? 'Surface labels on' : 'Surface labels off';
   }
   if (els.viewerSurface) {
     const mode = uiState.surfaceRenderMode;

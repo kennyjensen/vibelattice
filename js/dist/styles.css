@@ -821,6 +821,15 @@ textarea.code {
   text-transform: uppercase;
 }
 
+.viewer-btn.icon-btn.text-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 700 0.95rem/1 Consolas, "Courier New", monospace;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .viewer-btn.icon-btn svg {
   width: 20px;
   height: 20px;

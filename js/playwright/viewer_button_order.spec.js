@@ -36,6 +36,7 @@ test('viewer right-side button order is stable and pressure stays in bottom row'
       'viewerPan',
       'viewerView',
       'viewerGrid',
+      'viewerText',
     ];
     const expectedBottomOrder = [
       'viewerSurface',
