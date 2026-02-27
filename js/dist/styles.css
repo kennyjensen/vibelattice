@@ -835,6 +835,22 @@ textarea.code {
   z-index: 5;
 }
 
+.viewer-hover-tip {
+  position: absolute;
+  z-index: 8;
+  max-width: 320px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(7, 10, 16, 0.92);
+  color: #e5e7eb;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.25;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 .viewer-btn.icon-btn {
   width: 36px;
   height: 36px;

@@ -119,6 +119,8 @@ const els = {
   viewerView: document.getElementById('viewerView'),
   viewerGrid: document.getElementById('viewerGrid'),
   viewerText: document.getElementById('viewerText'),
+  viewerMassPoints: document.getElementById('viewerMassPoints'),
+  viewerHoverTip: document.getElementById('viewerHoverTip'),
   viewerLoad: document.getElementById('viewerLoad'),
   viewerSurface: document.getElementById('viewerSurface'),
   viewerPressure: document.getElementById('viewerPressure'),
@@ -177,6 +179,7 @@ const uiState = {
   showVortices: false,
   showFlowField: false,
   showSurfaceText: true,
+  showMassPoints: false,
   flowFieldMode: 'induced',
   pressureField: null,
   eigenModes: [],
@@ -194,6 +197,7 @@ const uiState = {
   selectedRunCaseIndex: -1,
   massProps: null,
   massFileProps: null,
+  massPointItems: [],
   massPropsFilename: null,
   massFileText: '',
   runCasesText: '',
@@ -2830,10 +2834,12 @@ function resetMassSessionDefaults() {
   uiState.massFileText = '';
   uiState.massProps = makeDefaultMassProps();
   uiState.massFileProps = null;
+  uiState.massPointItems = [];
   renderMassProps(uiState.massProps);
   renderMassFileProps(uiState.massFileProps);
   updateEditorTabLabels();
   if (els.massPropsMeta) els.massPropsMeta.textContent = 'No mass file loaded.';
+  rebuildMassPointOverlay(viewerState.bounds || null);
 }
 
 function renderMassFileProps(props = null) {
@@ -2897,12 +2903,26 @@ function parseMassFileText(text) {
   const scale = new Array(10).fill(1);
   const add = new Array(10).fill(0);
   const rows = [];
+  const massPoints = [];
 
-  const stripComments = (line) => String(line || '').replace(/!.*/, '').replace(/#.*/, '').trim();
+  const splitMassLineComment = (line) => {
+    const src = String(line || '');
+    const iBang = src.indexOf('!');
+    const iHash = src.indexOf('#');
+    let idx = -1;
+    if (iBang >= 0 && iHash >= 0) idx = Math.min(iBang, iHash);
+    else idx = iBang >= 0 ? iBang : iHash;
+    if (idx < 0) return { data: src.trim(), comment: '' };
+    return {
+      data: src.slice(0, idx).trim(),
+      comment: src.slice(idx + 1).trim(),
+    };
+  };
   const parseNums = (line) => line.trim().split(/\s+/).map((t) => Number(t)).filter((n) => Number.isFinite(n));
 
   lines.forEach((raw) => {
-    const line = stripComments(raw);
+    const parts = splitMassLineComment(raw);
+    const line = parts.data;
     if (!line) return;
     const varMatch = line.match(/^(Lunit|Munit|Tunit|g|rho)\s*=\s*([^\s]+)\s*([A-Za-z\/^0-9._-]+)?/i);
     if (varMatch) {
@@ -2933,9 +2953,17 @@ function parseMassFileText(text) {
     const rawVals = new Array(10).fill(0);
     nums.slice(0, 10).forEach((n, i) => { rawVals[i] = n; });
     const vals = rawVals.map((v, i) => add[i] + scale[i] * v);
-    rows.push({
+    const row = {
       mass: vals[0], x: vals[1], y: vals[2], z: vals[3],
       ixx: vals[4], iyy: vals[5], izz: vals[6], ixy: vals[7], ixz: vals[8], iyz: vals[9],
+    };
+    rows.push(row);
+    massPoints.push({
+      name: parts.comment || `Point ${rows.length}`,
+      mass: row.mass,
+      x: row.x,
+      y: row.y,
+      z: row.z,
     });
   });
 
@@ -2991,6 +3019,7 @@ function parseMassFileText(text) {
     lunitScale: lscale,
     munitScale: mscale,
     tunitScale: Number.isFinite(vars.tunitScale) && vars.tunitScale > 0 ? vars.tunitScale : 1.0,
+    massPoints,
   };
 }
 
@@ -3476,6 +3505,9 @@ function applyLoadedMassProps(props, filename, source = 'Loaded', { applyToActiv
   uiState.massPropsFilename = filename;
   uiState.massFileText = String(rawText || serializeMassFile(props));
   uiState.massFileProps = { ...props };
+  uiState.massPointItems = Array.isArray(props?.massPoints)
+    ? props.massPoints.map((item) => ({ ...item }))
+    : [];
   renderMassFileProps(uiState.massFileProps);
   updateEditorTabLabels();
   if (applyMassInertiaOnly) {
@@ -3514,6 +3546,7 @@ function applyLoadedMassProps(props, filename, source = 'Loaded', { applyToActiv
     renderFileHighlight();
     syncFileEditorScroll();
   }
+  rebuildMassPointOverlay(viewerState.bounds || null);
   logDebug(`${source} mass file: ${filename}`);
 }
 
@@ -4605,6 +4638,11 @@ els.viewerText?.addEventListener('click', () => {
   applySurfaceLabelVisibility();
   updateViewerButtons();
 });
+els.viewerMassPoints?.addEventListener('click', () => {
+  uiState.showMassPoints = !uiState.showMassPoints;
+  applyMassPointVisibility();
+  updateViewerButtons();
+});
 els.viewerLoad?.addEventListener('click', () => {
   uiState.showLoading = !uiState.showLoading;
   els.viewerLoad.classList.toggle('active', uiState.showLoading);
@@ -5660,12 +5698,15 @@ if (typeof window !== 'undefined') {
         showVortices: Boolean(uiState.showVortices),
         showFlowField: Boolean(uiState.showFlowField),
         showSurfaceText: Boolean(uiState.showSurfaceText),
+        showMassPoints: Boolean(uiState.showMassPoints),
         hasPanelSpacing: Boolean(panelSpacingGroup),
         hasVortices: Boolean(vortexGroup),
         hasFlow: Boolean(flowFieldGroup),
+        hasMassPoints: Boolean(massPointGroup),
         panelSpacingVisible: Boolean(panelSpacingGroup?.visible),
         vorticesVisible: Boolean(vortexGroup?.visible),
         flowVisible: Boolean(flowFieldGroup?.visible),
+        massPointsVisible: Boolean(massPointGroup?.visible),
         flowMode: uiState.flowFieldMode,
         panelSpacingLineSegments: Math.floor((Number(panelLinePos?.count) || 0) / 2),
         vortexBoundSegments: Math.floor((Number(vortexBoundPos?.count) || 0) / 2),
@@ -5746,6 +5787,73 @@ if (typeof window !== 'undefined') {
         bodyWireColorHex,
         bodyWireStationXs,
         requiredBodyFiles: Array.isArray(requiredBodyFiles) ? [...requiredBodyFiles] : [],
+      };
+    },
+    getMassPointVisualState() {
+      let markerCount = 0;
+      let markerVisibleCount = 0;
+      let labelCount = 0;
+      let labelVisibleCount = 0;
+      let firstMarker = null;
+      if (massPointGroup) {
+        massPointGroup.traverse((obj) => {
+          if (obj?.name === 'mass-point') {
+            markerCount += 1;
+            if (obj.visible) markerVisibleCount += 1;
+            if (!firstMarker) firstMarker = obj;
+          } else if (obj?.userData?.massPointLabel) {
+            labelCount += 1;
+            if (obj.visible) labelVisibleCount += 1;
+          }
+        });
+      }
+      let axisWorld = null;
+      if (axesHelper) {
+        axisWorld = {
+          x: Number(axesHelper.position?.x) || 0,
+          y: Number(axesHelper.position?.y) || 0,
+          z: Number(axesHelper.position?.z) || 0,
+        };
+      }
+      let zeroZPointWorld = null;
+      if (massPointGroup) {
+        let markerAtZero = null;
+        massPointGroup.traverse((obj) => {
+          if (markerAtZero || obj?.name !== 'mass-point') return;
+          const zLocal = Number(obj.userData?.massPoint?.z);
+          if (!Number.isFinite(zLocal) || Math.abs(zLocal) > 1e-9) return;
+          markerAtZero = obj;
+        });
+        if (markerAtZero) {
+          const world = new THREE.Vector3();
+          markerAtZero.getWorldPosition(world);
+          zeroZPointWorld = { x: world.x, y: world.y, z: world.z };
+        }
+      }
+      let firstScreen = null;
+      if (firstMarker && camera && renderer) {
+        const world = new THREE.Vector3();
+        firstMarker.getWorldPosition(world);
+        const projected = world.clone().project(camera);
+        const rect = renderer.domElement.getBoundingClientRect();
+        firstScreen = {
+          x: rect.left + ((projected.x + 1) * 0.5 * rect.width),
+          y: rect.top + ((1 - projected.y) * 0.5 * rect.height),
+        };
+      }
+      return {
+        showMassPoints: Boolean(uiState.showMassPoints),
+        markerCount,
+        markerVisibleCount,
+        labelCount,
+        labelVisibleCount,
+        firstName: firstMarker?.userData?.massPoint?.name || null,
+        firstScreen,
+        axisWorld,
+        zeroZPointWorld,
+        zeroZAxisDz: (axisWorld && zeroZPointWorld) ? (zeroZPointWorld.z - axisWorld.z) : null,
+        hoverText: String(els.viewerHoverTip?.textContent || ''),
+        hoverVisible: Boolean(els.viewerHoverTip && !els.viewerHoverTip.hidden),
       };
     },
     getSurfaceVisualState() {
@@ -7591,8 +7699,11 @@ function applySurfaceLabelVisibility() {
   aircraft.traverse((obj) => {
     if (obj?.isSprite && obj?.userData?.surfaceLabel) {
       obj.visible = showText;
+    } else if (obj?.isSprite && obj?.userData?.massPointLabel) {
+      obj.visible = showText && Boolean(uiState.showMassPoints);
     }
   });
+  applyMassPointVisibility();
 }
 
 function applySurfaceRenderMode() {
@@ -9355,14 +9466,16 @@ function rebuildAircraftVisual(shouldFit = false) {
     if (shouldFit) {
       rebuildGrid(bounds.maxDim);
       applyGridMode();
-      if (axesHelper) axesHelper.position.set(0, 0, 0);
+      updateAxesOriginAnchor();
     }
   } else {
     addReferenceMarker(aircraft, uiState.modelHeader, null);
   }
+  updateAxesOriginAnchor();
   if (shouldFit) fitCameraToObject(aircraft);
   updateLoadingVisualization();
   applySurfaceRenderMode();
+  rebuildMassPointOverlay(bounds || null);
   rebuildAuxOverlays(bounds || null);
 }
 
@@ -9385,6 +9498,12 @@ let modeAnimation = null;
 let eigenTouchZoom = { active: false, lastDist: 0 };
 let flowProjectTmp = null;
 let flowPointSpriteTexture = null;
+let massPointGroup = null;
+let massPointMeshes = [];
+let massPointRaycaster = null;
+let massPointPointer = null;
+let massPointHoverMesh = null;
+let massPointTexture = null;
 
 function getFlowPointSpriteTexture() {
   if (!THREE) return null;
@@ -9409,6 +9528,196 @@ function getFlowPointSpriteTexture() {
   return flowPointSpriteTexture;
 }
 
+function getMassPointTexture() {
+  if (!THREE) return null;
+  if (massPointTexture) return massPointTexture;
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const img = ctx.createImageData(size, size);
+  const data = img.data;
+  for (let py = 0; py < size; py += 1) {
+    const v = py / (size - 1);
+    const phi = v * Math.PI;
+    const sinPhi = Math.sin(phi);
+    const cosPhi = Math.cos(phi);
+    for (let px = 0; px < size; px += 1) {
+      const u = px / (size - 1);
+      const theta = u * Math.PI * 2;
+      const x = sinPhi * Math.cos(theta);
+      const y = sinPhi * Math.sin(theta);
+      const z = cosPhi;
+      const sx = x >= 0 ? 1 : 0;
+      const sy = y >= 0 ? 1 : 0;
+      const sz = z >= 0 ? 1 : 0;
+      const dark = ((sx + sy + sz) % 2) === 0;
+      const c = dark ? 46 : 255;
+      const idx = ((py * size) + px) * 4;
+      data[idx] = c;
+      data[idx + 1] = c;
+      data[idx + 2] = c;
+      data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  massPointTexture = tex;
+  return massPointTexture;
+}
+
+function setMassPointHoverTip(content, clientX = 0, clientY = 0) {
+  if (!els.viewerHoverTip || !els.viewer) return;
+  if (!content) {
+    els.viewerHoverTip.hidden = true;
+    els.viewerHoverTip.textContent = '';
+    return;
+  }
+  const viewerRect = els.viewer.getBoundingClientRect();
+  const tip = els.viewerHoverTip;
+  tip.textContent = content;
+  tip.hidden = false;
+  const px = Math.max(8, Math.min(viewerRect.width - 8, clientX - viewerRect.left + 12));
+  const py = Math.max(8, Math.min(viewerRect.height - 8, clientY - viewerRect.top + 12));
+  tip.style.left = `${px}px`;
+  tip.style.top = `${py}px`;
+}
+
+function clearMassPointHover() {
+  massPointHoverMesh = null;
+  if (renderer?.domElement) renderer.domElement.style.cursor = '';
+  setMassPointHoverTip('');
+}
+
+function updateMassPointHover(clientX, clientY) {
+  if (!renderer || !camera || !uiState.showMassPoints || !massPointMeshes.length) {
+    clearMassPointHover();
+    return;
+  }
+  if (!massPointRaycaster) massPointRaycaster = new THREE.Raycaster();
+  if (!massPointPointer) massPointPointer = new THREE.Vector2();
+  const rect = renderer.domElement.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    clearMassPointHover();
+    return;
+  }
+  massPointPointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  massPointPointer.y = -(((clientY - rect.top) / rect.height) * 2 - 1);
+  massPointRaycaster.setFromCamera(massPointPointer, camera);
+  const hits = massPointRaycaster.intersectObjects(massPointMeshes, false);
+  const hit = hits.length ? hits[0].object : null;
+  if (!hit) {
+    clearMassPointHover();
+    return;
+  }
+  massPointHoverMesh = hit;
+  if (renderer?.domElement) renderer.domElement.style.cursor = 'pointer';
+  const point = hit.userData?.massPoint || {};
+  const name = String(point.name || 'Mass point');
+  const msg = `${name} | m=${fmt(Number(point.mass), 4)} x=${fmt(Number(point.x), 3)} y=${fmt(Number(point.y), 3)} z=${fmt(Number(point.z), 3)}`;
+  setMassPointHoverTip(msg, clientX, clientY);
+}
+
+function makeMassPointLabelSprite(name, radius) {
+  if (!THREE) return null;
+  const text = String(name || '');
+  if (!text) return null;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const fontSize = 20;
+  const padX = 14;
+  const padY = 10;
+  let textWidth = Math.max(1, text.length * (fontSize * 0.55));
+  if (ctx) {
+    ctx.font = `${fontSize}px Consolas, "Courier New", monospace`;
+    textWidth = Math.max(1, Number(ctx.measureText(text).width) || textWidth);
+  }
+  canvas.width = Math.max(120, Math.ceil(textWidth + (padX * 2)));
+  canvas.height = 44;
+  if (ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = `${fontSize}px Consolas, "Courier New", monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, canvas.width * 0.5, canvas.height * 0.5);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+  const sprite = new THREE.Sprite(mat);
+  const width = Math.max(radius * 10, radius * 6 * (canvas.width / Math.max(1, canvas.height)));
+  sprite.scale.set(width, width * (canvas.height / Math.max(1, canvas.width)), 1);
+  sprite.userData.massPointLabel = true;
+  return sprite;
+}
+
+function rebuildMassPointOverlay(bounds = null) {
+  if (!aircraft || !THREE) return;
+  clearMassPointHover();
+  if (massPointGroup) {
+    aircraft.remove(massPointGroup);
+    massPointGroup = null;
+  }
+  massPointMeshes = [];
+  const points = Array.isArray(uiState.massPointItems) ? uiState.massPointItems : [];
+  if (!points.length) return;
+
+  const maxDim = Number(bounds?.maxDim);
+  const radius = Number.isFinite(maxDim) && maxDim > 0
+    ? Math.max(0.03, Math.min(0.3, maxDim * 0.003))
+    : 0.06;
+  const group = new THREE.Group();
+  group.name = 'mass-points';
+  const geom = new THREE.SphereGeometry(radius, 16, 12);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    map: getMassPointTexture(),
+  });
+  points.forEach((item) => {
+    const x = Number(item?.x);
+    const y = Number(item?.y);
+    const z = Number(item?.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+    const marker = new THREE.Mesh(geom, mat);
+    marker.name = 'mass-point';
+    marker.position.set(x, y, z);
+    marker.userData.massPoint = {
+      name: String(item?.name || ''),
+      mass: Number(item?.mass),
+      x,
+      y,
+      z,
+    };
+    group.add(marker);
+    massPointMeshes.push(marker);
+
+    const label = makeMassPointLabelSprite(String(item?.name || ''), radius);
+    if (label) {
+      label.position.set(x, y, z + (radius * 2.8));
+      group.add(label);
+    }
+  });
+  massPointGroup = group;
+  aircraft.add(group);
+  applyMassPointVisibility();
+}
+
+function applyMassPointVisibility() {
+  const showPoints = Boolean(uiState.showMassPoints);
+  const showLabels = showPoints && Boolean(uiState.showSurfaceText);
+  if (massPointGroup) {
+    massPointGroup.visible = showPoints;
+    massPointGroup.traverse((obj) => {
+      if (obj?.userData?.massPointLabel) obj.visible = showLabels;
+      if (obj?.name === 'mass-point') obj.visible = showPoints;
+    });
+  }
+  if (!showPoints) clearMassPointHover();
+}
+
 function updateViewerButtons() {
   if (!els.viewerPan || !els.viewerView || !els.viewerGrid) return;
   els.viewerPan.classList.toggle('active', viewerState.mode === 'pan');
@@ -9423,6 +9732,10 @@ function updateViewerButtons() {
   if (els.viewerText) {
     els.viewerText.classList.toggle('active', uiState.showSurfaceText);
     els.viewerText.title = uiState.showSurfaceText ? 'Surface labels on' : 'Surface labels off';
+  }
+  if (els.viewerMassPoints) {
+    els.viewerMassPoints.classList.toggle('active', uiState.showMassPoints);
+    els.viewerMassPoints.title = uiState.showMassPoints ? 'Mass points on' : 'Mass points off';
   }
   if (els.viewerSurface) {
     const mode = uiState.surfaceRenderMode;
@@ -9529,6 +9842,12 @@ function applyGridMode() {
   }
 }
 
+function updateAxesOriginAnchor() {
+  if (!axesHelper || !aircraft) return;
+  // The aircraft local origin is AVL origin. Keep axes there after recentering the model.
+  axesHelper.position.copy(aircraft.position);
+}
+
 function setCameraUp(vec) {
   if (!camera) return;
   camera.up.set(vec.x, vec.y, vec.z);
@@ -9569,6 +9888,12 @@ function initScene() {
   renderer.setSize(width, height);
   renderer.setPixelRatio(window.devicePixelRatio || 1);
   els.viewer.appendChild(renderer.domElement);
+  renderer.domElement.addEventListener('pointermove', (evt) => {
+    updateMassPointHover(evt.clientX, evt.clientY);
+  });
+  renderer.domElement.addEventListener('pointerleave', () => {
+    clearMassPointHover();
+  });
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -9592,7 +9917,7 @@ function initScene() {
   scene.add(aircraft);
   rebuildGrid(30);
   applyGridMode();
-  if (axesHelper) axesHelper.position.set(0, 0, 0);
+  updateAxesOriginAnchor();
   updateViewerButtons();
 
   animate();
