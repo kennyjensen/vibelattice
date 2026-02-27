@@ -380,8 +380,13 @@
 
       <div id="editorDesktopAnchor"></div>
       <div class="panel" id="editorPanel">
-        <div class="panel-title">AVL Editor</div>
+        <div class="panel-title">Editor</div>
         <div class="panel-body">
+          <div class="editor-tabs" id="editorTabs" role="tablist" aria-label="Editor files">
+            <button id="editorTabAvl" class="editor-tab active" type="button" role="tab" aria-selected="true">AVL</button>
+            <button id="editorTabMass" class="editor-tab" type="button" role="tab" aria-selected="false">Mass</button>
+            <button id="editorTabRun" class="editor-tab" type="button" role="tab" aria-selected="false">Run</button>
+          </div>
           <div class="file-editor" id="fileEditor">
             <pre id="fileHighlight" class="file-highlight" aria-hidden="true"></pre>
             <textarea id="fileText" class="code" rows="8" wrap="off" placeholder="AVL file text appears here..." spellcheck="false"></textarea>

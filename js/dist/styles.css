@@ -395,6 +395,29 @@ textarea.code {
   --file-font-size: 13px;
 }
 
+.editor-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.editor-tab {
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.editor-tab.active {
+  color: var(--ink);
+  border-color: rgba(127, 179, 255, 0.85);
+  box-shadow: 0 0 0 1px rgba(127, 179, 255, 0.35);
+}
+
 .file-highlight,
 .file-editor textarea.code {
   margin: 0;

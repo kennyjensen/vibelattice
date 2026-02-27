@@ -35,6 +35,9 @@ const els = {
   fileEditor: document.getElementById('fileEditor'),
   fileText: document.getElementById('fileText'),
   fileHighlight: document.getElementById('fileHighlight'),
+  editorTabAvl: document.getElementById('editorTabAvl'),
+  editorTabMass: document.getElementById('editorTabMass'),
+  editorTabRun: document.getElementById('editorTabRun'),
   airfoilFilesPanel: document.getElementById('airfoilFilesPanel'),
   airfoilFilesList: document.getElementById('airfoilFilesList'),
   bank: document.getElementById('bank'),
@@ -192,6 +195,9 @@ const uiState = {
   massProps: null,
   massFileProps: null,
   massPropsFilename: null,
+  massFileText: '',
+  runCasesText: '',
+  editorTab: 'avl',
   templateParams: [],
   resolvedText: '',
   templateParamSignature: '',
@@ -481,6 +487,47 @@ function highlightAvlText(text) {
   return rendered.join('\n');
 }
 
+function highlightGenericCode(code) {
+  if (!code) return '';
+  const tokenRe = /(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eEdD][-+]?\d+)?)|\b(?:Lunit|Munit|Tunit|g|rho|Run|case|alpha|beta|pb\/2V|qc\/2V|rb\/2V|mass|Ixx|Iyy|Izz|Ixy|Ixz|Iyz|X_cg|Y_cg|Z_cg)\b|[=:+\-*/<>]+/g;
+  let html = '';
+  let last = 0;
+  let match = tokenRe.exec(code);
+  while (match) {
+    const token = match[0];
+    const start = match.index;
+    html += escapeHtml(code.slice(last, start));
+    if (/^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eEdD][-+]?\d+)?$/.test(token)) {
+      html += `<span class="avl-token-number">${escapeHtml(token)}</span>`;
+    } else if (/^[=:+\-*/<>]+$/.test(token)) {
+      html += `<span class="avl-token-operator">${escapeHtml(token)}</span>`;
+    } else {
+      html += `<span class="avl-token-keyword">${escapeHtml(token)}</span>`;
+    }
+    last = start + token.length;
+    match = tokenRe.exec(code);
+  }
+  html += escapeHtml(code.slice(last));
+  return html;
+}
+
+function highlightGenericText(text) {
+  if (!text) return ' ';
+  const lines = text.split('\n');
+  const rendered = lines.map((line) => {
+    const hash = line.indexOf('#');
+    const bang = line.indexOf('!');
+    let commentIndex = -1;
+    if (hash >= 0 && bang >= 0) commentIndex = Math.min(hash, bang);
+    else commentIndex = Math.max(hash, bang);
+    if (commentIndex < 0) return highlightGenericCode(line);
+    const code = line.slice(0, commentIndex);
+    const comment = line.slice(commentIndex);
+    return `${highlightGenericCode(code)}<span class="avl-token-comment">${escapeHtml(comment)}</span>`;
+  });
+  return rendered.join('\n');
+}
+
 function getCssVarColor(name, fallback) {
   try {
     const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -493,7 +540,11 @@ function getCssVarColor(name, fallback) {
 
 function renderFileHighlight() {
   if (!els.fileHighlight || !els.fileText) return;
-  els.fileHighlight.innerHTML = highlightAvlText(els.fileText.value);
+  if (uiState.editorTab === 'avl') {
+    els.fileHighlight.innerHTML = highlightAvlText(els.fileText.value);
+  } else {
+    els.fileHighlight.innerHTML = highlightGenericText(els.fileText.value);
+  }
 }
 
 function fitFileEditorFontSize() {
@@ -531,11 +582,83 @@ function syncFileEditorScroll() {
 }
 
 function setFileTextValue(text) {
-  if (!els.fileText) return;
+  uiState.text = text;
+  if (!els.fileText || uiState.editorTab !== 'avl') return;
   els.fileText.value = text;
   fitFileEditorFontSize();
   renderFileHighlight();
   syncFileEditorScroll();
+}
+
+function editorTabFileLabel(type, filename, fallback) {
+  const base = String(filename || '').trim();
+  if (!base) return fallback;
+  return base;
+}
+
+function updateEditorTabLabels() {
+  if (els.editorTabAvl) els.editorTabAvl.textContent = editorTabFileLabel('avl', uiState.filename, 'AVL');
+  if (els.editorTabMass) els.editorTabMass.textContent = editorTabFileLabel('mass', uiState.massPropsFilename, 'Mass');
+  if (els.editorTabRun) els.editorTabRun.textContent = editorTabFileLabel('run', uiState.runCasesFilename, 'Run');
+}
+
+function getEditorTabText(tab) {
+  if (tab === 'mass') return String(uiState.massFileText || '');
+  if (tab === 'run') return String(uiState.runCasesText || '');
+  return String(uiState.text || '');
+}
+
+function applyEditorTab(tab) {
+  const next = (tab === 'mass' || tab === 'run') ? tab : 'avl';
+  uiState.editorTab = next;
+  if (els.editorTabAvl) {
+    const on = next === 'avl';
+    els.editorTabAvl.classList.toggle('active', on);
+    els.editorTabAvl.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  if (els.editorTabMass) {
+    const on = next === 'mass';
+    els.editorTabMass.classList.toggle('active', on);
+    els.editorTabMass.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  if (els.editorTabRun) {
+    const on = next === 'run';
+    els.editorTabRun.classList.toggle('active', on);
+    els.editorTabRun.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  if (!els.fileText) return;
+  els.fileText.readOnly = false;
+  if (next === 'avl') els.fileText.placeholder = 'AVL file text appears here...';
+  else if (next === 'mass') els.fileText.placeholder = 'Mass file text appears here...';
+  else els.fileText.placeholder = 'Run file text appears here...';
+  els.fileText.value = getEditorTabText(next);
+  fitFileEditorFontSize();
+  renderFileHighlight();
+  syncFileEditorScroll();
+}
+
+function applyEditedMassText(rawText) {
+  const text = String(rawText || '');
+  const filename = ensureMassFileExtension(uiState.massPropsFilename || 'model.mass');
+  try {
+    const props = parseMassFileText(text);
+    applyLoadedMassProps(props, filename, 'Loaded', { applyToActive: false, rawText: text });
+  } catch (err) {
+    if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${filename}`;
+    logDebug(`Mass file edit parse failed: ${err?.message ?? err}`);
+  }
+}
+
+function applyEditedRunText(rawText) {
+  const text = String(rawText || '');
+  const filename = ensureRunFileExtension(uiState.runCasesFilename || 'cases.run');
+  try {
+    const parsed = parseRunsPayload(text);
+    applyLoadedRunCases(parsed, filename, 'Loaded', text);
+  } catch (err) {
+    updateRunCasesMeta(`Failed to load ${filename}`);
+    logDebug(`Run cases edit parse failed: ${err?.message ?? err}`);
+  }
 }
 
 function clampNumber(value, min, max) {
@@ -2704,10 +2827,12 @@ function resetMassSessionDefaults() {
   if (els.mass) setNumericInput(els.mass, defaultNumericInputValue(els.mass, 120), 4);
   resetFlightCgToHeaderDefaults();
   uiState.massPropsFilename = null;
+  uiState.massFileText = '';
   uiState.massProps = makeDefaultMassProps();
   uiState.massFileProps = null;
   renderMassProps(uiState.massProps);
   renderMassFileProps(uiState.massFileProps);
+  updateEditorTabLabels();
   if (els.massPropsMeta) els.massPropsMeta.textContent = 'No mass file loaded.';
 }
 
@@ -3324,7 +3449,7 @@ function parseRunsPayload(text) {
   return { cases: normalized, selectedIndex };
 }
 
-function applyLoadedRunCases(parsed, filename, source = 'Loaded') {
+function applyLoadedRunCases(parsed, filename, source = 'Loaded', rawText = '') {
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
   uiState.selectedEigenMode = -1;
@@ -3332,17 +3457,27 @@ function applyLoadedRunCases(parsed, filename, source = 'Loaded') {
   uiState.runCases = parsed.cases;
   uiState.selectedRunCaseIndex = parsed.selectedIndex;
   uiState.runCasesFilename = filename;
+  uiState.runCasesText = String(rawText || buildRunsPayload());
   uiState.needsRunCaseConstraintSync = true;
   uiState.seedNoRunFlightFromExec = false;
   renderRunCasesList();
+  updateEditorTabLabels();
   updateRunCasesMeta(`${source} ${parsed.cases.length} run case(s) from ${filename}`);
   applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
+  if (uiState.editorTab === 'run' && els.fileText) {
+    els.fileText.value = getEditorTabText('run');
+    fitFileEditorFontSize();
+    renderFileHighlight();
+    syncFileEditorScroll();
+  }
 }
 
-function applyLoadedMassProps(props, filename, source = 'Loaded', { applyToActive = true, applyMassInertiaOnly = false } = {}) {
+function applyLoadedMassProps(props, filename, source = 'Loaded', { applyToActive = true, applyMassInertiaOnly = false, rawText = '' } = {}) {
   uiState.massPropsFilename = filename;
+  uiState.massFileText = String(rawText || serializeMassFile(props));
   uiState.massFileProps = { ...props };
   renderMassFileProps(uiState.massFileProps);
+  updateEditorTabLabels();
   if (applyMassInertiaOnly) {
     const active = { ...(uiState.massProps || readMassPropsFromUI() || makeDefaultMassProps()) };
     active.mass = props.mass;
@@ -3373,6 +3508,12 @@ function applyLoadedMassProps(props, filename, source = 'Loaded', { applyToActiv
   } else {
     renderMassProps(uiState.massProps || readMassPropsFromUI());
   }
+  if (uiState.editorTab === 'mass' && els.fileText) {
+    els.fileText.value = getEditorTabText('mass');
+    fitFileEditorFontSize();
+    renderFileHighlight();
+    syncFileEditorScroll();
+  }
   logDebug(`${source} mass file: ${filename}`);
 }
 
@@ -3380,9 +3521,11 @@ function resetAuxPanelsForNewAvl() {
   uiState.runCases = [];
   uiState.selectedRunCaseIndex = -1;
   uiState.runCasesFilename = null;
+  uiState.runCasesText = '';
   uiState.needsRunCaseConstraintSync = false;
   uiState.seedNoRunFlightFromExec = false;
   renderRunCasesList();
+  updateEditorTabLabels();
   updateRunCasesMeta();
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
@@ -3815,6 +3958,8 @@ async function handleFileLoad(file) {
   uiState.text = text;
   uiState.filename = file.name;
   uiState.sourceUrl = null;
+  updateEditorTabLabels();
+  applyEditorTab('avl');
   setFileTextValue(uiState.text);
   els.fileMeta.textContent = `Loaded: ${file.name} (${file.size} bytes)`;
   loadGeometryFromText(uiState.text, true, true);
@@ -3826,14 +3971,14 @@ async function handleFileLoad(file) {
 async function loadRunCasesFromFile(file, source = 'Loaded') {
   const text = await readFileAsText(file);
   const parsed = parseRunsPayload(text);
-  applyLoadedRunCases(parsed, file.name, source);
+  applyLoadedRunCases(parsed, file.name, source, text);
   logDebug(`${source} run cases: ${file.name}`);
 }
 
 async function loadMassPropsFromFile(file, source = 'Loaded', options = {}) {
   const text = await readFileAsText(file);
   const props = parseMassFileText(text);
-  applyLoadedMassProps(props, file.name, source, options);
+  applyLoadedMassProps(props, file.name, source, { ...options, rawText: text });
 }
 
 async function handleFileSelection(files) {
@@ -3942,6 +4087,8 @@ async function loadDefaultAVL() {
         uiState.text = text;
         uiState.filename = defaultName;
         uiState.sourceUrl = url;
+        updateEditorTabLabels();
+        applyEditorTab('avl');
         setFileTextValue(text);
         if (els.fileMeta) els.fileMeta.textContent = `Loaded: ${defaultName} (default)`;
         logDebug(`Loaded default file: ${defaultName}`);
@@ -3956,6 +4103,8 @@ async function loadDefaultAVL() {
     uiState.text = embedded;
     uiState.filename = 'plane.avl';
     uiState.sourceUrl = null;
+    updateEditorTabLabels();
+    applyEditorTab('avl');
     setFileTextValue(embedded);
     if (els.fileMeta) els.fileMeta.textContent = 'Loaded: plane.avl (embedded)';
     logDebug('Loaded embedded default file: plane.avl');
@@ -3977,7 +4126,7 @@ async function loadDefaultRunAndMass() {
     if (massText) {
       try {
         const props = parseMassFileText(massText);
-        applyLoadedMassProps(props, massName, 'Loaded default', { applyMassInertiaOnly: true });
+        applyLoadedMassProps(props, massName, 'Loaded default', { applyMassInertiaOnly: true, rawText: massText });
       } catch (err) {
         logDebug(`Default mass load failed: ${err?.message ?? err}`);
       }
@@ -3991,7 +4140,7 @@ async function loadDefaultRunAndMass() {
       if (runText) {
         try {
           const parsed = parseRunsPayload(runText);
-          applyLoadedRunCases(parsed, runName, 'Loaded default');
+          applyLoadedRunCases(parsed, runName, 'Loaded default', runText);
           logDebug(`Loaded default run cases: ${runName}`);
         } catch (err) {
           logDebug(`Default run-case load failed: ${err?.message ?? err}`);
@@ -4103,7 +4252,7 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
     if (massText) {
       try {
         const props = parseMassFileText(massText);
-        applyLoadedMassProps(props, massName, source, { applyMassInertiaOnly: true });
+        applyLoadedMassProps(props, massName, source, { applyMassInertiaOnly: true, rawText: massText });
         loadedMass = true;
       } catch (err) {
         if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massName}`;
@@ -4122,7 +4271,7 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
     if (runText) {
       try {
         const parsed = parseRunsPayload(runText);
-        applyLoadedRunCases(parsed, runName, source);
+        applyLoadedRunCases(parsed, runName, source, runText);
         logDebug(`${source} run cases: ${runName}`);
         loadedRun = true;
       } catch (err) {
@@ -4165,6 +4314,8 @@ async function loadExampleFromRuns(avlName) {
   uiState.text = avlLoaded.text;
   uiState.filename = normalized;
   uiState.sourceUrl = avlLoaded.url || null;
+  updateEditorTabLabels();
+  applyEditorTab('avl');
   setFileTextValue(avlLoaded.text);
   if (els.fileMeta) els.fileMeta.textContent = `Loaded example: ${normalized}`;
   resetAuxPanelsForNewAvl();
@@ -4235,18 +4386,34 @@ els.runCasesInput?.addEventListener('change', async (evt) => {
 });
 
 els.runCasesSaveBtn?.addEventListener('click', () => {
-  if (!uiState.runCases.length) {
-    const created = captureRunCaseFromUI('Case 1');
-    created.color = caseColorOrFallback(created, 0);
-    uiState.runCases = [created];
-    uiState.selectedRunCaseIndex = 0;
-    renderRunCasesList();
-  }
-  persistSelectedRunCaseFromUI();
   const filename = ensureRunFileExtension(uiState.runCasesFilename || 'cases.run');
   uiState.runCasesFilename = filename;
-  downloadText(filename, buildRunsPayload());
+  const sourceText = (() => {
+    if (uiState.editorTab === 'run' && els.fileText) return String(els.fileText.value || '');
+    return String(uiState.runCasesText || '');
+  })();
+  if (sourceText.trim()) {
+    uiState.runCasesText = sourceText;
+  } else {
+    if (!uiState.runCases.length) {
+      const created = captureRunCaseFromUI('Case 1');
+      created.color = caseColorOrFallback(created, 0);
+      uiState.runCases = [created];
+      uiState.selectedRunCaseIndex = 0;
+      renderRunCasesList();
+    }
+    persistSelectedRunCaseFromUI();
+    uiState.runCasesText = buildRunsPayload();
+  }
+  updateEditorTabLabels();
+  downloadText(filename, uiState.runCasesText);
   updateRunCasesMeta(`Saved ${uiState.runCases.length} run case(s) to ${filename}`);
+  if (uiState.editorTab === 'run' && els.fileText) {
+    els.fileText.value = getEditorTabText('run');
+    fitFileEditorFontSize();
+    renderFileHighlight();
+    syncFileEditorScroll();
+  }
 });
 
 els.runCaseAddBtn?.addEventListener('click', () => {
@@ -4279,12 +4446,29 @@ els.massPropsInput?.addEventListener('change', async (evt) => {
 });
 
 els.massPropsSaveBtn?.addEventListener('click', () => {
-  const props = readMassPropsFromUI();
-  uiState.massProps = props;
   const filename = ensureMassFileExtension(uiState.massPropsFilename || 'model.mass');
   uiState.massPropsFilename = filename;
-  downloadText(filename, serializeMassFile(props));
-  renderMassProps(props);
+  const sourceText = (() => {
+    if (uiState.editorTab === 'mass' && els.fileText) return String(els.fileText.value || '');
+    return String(uiState.massFileText || '');
+  })();
+  if (sourceText.trim()) {
+    uiState.massFileText = sourceText;
+  } else {
+    const props = readMassPropsFromUI();
+    uiState.massProps = props;
+    uiState.massFileProps = { ...props };
+    uiState.massFileText = serializeMassFile(props);
+    renderMassFileProps(uiState.massFileProps);
+  }
+  updateEditorTabLabels();
+  downloadText(filename, uiState.massFileText);
+  if (uiState.editorTab === 'mass' && els.fileText) {
+    els.fileText.value = getEditorTabText('mass');
+    fitFileEditorFontSize();
+    renderFileHighlight();
+    syncFileEditorScroll();
+  }
 });
 
 els.massPropsApplyBtn?.addEventListener('click', () => {
@@ -4302,6 +4486,10 @@ els.massPropsApplyBtn?.addEventListener('click', () => {
     AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
   );
 });
+
+els.editorTabAvl?.addEventListener('click', () => applyEditorTab('avl'));
+els.editorTabMass?.addEventListener('click', () => applyEditorTab('mass'));
+els.editorTabRun?.addEventListener('click', () => applyEditorTab('run'));
 
 [
   els.massTotal, els.massXcg, els.massYcg, els.massZcg,
@@ -4538,10 +4726,28 @@ els.facLoop?.addEventListener('input', () => {
 });
 
 let fileUpdateTimer = null;
+let massFileUpdateTimer = null;
+let runFileUpdateTimer = null;
 els.fileText.addEventListener('input', () => {
   fitFileEditorFontSize();
   renderFileHighlight();
   syncFileEditorScroll();
+  if (uiState.editorTab === 'mass') {
+    uiState.massFileText = els.fileText.value;
+    clearTimeout(massFileUpdateTimer);
+    massFileUpdateTimer = setTimeout(() => {
+      applyEditedMassText(uiState.massFileText);
+    }, 300);
+    return;
+  }
+  if (uiState.editorTab === 'run') {
+    uiState.runCasesText = els.fileText.value;
+    clearTimeout(runFileUpdateTimer);
+    runFileUpdateTimer = setTimeout(() => {
+      applyEditedRunText(uiState.runCasesText);
+    }, 300);
+    return;
+  }
   uiState.text = els.fileText.value;
   syncTemplateParamsFromText(uiState.text);
   clearTimeout(fileUpdateTimer);
@@ -10713,6 +10919,8 @@ async function bootApp() {
   updateRunCasesMeta();
   renderMassProps(makeDefaultMassProps());
   renderMassFileProps(null);
+  updateEditorTabLabels();
+  applyEditorTab('avl');
   await loadDefaultAVL();
   syncTemplateParamsFromText(els.fileText.value || '');
   try {
