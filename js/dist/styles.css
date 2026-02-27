@@ -1518,25 +1518,42 @@ textarea.code {
 
 .mass-props-grid {
   display: grid;
+  grid-template-columns: 60px minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
-}
-
-.mass-props-grid > label.flight-row {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
   align-items: center;
-  column-gap: 8px;
 }
 
-.mass-props-grid > label.flight-row .label-text {
+.mass-props-head {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-align: center;
   white-space: nowrap;
 }
 
-.mass-props-grid > label.flight-row > input {
+.mass-props-head-empty {
+  text-align: left;
+}
+
+.mass-props-grid > .label-text {
+  justify-self: end;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.mass-props-grid > input {
   width: 100%;
   min-width: 0;
   margin-left: 0 !important;
   float: none !important;
+}
+
+.mass-props-grid > input[readonly] {
+  color: var(--muted);
 }
 
 @keyframes rise {

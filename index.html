@@ -199,19 +199,53 @@
               <input id="massPropsInput" type="file" accept=".mass,text/plain,application/octet-stream" hidden />
             </label>
             <button id="massPropsSaveBtn" class="btn" type="button">Save Mass</button>
+            <button id="massPropsApplyBtn" class="btn" type="button">Apply</button>
           </div>
           <div class="file-meta" id="massPropsMeta">No mass file loaded.</div>
           <div class="mass-props-grid">
-            <label class="flight-row"><span class="label-text">Mass</span><input id="massTotal" type="number" step="0.0001" /></label>
-            <label class="flight-row"><span class="label-text">Xcg</span><input id="massXcg" type="number" step="0.0001" /></label>
-            <label class="flight-row"><span class="label-text">Ycg</span><input id="massYcg" type="number" step="0.0001" /></label>
-            <label class="flight-row"><span class="label-text">Zcg</span><input id="massZcg" type="number" step="0.0001" /></label>
-            <label class="flight-row"><span class="label-text">Ixx</span><input id="massIxx" type="number" step="0.0001" /></label>
-            <label class="flight-row"><span class="label-text">Iyy</span><input id="massIyy" type="number" step="0.0001" /></label>
-            <label class="flight-row"><span class="label-text">Izz</span><input id="massIzz" type="number" step="0.0001" /></label>
-            <label class="flight-row"><span class="label-text">Ixy</span><input id="massIxy" type="number" step="0.0001" /></label>
-            <label class="flight-row"><span class="label-text">Ixz</span><input id="massIxz" type="number" step="0.0001" /></label>
-            <label class="flight-row"><span class="label-text">Iyz</span><input id="massIyz" type="number" step="0.0001" /></label>
+            <div class="mass-props-head mass-props-head-empty"></div>
+            <div class="mass-props-head">Mass file</div>
+            <div class="mass-props-head">Active</div>
+
+            <div class="label-text">Mass</div>
+            <input id="massFileTotal" type="number" step="0.0001" readonly />
+            <input id="massTotal" type="number" step="0.0001" />
+
+            <div class="label-text">Xcg</div>
+            <input id="massFileXcg" type="number" step="0.0001" readonly />
+            <input id="massXcg" type="number" step="0.0001" />
+
+            <div class="label-text">Ycg</div>
+            <input id="massFileYcg" type="number" step="0.0001" readonly />
+            <input id="massYcg" type="number" step="0.0001" />
+
+            <div class="label-text">Zcg</div>
+            <input id="massFileZcg" type="number" step="0.0001" readonly />
+            <input id="massZcg" type="number" step="0.0001" />
+
+            <div class="label-text">Ixx</div>
+            <input id="massFileIxx" type="number" step="0.0001" readonly />
+            <input id="massIxx" type="number" step="0.0001" />
+
+            <div class="label-text">Iyy</div>
+            <input id="massFileIyy" type="number" step="0.0001" readonly />
+            <input id="massIyy" type="number" step="0.0001" />
+
+            <div class="label-text">Izz</div>
+            <input id="massFileIzz" type="number" step="0.0001" readonly />
+            <input id="massIzz" type="number" step="0.0001" />
+
+            <div class="label-text">Ixy</div>
+            <input id="massFileIxy" type="number" step="0.0001" readonly />
+            <input id="massIxy" type="number" step="0.0001" />
+
+            <div class="label-text">Ixz</div>
+            <input id="massFileIxz" type="number" step="0.0001" readonly />
+            <input id="massIxz" type="number" step="0.0001" />
+
+            <div class="label-text">Iyz</div>
+            <input id="massFileIyz" type="number" step="0.0001" readonly />
+            <input id="massIyz" type="number" step="0.0001" />
           </div>
         </div>
       </div>

@@ -131,7 +131,18 @@ const els = {
   runCaseAddBtn: document.getElementById('runCaseAddBtn'),
   massPropsInput: document.getElementById('massPropsInput'),
   massPropsSaveBtn: document.getElementById('massPropsSaveBtn'),
+  massPropsApplyBtn: document.getElementById('massPropsApplyBtn'),
   massPropsMeta: document.getElementById('massPropsMeta'),
+  massFileTotal: document.getElementById('massFileTotal'),
+  massFileXcg: document.getElementById('massFileXcg'),
+  massFileYcg: document.getElementById('massFileYcg'),
+  massFileZcg: document.getElementById('massFileZcg'),
+  massFileIxx: document.getElementById('massFileIxx'),
+  massFileIyy: document.getElementById('massFileIyy'),
+  massFileIzz: document.getElementById('massFileIzz'),
+  massFileIxy: document.getElementById('massFileIxy'),
+  massFileIxz: document.getElementById('massFileIxz'),
+  massFileIyz: document.getElementById('massFileIyz'),
   massTotal: document.getElementById('massTotal'),
   massXcg: document.getElementById('massXcg'),
   massYcg: document.getElementById('massYcg'),
@@ -179,6 +190,7 @@ const uiState = {
   seedNoRunFlightFromExec: false,
   selectedRunCaseIndex: -1,
   massProps: null,
+  massFileProps: null,
   massPropsFilename: null,
   templateParams: [],
   resolvedText: '',
@@ -2670,9 +2682,20 @@ function resetRunCaseSessionDefaults() {
 
 function resetFlightCgToHeaderDefaults() {
   const hdr = uiState.modelHeader || {};
-  if (els.xcg) setNumericInput(els.xcg, Number.isFinite(Number(hdr.xref)) ? Number(hdr.xref) : defaultNumericInputValue(els.xcg, 0), 4);
-  if (els.ycg) setNumericInput(els.ycg, Number.isFinite(Number(hdr.yref)) ? Number(hdr.yref) : defaultNumericInputValue(els.ycg, 0), 4);
-  if (els.zcg) setNumericInput(els.zcg, Number.isFinite(Number(hdr.zref)) ? Number(hdr.zref) : defaultNumericInputValue(els.zcg, 0), 4);
+  const nextX = Number.isFinite(Number(hdr.xref)) ? Number(hdr.xref) : defaultNumericInputValue(els.xcg, 0);
+  const nextY = Number.isFinite(Number(hdr.yref)) ? Number(hdr.yref) : defaultNumericInputValue(els.ycg, 0);
+  const nextZ = Number.isFinite(Number(hdr.zref)) ? Number(hdr.zref) : defaultNumericInputValue(els.zcg, 0);
+  if (els.xcg) setNumericInput(els.xcg, nextX, 4);
+  if (els.ycg) setNumericInput(els.ycg, nextY, 4);
+  if (els.zcg) setNumericInput(els.zcg, nextZ, 4);
+  if (els.massXcg) setNumericInput(els.massXcg, nextX, 4);
+  if (els.massYcg) setNumericInput(els.massYcg, nextY, 4);
+  if (els.massZcg) setNumericInput(els.massZcg, nextZ, 4);
+  if (uiState.massProps) {
+    uiState.massProps.xcg = nextX;
+    uiState.massProps.ycg = nextY;
+    uiState.massProps.zcg = nextZ;
+  }
 }
 
 function resetMassSessionDefaults() {
@@ -2682,8 +2705,29 @@ function resetMassSessionDefaults() {
   resetFlightCgToHeaderDefaults();
   uiState.massPropsFilename = null;
   uiState.massProps = makeDefaultMassProps();
+  uiState.massFileProps = null;
   renderMassProps(uiState.massProps);
+  renderMassFileProps(uiState.massFileProps);
   if (els.massPropsMeta) els.massPropsMeta.textContent = 'No mass file loaded.';
+}
+
+function renderMassFileProps(props = null) {
+  const mp = props || null;
+  uiState.massFileProps = mp;
+  const show = (el, v, d = 4) => {
+    if (!el) return;
+    el.value = Number.isFinite(Number(v)) ? fmt(Number(v), d) : '';
+  };
+  show(els.massFileTotal, mp?.mass, 4);
+  show(els.massFileXcg, mp?.xcg, 4);
+  show(els.massFileYcg, mp?.ycg, 4);
+  show(els.massFileZcg, mp?.zcg, 4);
+  show(els.massFileIxx, mp?.ixx, 4);
+  show(els.massFileIyy, mp?.iyy, 4);
+  show(els.massFileIzz, mp?.izz, 4);
+  show(els.massFileIxy, mp?.ixy, 4);
+  show(els.massFileIxz, mp?.ixz, 4);
+  show(els.massFileIyz, mp?.iyz, 4);
 }
 
 function renderMassProps(props = null) {
@@ -2697,6 +2741,10 @@ function renderMassProps(props = null) {
   show(els.massXcg, mp.xcg, 4);
   show(els.massYcg, mp.ycg, 4);
   show(els.massZcg, mp.zcg, 4);
+  show(els.mass, mp.mass, 4);
+  show(els.xcg, mp.xcg, 4);
+  show(els.ycg, mp.ycg, 4);
+  show(els.zcg, mp.zcg, 4);
   show(els.massIxx, mp.ixx, 4);
   show(els.massIyy, mp.iyy, 4);
   show(els.massIzz, mp.izz, 4);
@@ -2705,7 +2753,7 @@ function renderMassProps(props = null) {
   show(els.massIyz, mp.iyz, 4);
   if (els.massPropsMeta) {
     const name = ensureMassFileExtension(uiState.massPropsFilename || 'model.mass');
-    els.massPropsMeta.textContent = `Mass=${fmt(mp.mass, 4)} • ${name}`;
+    els.massPropsMeta.textContent = `Loaded file: ${name}`;
   }
 }
 
@@ -3291,19 +3339,40 @@ function applyLoadedRunCases(parsed, filename, source = 'Loaded') {
   applyRunCaseToUI(uiState.runCases[uiState.selectedRunCaseIndex]);
 }
 
-function applyLoadedMassProps(props, filename, source = 'Loaded') {
+function applyLoadedMassProps(props, filename, source = 'Loaded', { applyToActive = true, applyMassInertiaOnly = false } = {}) {
   uiState.massPropsFilename = filename;
-  uiState.massProps = props;
-  renderMassProps(props);
-  if (els.mass) setNumericInput(els.mass, props.mass, 4);
-  const hasActiveRunCase = Array.isArray(uiState.runCases) && uiState.runCases.length > 0 && uiState.selectedRunCaseIndex >= 0;
-  if (!hasActiveRunCase) {
-    if (els.gee) setNumericInput(els.gee, props.g, 4);
-    if (els.rho) setNumericInput(els.rho, props.rho, 6);
+  uiState.massFileProps = { ...props };
+  renderMassFileProps(uiState.massFileProps);
+  if (applyMassInertiaOnly) {
+    const active = { ...(uiState.massProps || readMassPropsFromUI() || makeDefaultMassProps()) };
+    active.mass = props.mass;
+    active.ixx = props.ixx;
+    active.iyy = props.iyy;
+    active.izz = props.izz;
+    active.ixy = props.ixy;
+    active.ixz = props.ixz;
+    active.iyz = props.iyz;
+    uiState.massProps = active;
+    renderMassProps(active);
+    if (els.mass) setNumericInput(els.mass, active.mass, 4);
+    requestAutoUpdate(
+      AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    );
+  } else if (applyToActive) {
+    uiState.massProps = props;
+    renderMassProps(props);
+    if (els.mass) setNumericInput(els.mass, props.mass, 4);
+    const hasActiveRunCase = Array.isArray(uiState.runCases) && uiState.runCases.length > 0 && uiState.selectedRunCaseIndex >= 0;
+    if (!hasActiveRunCase) {
+      if (els.gee) setNumericInput(els.gee, props.g, 4);
+      if (els.rho) setNumericInput(els.rho, props.rho, 6);
+    }
+    requestAutoUpdate(
+      AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+    );
+  } else {
+    renderMassProps(uiState.massProps || readMassPropsFromUI());
   }
-  requestAutoUpdate(
-    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
-  );
   logDebug(`${source} mass file: ${filename}`);
 }
 
@@ -3761,10 +3830,10 @@ async function loadRunCasesFromFile(file, source = 'Loaded') {
   logDebug(`${source} run cases: ${file.name}`);
 }
 
-async function loadMassPropsFromFile(file, source = 'Loaded') {
+async function loadMassPropsFromFile(file, source = 'Loaded', options = {}) {
   const text = await readFileAsText(file);
   const props = parseMassFileText(text);
-  applyLoadedMassProps(props, file.name, source);
+  applyLoadedMassProps(props, file.name, source, options);
 }
 
 async function handleFileSelection(files) {
@@ -3822,7 +3891,7 @@ async function handleFileSelection(files) {
     if (massFiles[0]) {
       recordAutoUpdateTrace('file', 'mass');
       try {
-        await loadMassPropsFromFile(massFiles[0], 'Loaded');
+        await loadMassPropsFromFile(massFiles[0], 'Loaded', { applyMassInertiaOnly: true });
       } catch (err) {
         if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massFiles[0].name}`;
         logDebug(`Mass file load failed: ${err?.message ?? err}`);
@@ -3908,7 +3977,7 @@ async function loadDefaultRunAndMass() {
     if (massText) {
       try {
         const props = parseMassFileText(massText);
-        applyLoadedMassProps(props, massName, 'Loaded default');
+        applyLoadedMassProps(props, massName, 'Loaded default', { applyMassInertiaOnly: true });
       } catch (err) {
         logDebug(`Default mass load failed: ${err?.message ?? err}`);
       }
@@ -4034,7 +4103,7 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
     if (massText) {
       try {
         const props = parseMassFileText(massText);
-        applyLoadedMassProps(props, massName, source);
+        applyLoadedMassProps(props, massName, source, { applyMassInertiaOnly: true });
         loadedMass = true;
       } catch (err) {
         if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massName}`;
@@ -4198,15 +4267,15 @@ els.runCaseAddBtn?.addEventListener('click', () => {
 });
 
 els.massPropsInput?.addEventListener('change', async (evt) => {
-  const file = evt.target?.files?.[0];
-  evt.target.value = '';
-  if (!file) return;
-  try {
-    await loadMassPropsFromFile(file, 'Loaded');
-  } catch (err) {
-    if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${file.name}`;
-    logDebug(`Mass file load failed: ${err?.message ?? err}`);
-  }
+      const file = evt.target?.files?.[0];
+      evt.target.value = '';
+      if (!file) return;
+      try {
+        await loadMassPropsFromFile(file, 'Loaded', { applyToActive: false });
+      } catch (err) {
+        if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${file.name}`;
+        logDebug(`Mass file load failed: ${err?.message ?? err}`);
+      }
 });
 
 els.massPropsSaveBtn?.addEventListener('click', () => {
@@ -4218,6 +4287,22 @@ els.massPropsSaveBtn?.addEventListener('click', () => {
   renderMassProps(props);
 });
 
+els.massPropsApplyBtn?.addEventListener('click', () => {
+  if (!uiState.massFileProps) return;
+  const applied = { ...uiState.massFileProps };
+  uiState.massProps = applied;
+  renderMassProps(applied);
+  if (els.mass) setNumericInput(els.mass, applied.mass, 4);
+  const hasActiveRunCase = Array.isArray(uiState.runCases) && uiState.runCases.length > 0 && uiState.selectedRunCaseIndex >= 0;
+  if (!hasActiveRunCase) {
+    if (els.gee) setNumericInput(els.gee, applied.g, 4);
+    if (els.rho) setNumericInput(els.rho, applied.rho, 6);
+  }
+  requestAutoUpdate(
+    AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
+  );
+});
+
 [
   els.massTotal, els.massXcg, els.massYcg, els.massZcg,
   els.massIxx, els.massIyy, els.massIzz, els.massIxy, els.massIxz, els.massIyz,
@@ -4225,6 +4310,21 @@ els.massPropsSaveBtn?.addEventListener('click', () => {
   if (!el) return;
   el.addEventListener('input', () => {
     uiState.massProps = readMassPropsFromUI();
+    if (el === els.massTotal && els.mass) {
+      const next = Number(els.massTotal.value);
+      if (Number.isFinite(next) && document.activeElement !== els.mass) {
+        els.mass.value = String(next);
+      }
+    } else if (el === els.massXcg && els.xcg && document.activeElement !== els.xcg) {
+      const next = Number(els.massXcg.value);
+      if (Number.isFinite(next)) els.xcg.value = String(next);
+    } else if (el === els.massYcg && els.ycg && document.activeElement !== els.ycg) {
+      const next = Number(els.massYcg.value);
+      if (Number.isFinite(next)) els.ycg.value = String(next);
+    } else if (el === els.massZcg && els.zcg && document.activeElement !== els.zcg) {
+      const next = Number(els.massZcg.value);
+      if (Number.isFinite(next)) els.zcg.value = String(next);
+    }
   });
   el.addEventListener('change', () => {
     uiState.massProps = readMassPropsFromUI();
@@ -4407,6 +4507,15 @@ els.gee?.addEventListener('input', () => {
   requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
 });
 els.mass?.addEventListener('input', () => {
+  const next = Number(els.mass.value);
+  if (Number.isFinite(next)) {
+    if (els.massTotal && document.activeElement !== els.massTotal) {
+      els.massTotal.value = String(next);
+    }
+    const props = { ...(uiState.massProps || readMassPropsFromUI()) };
+    props.mass = next;
+    uiState.massProps = props;
+  }
   updateFlightConditions();
   requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
 });
@@ -10603,6 +10712,7 @@ async function bootApp() {
   renderRunCasesList();
   updateRunCasesMeta();
   renderMassProps(makeDefaultMassProps());
+  renderMassFileProps(null);
   await loadDefaultAVL();
   syncTemplateParamsFromText(els.fileText.value || '');
   try {
