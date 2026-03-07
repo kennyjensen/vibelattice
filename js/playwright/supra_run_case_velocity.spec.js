@@ -34,10 +34,17 @@ test('supra run case 1 keeps AVL-consistent velocity (no UNITL^2 rescale)', asyn
     await page.selectOption('#loadExampleSelect', 'supra.avl');
     await expect(page.locator('#fileMeta')).toContainText('supra.avl', { timeout: 30000 });
     await expect(page.locator('#runCasesMeta')).toContainText('supra.run', { timeout: 30000 });
+    await expect.poll(async () => page.locator('.run-case-item').count(), { timeout: 30000 }).toBe(5);
+    await expect(page.locator('.constraint-row[data-var="alpha"] .constraint-select')).toHaveValue('alpha', { timeout: 30000 });
+    await expect(page.locator('.constraint-row[data-var="alpha"] .constraint-value')).toHaveValue(/^\s*5(\.0+)?\s*$/, { timeout: 30000 });
 
     await page.waitForFunction(() => {
       const r = window.__trefftzTestHook?.getLastExecResult?.();
-      return Boolean(r && Number.isFinite(r.CLTOT));
+      const vel = Number(document.querySelector('#vel')?.value || NaN);
+      const outV = Number(document.querySelector('#outV')?.textContent || NaN);
+      return Boolean(r && Number.isFinite(r.CLTOT))
+        && Number.isFinite(vel) && vel > 6.3 && vel < 6.8
+        && Number.isFinite(outV) && outV > 6.3 && outV < 6.8;
     }, null, { timeout: 30000 });
 
     const vals = await page.evaluate(() => ({
@@ -46,7 +53,8 @@ test('supra run case 1 keeps AVL-consistent velocity (no UNITL^2 rescale)', asyn
       clOut: Number(document.querySelector('#outCL')?.textContent || NaN),
     }));
 
-    expect(vals.clOut).toBeGreaterThan(0.8);
+    expect(vals.clOut).toBeGreaterThan(0.68);
+    expect(vals.clOut).toBeLessThan(0.72);
     expect(vals.velInput).toBeGreaterThan(6.3);
     expect(vals.velInput).toBeLessThan(6.8);
     expect(vals.velOut).toBeGreaterThan(6.3);

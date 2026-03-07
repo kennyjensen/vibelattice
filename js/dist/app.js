@@ -2194,13 +2194,16 @@ function formatSurfaceDisplayName(rawName, index = 1) {
 
 function getHeaderRefs() {
   const header = uiState.modelHeader || {};
-  const massProps = uiState.massProps || null;
-  const unitlFromMass = Number(massProps?.lunitScale);
+  const unitlFromMassFile = Number(uiState.massFileProps?.lunitScale);
+  const unitlFromMass = Number(uiState.massProps?.lunitScale);
+  const unitlUse = (Number.isFinite(unitlFromMassFile) && unitlFromMassFile > 0)
+    ? unitlFromMassFile
+    : ((Number.isFinite(unitlFromMass) && unitlFromMass > 0) ? unitlFromMass : 1.0);
   return {
     sref: Number(header.sref ?? 1.0),
     cref: Number(header.cref ?? 1.0),
     bref: Number(header.bref ?? 1.0),
-    unitl: Number.isFinite(unitlFromMass) && unitlFromMass > 0 ? unitlFromMass : 1.0,
+    unitl: unitlUse,
   };
 }
 
@@ -3530,6 +3533,14 @@ function applyLoadedMassProps(props, filename, source = 'Loaded', { applyToActiv
     active.ixy = props.ixy;
     active.ixz = props.ixz;
     active.iyz = props.iyz;
+    active.lunit = props.lunit;
+    active.munit = props.munit;
+    active.tunit = props.tunit;
+    active.lunitScale = props.lunitScale;
+    active.munitScale = props.munitScale;
+    active.tunitScale = props.tunitScale;
+    active.g = props.g;
+    active.rho = props.rho;
     uiState.massProps = active;
     renderMassProps(active);
     if (els.mass) setNumericInput(els.mass, active.mass, 4);
@@ -10535,8 +10546,11 @@ function loadGeometryFromText(text, shouldFit = true, clearOutputs = false) {
 }
 
 function buildExecState(model) {
+  const unitlMassFile = Number(uiState.massFileProps?.lunitScale);
   const unitlMass = Number(uiState.massProps?.lunitScale);
-  const unitlUse = Number.isFinite(unitlMass) && unitlMass > 0 ? unitlMass : 1.0;
+  const unitlUse = (Number.isFinite(unitlMassFile) && unitlMassFile > 0)
+    ? unitlMassFile
+    : ((Number.isFinite(unitlMass) && unitlMass > 0) ? unitlMass : 1.0);
   const IVALFA = 1;
   const IVBETA = 2;
   const IVROTX = 3;
