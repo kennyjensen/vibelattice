@@ -5976,6 +5976,16 @@ if (typeof window !== 'undefined') {
         vortexLegDxMean,
         vortexLegDyAbsMean,
         vortexLegDzAbsMean,
+        gridWorld: gridHelper ? {
+          x: Number(gridHelper.position?.x) || 0,
+          y: Number(gridHelper.position?.y) || 0,
+          z: Number(gridHelper.position?.z) || 0,
+        } : null,
+        axisWorld: axesHelper ? {
+          x: Number(axesHelper.position?.x) || 0,
+          y: Number(axesHelper.position?.y) || 0,
+          z: Number(axesHelper.position?.z) || 0,
+        } : null,
       };
     },
     getDisplaySpanPanelSummary() {
@@ -10202,7 +10212,12 @@ function applyGridMode() {
   gridHelper.visible = mode !== 'none';
   if (axesHelper) axesHelper.visible = mode !== 'none';
   gridHelper.rotation.set(0, 0, 0);
-  gridHelper.position.set(0, 0, 0);
+  if (aircraft) {
+    // The aircraft local origin is AVL origin. Keep the grid centered there after recentering the model.
+    gridHelper.position.copy(aircraft.position);
+  } else {
+    gridHelper.position.set(0, 0, 0);
+  }
   if (mode === 'xy') {
     gridHelper.rotation.x = Math.PI / 2;
   } else if (mode === 'yz') {
@@ -10213,9 +10228,10 @@ function applyGridMode() {
 }
 
 function updateAxesOriginAnchor() {
-  if (!axesHelper || !aircraft) return;
-  // The aircraft local origin is AVL origin. Keep axes there after recentering the model.
-  axesHelper.position.copy(aircraft.position);
+  if (!aircraft) return;
+  // The aircraft local origin is AVL origin. Keep scene guides there after recentering the model.
+  if (axesHelper) axesHelper.position.copy(aircraft.position);
+  if (gridHelper) gridHelper.position.copy(aircraft.position);
 }
 
 function setCameraUp(vec) {
