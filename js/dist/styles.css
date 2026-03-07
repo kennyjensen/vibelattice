@@ -835,6 +835,16 @@ textarea.code {
   z-index: 5;
 }
 
+.eigen-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 5;
+}
+
 .viewer-hover-tip {
   position: absolute;
   z-index: 8;
@@ -904,7 +914,7 @@ textarea.code {
 
 .eigen-plot {
   width: 100%;
-  height: clamp(180px, 24vh, 280px);
+  height: clamp(240px, 36vh, 384px);
   background: var(--panel);
   border-radius: 16px;
   box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
@@ -912,6 +922,14 @@ textarea.code {
   position: relative;
   display: block;
   touch-action: none;
+}
+
+.eigen-plot.pan-enabled {
+  cursor: grab;
+}
+
+.eigen-plot.pan-enabled.is-panning {
+  cursor: grabbing;
 }
 
 .trefftz-overlay {

@@ -364,7 +364,51 @@
       <div class="stage panel" id="eigenPanel">
         <div class="panel-title">Eigenmodes</div>
         <div class="panel-body stage-panel-body">
-          <canvas id="eigenPlot" class="eigen-plot" width="860" height="280" style="background:#0f1115;"></canvas>
+          <div class="eigen-overlay" aria-label="Eigenmode plot controls">
+            <button class="viewer-btn icon-btn" id="eigenHome" type="button" title="Reset eigenmode view">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 11.5 12 5l8 6.5" />
+                <path d="M7.5 10.5V19h9v-8.5" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="eigenZoomIn" type="button" title="Zoom in eigenmode plot">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="10" cy="10" r="5.5" />
+                <path d="M19 19l-4.3-4.3" />
+                <path d="M10 7.5v5" />
+                <path d="M7.5 10h5" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="eigenZoomOut" type="button" title="Zoom out eigenmode plot">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="10" cy="10" r="5.5" />
+                <path d="M19 19l-4.3-4.3" />
+                <path d="M7.5 10h5" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="eigenPan" type="button" title="Pan eigenmode plot">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4v16" />
+                <path d="M4 12h16" />
+                <path d="M12 4l-2.5 2.5" />
+                <path d="M12 4l2.5 2.5" />
+                <path d="M12 20l-2.5-2.5" />
+                <path d="M12 20l2.5-2.5" />
+                <path d="M4 12l2.5-2.5" />
+                <path d="M4 12l2.5 2.5" />
+                <path d="M20 12l-2.5-2.5" />
+                <path d="M20 12l-2.5 2.5" />
+              </svg>
+            </button>
+            <button class="viewer-btn icon-btn" id="eigenDownload" type="button" title="Download eigenmode CSV">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4v10" />
+                <path d="M8.5 11.5 12 15l3.5-3.5" />
+                <path d="M5 19h14" />
+              </svg>
+            </button>
+          </div>
+          <canvas id="eigenPlot" class="eigen-plot" width="860" height="384" style="background:#0f1115;"></canvas>
         </div>
       </div>
       <div id="githubStarMobile" class="github-star github-star-mobile">

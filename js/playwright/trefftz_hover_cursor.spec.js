@@ -53,7 +53,7 @@ async function loadSimpleTrefftz(page) {
   }, { timeout: 20000 }).toBe(true);
 }
 
-test('Trefftz panel is taller, legend aligns left to plot, and hover shows span + markers', async ({ page }) => {
+test('Trefftz and Eigenmodes panels have matching plot height, legend aligns left to plot, and hover shows span + markers', async ({ page }) => {
   const { server, port } = await startStaticServer();
   try {
     await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: 'domcontentloaded' });
@@ -76,7 +76,7 @@ test('Trefftz panel is taller, legend aligns left to plot, and hover shows span 
     });
     expect(sizing.trefftzHeight).toBeGreaterThan(0);
     expect(sizing.eigenHeight).toBeGreaterThan(0);
-    expect(sizing.trefftzHeight / sizing.eigenHeight).toBeGreaterThan(1.25);
+    expect(Math.abs(sizing.trefftzHeight - sizing.eigenHeight)).toBeLessThanOrEqual(1);
     expect(Math.abs(sizing.legendLeft - sizing.plotLeft)).toBeLessThanOrEqual(2.5);
 
     const hoverPoint = await page.evaluate(() => {

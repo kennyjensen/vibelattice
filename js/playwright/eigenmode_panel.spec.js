@@ -66,12 +66,21 @@ test('eigenmode panel sits between trefftz and AVL editor, and canvas click sele
     await expect(page.locator('#eigenPlot')).toBeHidden();
     await eigenPanel.locator('.panel-toggle').click();
     await expect(page.locator('#eigenPlot')).toBeVisible();
+    await expect(page.locator('#eigenHome')).toHaveCount(1);
+    await expect(page.locator('#eigenZoomIn')).toHaveCount(1);
+    await expect(page.locator('#eigenZoomOut')).toHaveCount(1);
+    await expect(page.locator('#eigenPan')).toHaveCount(1);
+    await expect(page.locator('#eigenDownload')).toHaveCount(1);
 
     await page.waitForFunction(() => typeof window.__trefftzTestHook !== 'undefined');
     const points = await page.evaluate(() => {
+      window.__trefftzTestHook.setRunCasesForTest([
+        { name: 'Case Alpha', color: '#ff5500' },
+        { name: 'Case Beta', color: '#00aa88' },
+      ], 0);
       window.__trefftzTestHook.setEigenModes([
-        { name: 'Test A', re: -0.2, im: 0.12, vec: { rx: 0.05, ry: 0, rz: 0, tx: 0, ty: 0, tz: 0 } },
-        { name: 'Test B', re: -0.05, im: 0.02, vec: { rx: 0, ry: 0.05, rz: 0, tx: 0.1, ty: 0, tz: 0 } },
+        { name: 'Test A', re: -0.2, im: 0.12, runCaseIndex: 0, vec: { rx: 0.05, ry: 0, rz: 0, tx: 0, ty: 0, tz: 0 } },
+        { name: 'Test B', re: -0.05, im: 0.02, runCaseIndex: 1, vec: { rx: 0, ry: 0.05, rz: 0, tx: 0.1, ty: 0, tz: 0 } },
       ]);
       return window.__trefftzTestHook.getEigenPoints();
     });
@@ -83,30 +92,49 @@ test('eigenmode panel sits between trefftz and AVL editor, and canvas click sele
     expect(viewportBeforeZoomIn).toBeTruthy();
 
     const p = points[0];
-    await page.evaluate(() => {
-      const canvas = document.querySelector('#eigenPlot');
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      canvas.dispatchEvent(new WheelEvent('wheel', {
-        bubbles: true,
-        cancelable: true,
-        deltaY: -120,
-        clientX: rect.left + rect.width * 0.8,
-        clientY: rect.top + rect.height * 0.4,
-      }));
-    });
+    await page.click('#eigenZoomIn');
     await page.waitForFunction((z) => window.__trefftzTestHook.getEigenViewport()?.zoom > z, viewportBeforeZoomIn.zoom);
     const viewportAfterZoomIn = await page.evaluate(() => window.__trefftzTestHook.getEigenViewport());
     expect(viewportAfterZoomIn.maxRe).toBeLessThan(viewportBeforeZoomIn.maxRe);
-    expect(viewportAfterZoomIn.xMid).toBeLessThan(viewportBeforeZoomIn.xMid);
 
-    await page.evaluate(() => {
-      const canvas = document.querySelector('#eigenPlot');
-      if (!canvas) return;
-      canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 }));
-    });
+    await page.click('#eigenZoomOut');
     await page.waitForFunction((z) => window.__trefftzTestHook.getEigenViewport()?.zoom < z, viewportAfterZoomIn.zoom);
     const viewportAfterWheelZoomOut = await page.evaluate(() => window.__trefftzTestHook.getEigenViewport());
+
+    await page.click('#eigenPan');
+    await expect.poll(async () => page.evaluate(() => window.__trefftzTestHook.getEigenPanMode())).toBe(true);
+    const viewportBeforePan = await page.evaluate(() => window.__trefftzTestHook.getEigenViewport());
+    const canvasBox = await page.locator('#eigenPlot').boundingBox();
+    expect(canvasBox).toBeTruthy();
+    await page.mouse.move(canvasBox.x + (canvasBox.width * 0.5), canvasBox.y + (canvasBox.height * 0.5));
+    await page.mouse.down();
+    await page.mouse.move(canvasBox.x + (canvasBox.width * 0.65), canvasBox.y + (canvasBox.height * 0.58), { steps: 8 });
+    await page.mouse.up();
+    await page.waitForFunction(
+      ({ re, im }) => {
+        const vp = window.__trefftzTestHook.getEigenViewport();
+        return Math.abs((vp?.centerRe || 0) - re) > 1e-4 || Math.abs((vp?.centerIm || 0) - im) > 1e-4;
+      },
+      { re: viewportBeforePan.centerRe, im: viewportBeforePan.centerIm },
+    );
+    await page.click('#eigenHome');
+    await page.waitForFunction(() => {
+      const vp = window.__trefftzTestHook.getEigenViewport();
+      return vp && Math.abs(vp.zoom - 1) < 1e-6 && Math.abs(vp.centerRe) < 1e-6 && Math.abs(vp.centerIm) < 1e-6;
+    });
+    await page.click('#eigenPan');
+    await expect.poll(async () => page.evaluate(() => window.__trefftzTestHook.getEigenPanMode())).toBe(false);
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.click('#eigenDownload'),
+    ]);
+    expect(download.suggestedFilename()).toContain('_eigenmodes.csv');
+    const downloadPath = await download.path();
+    const eigenCsv = await fs.readFile(downloadPath, 'utf8');
+    expect(eigenCsv).toContain('run case,real eigenvalue,imag eigenvalue');
+    expect(eigenCsv).toContain('1,-0.200000,0.120000');
+    expect(eigenCsv).toContain('2,-0.050000,0.020000');
 
     await page.evaluate(() => {
       const canvas = document.querySelector('#eigenPlot');

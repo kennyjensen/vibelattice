@@ -74,6 +74,11 @@ const els = {
   viewerAircraftName: document.getElementById('viewerAircraftName'),
   trefftz: document.getElementById('trefftz'),
   eigenPlot: document.getElementById('eigenPlot'),
+  eigenHome: document.getElementById('eigenHome'),
+  eigenZoomIn: document.getElementById('eigenZoomIn'),
+  eigenZoomOut: document.getElementById('eigenZoomOut'),
+  eigenPan: document.getElementById('eigenPan'),
+  eigenDownload: document.getElementById('eigenDownload'),
   trefftzOverlay: document.getElementById('trefftzOverlay'),
   outAlpha: document.getElementById('outAlpha'),
   outBeta: document.getElementById('outBeta'),
@@ -190,6 +195,7 @@ const uiState = {
   eigenCenterRe: 0,
   eigenCenterIm: 0,
   eigenViewport: null,
+  eigenPanMode: false,
   runCases: [],
   runCasesFilename: null,
   needsRunCaseConstraintSync: false,
@@ -4627,6 +4633,30 @@ els.viewerZoomOut?.addEventListener('click', () => {
 els.viewerHome?.addEventListener('click', () => {
   fitCameraToObject(aircraft);
 });
+els.eigenHome?.addEventListener('click', () => {
+  resetEigenViewport();
+});
+els.eigenZoomIn?.addEventListener('click', () => {
+  zoomEigenByFactor(1.12);
+});
+els.eigenZoomOut?.addEventListener('click', () => {
+  zoomEigenByFactor(1 / 1.12);
+});
+els.eigenPan?.addEventListener('click', () => {
+  setEigenPanMode(!uiState.eigenPanMode);
+});
+els.eigenDownload?.addEventListener('click', () => {
+  const rows = buildEigenmodeRows();
+  if (rows.length <= 1) {
+    logDebug('Eigenmode download skipped: no eigenmodes available.');
+    return;
+  }
+  downloadText(
+    `${uiState.filename || 'model'}_eigenmodes.csv`,
+    rowsToCsv(rows),
+    'text/csv;charset=utf-8',
+  );
+});
 els.viewerView?.addEventListener('click', () => {
   viewerState.viewIndex = (viewerState.viewIndex + 1) % viewerState.viewModes.length;
   const mode = viewerState.viewModes[viewerState.viewIndex];
@@ -4703,6 +4733,10 @@ els.trefftz?.addEventListener('pointermove', handleTrefftzPointerMove);
 els.trefftz?.addEventListener('pointerdown', handleTrefftzPointerMove);
 els.trefftz?.addEventListener('pointerleave', handleTrefftzPointerLeave);
 els.eigenPlot?.addEventListener('click', handleEigenCanvasClick);
+els.eigenPlot?.addEventListener('pointerdown', handleEigenPointerDown);
+els.eigenPlot?.addEventListener('pointermove', handleEigenPointerMove);
+els.eigenPlot?.addEventListener('pointerup', handleEigenPointerUp);
+els.eigenPlot?.addEventListener('pointercancel', handleEigenPointerUp);
 els.eigenPlot?.addEventListener('wheel', handleEigenCanvasWheel, { passive: false });
 els.eigenPlot?.addEventListener('touchstart', handleEigenTouchStart, { passive: false });
 els.eigenPlot?.addEventListener('touchmove', handleEigenTouchMove, { passive: false });
@@ -5808,10 +5842,26 @@ if (typeof window !== 'undefined') {
       uiState.eigenZoom = 1;
       uiState.eigenCenterRe = 0;
       uiState.eigenCenterIm = 0;
+      uiState.eigenPanMode = false;
       drawEigenPlot();
+      updateEigenButtons();
+    },
+    setRunCasesForTest(runCases, selectedIndex = 0) {
+      uiState.runCases = Array.isArray(runCases) ? runCases.map((entry, idx) => ({
+        name: String(entry?.name || `Run case ${idx + 1}`),
+        color: entry?.color || null,
+        inputs: entry?.inputs && typeof entry.inputs === 'object' ? { ...entry.inputs } : {},
+        constraints: Array.isArray(entry?.constraints) ? entry.constraints.map((row) => ({ ...row })) : [],
+      })) : [];
+      uiState.selectedRunCaseIndex = Number.isInteger(selectedIndex) ? selectedIndex : 0;
+      drawEigenPlot();
+      renderRunCasesList();
     },
     getSelectedEigenMode() {
       return uiState.selectedEigenMode;
+    },
+    getEigenPanMode() {
+      return Boolean(uiState.eigenPanMode);
     },
     getEigenPoints() {
       return Array.isArray(uiState.eigenPoints) ? uiState.eigenPoints.map((p) => ({ ...p })) : [];
@@ -6747,6 +6797,8 @@ function computeEigenModesFromExec(result) {
 function drawEigenPlot() {
   const canvas = els.eigenPlot;
   if (!canvas?.getContext) return;
+  canvas.classList.toggle('pan-enabled', Boolean(uiState.eigenPanMode));
+  canvas.classList.toggle('is-panning', Boolean(eigenPointerPan.active));
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   const width = canvas.clientWidth || canvas.width;
@@ -6889,6 +6941,41 @@ function drawEigenPlot() {
   });
 }
 
+function updateEigenButtons() {
+  if (els.eigenPan) {
+    els.eigenPan.classList.toggle('active', Boolean(uiState.eigenPanMode));
+    els.eigenPan.title = uiState.eigenPanMode ? 'Pan eigenmode plot on' : 'Pan eigenmode plot';
+    els.eigenPan.setAttribute('aria-pressed', uiState.eigenPanMode ? 'true' : 'false');
+  }
+}
+
+function resetEigenViewport() {
+  uiState.eigenZoom = 1;
+  uiState.eigenCenterRe = 0;
+  uiState.eigenCenterIm = 0;
+  drawEigenPlot();
+}
+
+function zoomEigenByFactor(factor) {
+  const current = Math.max(0.5, Math.min(8, Number(uiState.eigenZoom) || 1));
+  const next = Math.max(0.5, Math.min(8, current * factor));
+  if (Math.abs(next - current) < 1e-4) return;
+  const rect = els.eigenPlot?.getBoundingClientRect?.();
+  const cx = rect ? (rect.left + (rect.width * 0.5)) : Number.NaN;
+  const cy = rect ? (rect.top + (rect.height * 0.5)) : Number.NaN;
+  zoomEigenAtClient(next, cx, cy);
+}
+
+function setEigenPanMode(enabled) {
+  uiState.eigenPanMode = Boolean(enabled);
+  if (!uiState.eigenPanMode) {
+    eigenPointerPan.active = false;
+    eigenPointerPan.pointerId = null;
+  }
+  updateEigenButtons();
+  drawEigenPlot();
+}
+
 function stopModeAnimation() {
   if (!modeAnimation) return;
   const basePos = modeAnimation.basePos?.clone?.();
@@ -6934,6 +7021,7 @@ function startModeAnimation(modeIndex) {
 
 function handleEigenCanvasClick(evt) {
   if (!els.eigenPlot) return;
+  if (uiState.eigenPanMode) return;
   const pts = (uiState.eigenPoints || []).filter((pt) => pt?.selectable !== false);
   if (!pts.length) return;
   const rect = els.eigenPlot.getBoundingClientRect();
@@ -6954,6 +7042,54 @@ function handleEigenCanvasClick(evt) {
     return;
   }
   startModeAnimation(best.idx);
+}
+
+function handleEigenPointerDown(evt) {
+  if (!els.eigenPlot || !uiState.eigenPanMode) return;
+  const vp = uiState.eigenViewport;
+  if (!vp) return;
+  evt.preventDefault();
+  eigenPointerPan = {
+    active: true,
+    pointerId: evt.pointerId,
+    startX: Number(evt.clientX) || 0,
+    startY: Number(evt.clientY) || 0,
+    startCenterRe: Number.isFinite(uiState.eigenCenterRe) ? Number(uiState.eigenCenterRe) : 0,
+    startCenterIm: Number.isFinite(uiState.eigenCenterIm) ? Number(uiState.eigenCenterIm) : 0,
+  };
+  if (typeof els.eigenPlot.setPointerCapture === 'function' && evt.pointerId != null) {
+    els.eigenPlot.setPointerCapture(evt.pointerId);
+  }
+  drawEigenPlot();
+}
+
+function handleEigenPointerMove(evt) {
+  if (!eigenPointerPan.active || !uiState.eigenPanMode) return;
+  const vp = uiState.eigenViewport;
+  if (!vp) return;
+  evt.preventDefault();
+  const dx = (Number(evt.clientX) || 0) - eigenPointerPan.startX;
+  const dy = (Number(evt.clientY) || 0) - eigenPointerPan.startY;
+  const rePerPx = (2 * (Number(vp.maxRe) || 0.1)) / Math.max(1, Number(vp.pw) || 1);
+  const imPerPx = (2 * (Number(vp.maxIm) || 0.1)) / Math.max(1, Number(vp.ph) || 1);
+  uiState.eigenCenterRe = eigenPointerPan.startCenterRe - (dx * rePerPx);
+  uiState.eigenCenterIm = eigenPointerPan.startCenterIm + (dy * imPerPx);
+  drawEigenPlot();
+}
+
+function handleEigenPointerUp(evt) {
+  if (!eigenPointerPan.active) return;
+  if (evt?.pointerId != null && eigenPointerPan.pointerId != null && evt.pointerId !== eigenPointerPan.pointerId) return;
+  if (els.eigenPlot && typeof els.eigenPlot.releasePointerCapture === 'function' && evt?.pointerId != null) {
+    try {
+      els.eigenPlot.releasePointerCapture(evt.pointerId);
+    } catch (_) {
+      // Ignore release errors for non-captured pointers.
+    }
+  }
+  eigenPointerPan.active = false;
+  eigenPointerPan.pointerId = null;
+  drawEigenPlot();
 }
 
 function handleEigenCanvasWheel(evt) {
@@ -7040,6 +7176,20 @@ function handleEigenTouchEnd(evt) {
     return;
   }
   eigenTouchZoom = { active: false, lastDist: 0 };
+}
+
+function buildEigenmodeRows() {
+  const rows = [['run case', 'real eigenvalue', 'imag eigenvalue']];
+  const modes = Array.isArray(uiState.eigenModes) ? uiState.eigenModes : [];
+  modes.forEach((mode) => {
+    const runCaseIdx = Number.isInteger(mode?.runCaseIndex) ? Number(mode.runCaseIndex) : -1;
+    rows.push([
+      String(runCaseIdx >= 0 ? (runCaseIdx + 1) : runCaseIdx),
+      fmt(Number(mode?.re) || 0, 6),
+      fmt(Number(mode?.im) || 0, 6),
+    ]);
+  });
+  return rows;
 }
 
 function updateModeAnimation() {
@@ -9708,6 +9858,14 @@ let flowFieldGroup = null;
 let flowFieldAnimLastMs = 0;
 let modeAnimation = null;
 let eigenTouchZoom = { active: false, lastDist: 0 };
+let eigenPointerPan = {
+  active: false,
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  startCenterRe: 0,
+  startCenterIm: 0,
+};
 let flowProjectTmp = null;
 let flowPointSpriteTexture = null;
 let massPointGroup = null;
@@ -11614,6 +11772,7 @@ async function bootApp() {
     logDebug('App ready (3D viewer disabled).');
   }
   updateTrefftz(Number(els.cl.value));
+  updateEigenButtons();
   drawEigenPlot();
   resetTrimSeed();
   suspendAutoTrim = false;
