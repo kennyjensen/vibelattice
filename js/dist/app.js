@@ -4493,7 +4493,7 @@ els.massPropsInput?.addEventListener('change', async (evt) => {
       evt.target.value = '';
       if (!file) return;
       try {
-        await loadMassPropsFromFile(file, 'Loaded', { applyToActive: false });
+        await loadMassPropsFromFile(file, 'Loaded', { applyToActive: true });
       } catch (err) {
         if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${file.name}`;
         logDebug(`Mass file load failed: ${err?.message ?? err}`);
@@ -7649,7 +7649,8 @@ function renderRequiredAirfoilFiles() {
     const name = document.createElement('div');
     name.className = 'airfoil-file-name';
     const displayName = airfoilDisplayNames.get(path);
-    name.textContent = displayName ? `${path} — ${displayName}` : path;
+    const tail = path.split(/[\\/]/).pop();
+    name.textContent = displayName ? `${tail} — ${displayName}` : tail;
 
     const statusEl = document.createElement('div');
     statusEl.className = 'airfoil-file-status';
