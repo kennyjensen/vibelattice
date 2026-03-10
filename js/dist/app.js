@@ -4882,6 +4882,16 @@ els.mass?.addEventListener('input', () => {
   requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
 });
 
+els.toggleViscous?.addEventListener('click', () => {
+  const enabling = !uiState.viscousEnabled;
+  if (enabling) {
+    alert('Each airfoil section in the .avl file must specify a 6-coefficient polar: CL_min CD_min CL_ref CD_ref CL_max CD_max, for viscous drag to work correctly.');
+  }
+  uiState.viscousEnabled = enabling;
+  els.toggleViscous.textContent = enabling ? 'Disable Viscous Drag' : 'Enable Viscous Drag';
+  requestAutoUpdate(AUTO_UPDATE_STAGE.EXEC);
+});
+
 els.clLoop?.addEventListener('input', () => {
   updateFlightConditions('cl');
   requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
@@ -11194,6 +11204,7 @@ function runExecFromText(text) {
   uiState.execSurfaceNames = buildExecSurfaceNames(model);
   const state = buildExecState(model);
   state.LNASA_SA = false;
+  state.LVISC = uiState.viscousEnabled;
   try {
     const rows = readConstraintRows();
     if (rows.length) {
