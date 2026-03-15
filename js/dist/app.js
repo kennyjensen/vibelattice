@@ -187,6 +187,7 @@ const uiState = {
   showMassPoints: false,
   flowFieldMode: 'induced',
   pressureField: null,
+  testControlDeflections: null,
   eigenModes: [],
   eigenModesByRunCase: {},
   selectedEigenMode: -1,
@@ -1999,22 +2000,17 @@ function applyYDuplicate(model) {
   const next = [];
   model.surfaces.forEach((surf) => {
     const ydup = surf.yduplicate;
-    const base = { ...surf, yduplicate: null };
+    const base = { ...surf, yduplicate: null, __displayYDuplicate: false };
     next.push(base);
     if (typeof ydup !== 'number') return;
     const copy = JSON.parse(JSON.stringify(base));
     copy.name = `${surf.name}-ydup`;
+    copy.__displayYDuplicate = true;
     if (Array.isArray(copy.translate) && copy.translate.length >= 2) {
       copy.translate[1] = 2 * ydup - copy.translate[1];
     }
     copy.sections.forEach((sec) => {
       sec.yle = -sec.yle;
-      if (sec.controls) {
-        sec.controls.forEach((ctrl) => {
-          if (ctrl.vhinge) ctrl.vhinge[1] *= -1;
-          if (ctrl.sgnDup) ctrl.sgnDup *= -1;
-        });
-      }
     });
     next.push(copy);
   });
@@ -2627,7 +2623,7 @@ function updateFlightConditions(driverHint = null) {
 
   if (uiState.levelDriver === 'cl' && cl > 0 && rho > 0 && mass > 0 && gee > 0 && cosp !== 0) {
     const veeNew = Math.sqrt((2.0 * mass * gee) / (rho * srefD * cl * cosp));
-    if (Number.isFinite(veeNew)) setNumericInput(els.vel, veeNew, 2);
+    if (Number.isFinite(veeNew)) setNumericInput(els.vel, veeNew, 3);
   } else if (uiState.levelDriver === 'vel' && vee > 0 && rho > 0 && mass > 0 && gee > 0 && cosp !== 0) {
     const clNew = (2.0 * mass * gee) / (rho * srefD * vee * vee * cosp);
     if (Number.isFinite(clNew)) setNumericInput(els.cl, clNew, 3);
@@ -2822,9 +2818,9 @@ function resetRunCaseSessionDefaults() {
   syncFlightModePanels();
   if (els.bank) setNumericInput(els.bank, defaultNumericInputValue(els.bank, 0), 3);
   if (els.cl) setNumericInput(els.cl, defaultNumericInputValue(els.cl, 0.6), 3);
-  if (els.vel) setNumericInput(els.vel, defaultNumericInputValue(els.vel, 30), 2);
+  if (els.vel) setNumericInput(els.vel, defaultNumericInputValue(els.vel, 30), 3);
   if (els.clLoop) setNumericInput(els.clLoop, defaultNumericInputValue(els.clLoop, 0.6), 3);
-  if (els.velLoop) setNumericInput(els.velLoop, defaultNumericInputValue(els.velLoop, 30), 2);
+  if (els.velLoop) setNumericInput(els.velLoop, defaultNumericInputValue(els.velLoop, 30), 3);
   if (els.radLoop) setNumericInput(els.radLoop, defaultNumericInputValue(els.radLoop, 0), 2);
   if (els.facLoop) setNumericInput(els.facLoop, defaultNumericInputValue(els.facLoop, 0), 3);
   if (uiState.modelCache) {
@@ -6087,6 +6083,38 @@ if (typeof window !== 'undefined') {
         requiredBodyFiles: Array.isArray(requiredBodyFiles) ? [...requiredBodyFiles] : [],
       };
     },
+    getSurfaceControlDeflectionSummary() {
+      const out = [];
+      if (!aircraft) return out;
+      aircraft.traverse((obj) => {
+        const surfaceName = String(obj?.userData?.surfaceName || '');
+        const controlSamples = obj?.userData?.controlSamples;
+        if (!surfaceName || !controlSamples || typeof controlSamples !== 'object') return;
+        Object.entries(controlSamples).forEach(([controlName, samples]) => {
+          const items = Array.isArray(samples) ? samples : [];
+          if (!items.length) return;
+          const sum = items.reduce((acc, sample) => {
+            acc.x += Number(sample?.x || 0);
+            acc.y += Number(sample?.y || 0);
+            acc.z += Number(sample?.z || 0);
+            return acc;
+          }, { x: 0, y: 0, z: 0 });
+          out.push({
+            surfaceName,
+            controlName,
+            count: items.length,
+            avgX: sum.x / items.length,
+            avgY: sum.y / items.length,
+            avgZ: sum.z / items.length,
+          });
+        });
+      });
+      return out.sort((a, b) => a.surfaceName.localeCompare(b.surfaceName) || a.controlName.localeCompare(b.controlName));
+    },
+    setViewerControlDeflectionsForTest(deflections) {
+      uiState.testControlDeflections = (deflections && typeof deflections === 'object') ? { ...deflections } : null;
+      if (uiState.displayModel) rebuildAircraftVisual(false);
+    },
     getMassPointVisualState() {
       let markerCount = 0;
       let markerVisibleCount = 0;
@@ -8121,6 +8149,13 @@ function applySurfaceRenderMode() {
 
 function createControlDeflectionMap() {
   const map = new Map();
+  if (uiState.testControlDeflections && typeof uiState.testControlDeflections === 'object') {
+    Object.entries(uiState.testControlDeflections).forEach(([name, value]) => {
+      const num = Number(value);
+      map.set(name, Number.isFinite(num) ? num : 0);
+    });
+    return map;
+  }
   const delcon = uiState.lastExecResult?.DELCON;
   const controlMap = uiState.modelCache?.controlMap;
   if (!delcon || !controlMap?.size) return map;
@@ -8132,6 +8167,7 @@ function createControlDeflectionMap() {
 }
 
 function createSectionPointTransform(surface, controlDeflections = new Map()) {
+  const duplicateSide = Boolean(surface?.__displayYDuplicate);
   const applyTransforms = (p) => {
     const v = new THREE.Vector3(p[0], p[1], p[2]);
     v.multiply(new THREE.Vector3(...surface.scale));
@@ -8160,7 +8196,8 @@ function createSectionPointTransform(surface, controlDeflections = new Map()) {
       if (!baseDef) continue;
       const gain = Number(ctrl.gain ?? 1);
       const sgnDup = Number.isFinite(Number(ctrl.sgnDup)) ? Number(ctrl.sgnDup) : 1;
-      const deflectionDeg = baseDef * gain * sgnDup;
+      const mirrorFactor = duplicateSide ? sgnDup : 1;
+      const deflectionDeg = baseDef * gain * mirrorFactor;
       if (!deflectionDeg) continue;
       const xhinge = Number(ctrl.xhinge ?? 0.75);
       const hingeLocalX = section.chord * xhinge;
@@ -9150,20 +9187,15 @@ function rebuildAuxOverlays(bounds = null) {
 
 function buildSurfaceMesh(surface, color) {
   const group = new THREE.Group();
+  group.userData.surfaceName = String(surface?.name || '');
+  group.userData.isYDuplicate = Boolean(surface?.__displayYDuplicate);
   if (surface.sections.length < 2) return group;
-  const controlDeflections = new Map();
-  const delcon = uiState.lastExecResult?.DELCON;
-  const controlMap = uiState.modelCache?.controlMap;
-  if (delcon && controlMap?.size) {
-    for (const [name, idx] of controlMap.entries()) {
-      const val = Number(delcon[idx]);
-      controlDeflections.set(name, Number.isFinite(val) ? val : 0);
-    }
-  }
+  const controlDeflections = createControlDeflectionMap();
 
   const verts = [];
   const profileVerts = [];
   const controlVerts = new Map();
+  const controlSamples = new Map();
   const camberLines = [];
   const airfoilOutlines = [];
   const hingeSegments = [];
@@ -9216,7 +9248,8 @@ function buildSurfaceMesh(surface, color) {
       if (!baseDef) continue;
       const gain = Number(ctrl.gain ?? 1);
       const sgnDup = Number.isFinite(Number(ctrl.sgnDup)) ? Number(ctrl.sgnDup) : 1;
-      const deflectionDeg = baseDef * gain * sgnDup;
+      const mirrorFactor = Boolean(surface?.__displayYDuplicate) ? sgnDup : 1;
+      const deflectionDeg = baseDef * gain * mirrorFactor;
       if (!deflectionDeg) continue;
       const xhinge = Number(ctrl.xhinge ?? 0.75);
       const hingeLocalX = section.chord * xhinge;
@@ -9268,6 +9301,14 @@ function buildSurfaceMesh(surface, color) {
     if (!controlVerts.has(name)) controlVerts.set(name, []);
     const list = controlVerts.get(name);
     list.push(...le1, ...le2, ...te2, ...le1, ...te2, ...te1);
+  };
+  const addControlSample = (name, a, b) => {
+    if (!controlSamples.has(name)) controlSamples.set(name, []);
+    controlSamples.get(name).push({
+      x: 0.5 * (Number(a?.[0] || 0) + Number(b?.[0] || 0)),
+      y: 0.5 * (Number(a?.[1] || 0) + Number(b?.[1] || 0)),
+      z: 0.5 * (Number(a?.[2] || 0) + Number(b?.[2] || 0)),
+    });
   };
 
   const addCamberLine = (section, ydup) => {
@@ -9342,16 +9383,19 @@ function buildSurfaceMesh(surface, color) {
       const h1 = transformSectionPoint(a, [hx1, a.yle, a.zle]);
       const h2 = transformSectionPoint(b, [hx2, b.yle, b.zle]);
       addControlQuad(ctrl.name, h1, h2, te2, te1);
+      addControlSample(ctrl.name, te1, te2);
       hingeSegments.push([h1, h2]);
       if (typeof surface.yduplicate === 'number') {
         const mirror = (p) => [p[0], 2 * surface.yduplicate - p[1], p[2]];
         const mh1 = mirror(h1);
         const mh2 = mirror(h2);
         addControlQuad(ctrl.name, mh1, mh2, mirror(te2), mirror(te1));
+        addControlSample(ctrl.name, mirror(te1), mirror(te2));
         hingeSegments.push([mh1, mh2]);
       }
     });
   }
+  group.userData.controlSamples = Object.fromEntries([...controlSamples.entries()].map(([name, samples]) => [name, samples.map((sample) => ({ ...sample }))]));
 
   const sectionProfiles = surface.sections.map((section) => buildSectionProfilePoints(section));
   for (let s = 0; s < sectionProfiles.length - 1; s += 1) {

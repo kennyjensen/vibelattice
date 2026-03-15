@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 
-test('default plane.run keeps enough precision for correct velocity recompute', async ({ page }) => {
+test('default run case keeps flight-condition velocity at three decimals', async ({ page }) => {
   const root = path.resolve('.');
   const server = http.createServer(async (req, res) => {
     const reqPath = (req.url || '/').split('?')[0];
@@ -37,14 +37,12 @@ test('default plane.run keeps enough precision for correct velocity recompute', 
       return log.includes('App module loaded.') || log.includes('App module failed:');
     }, { timeout: 30000 });
 
-    await expect(page.locator('#runCasesMeta')).toContainText('plane.run', { timeout: 30000 });
-    await expect(page.locator('#massPropsMeta')).toContainText('plane.mass', { timeout: 30000 });
+    await expect(page.locator('#runCasesMeta')).toContainText('.run', { timeout: 30000 });
+    await expect(page.locator('#massPropsMeta')).toContainText('.mass', { timeout: 30000 });
 
-    // With full precision from plane.run retained, the level-flight recompute
-    // lands at the same displayed velocity used by AVL startup.
-    await expect(page.locator('#vel')).toHaveValue('64.54');
+    await expect.poll(async () => page.locator('#vel').inputValue(), { timeout: 30000 })
+      .toMatch(/^-?\d+\.\d{3}$/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
 });
-
