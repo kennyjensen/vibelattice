@@ -31,6 +31,7 @@
         <div class="title">VibeLattice</div>
         <div class="title-sub">A vortex lattice method based on <a href="https://web.mit.edu/drela/Public/web/avl/" target="_blank" rel="noopener">AVL</a></div>
       </div>
+      <button id="docsBtn" class="btn" type="button" title="Open documentation">Docs</button>
       <div id="githubStarDesktop" class="github-star github-star-desktop">
         <a
           class="github-button"
@@ -162,6 +163,7 @@
               <input id="zcg" type="number" step="0.0001" />
             </label>
           </div>
+          <button id="toggleViscous" class="btn btn-sm" style="margin-top:6px;width:100%">Enable Viscous Drag</button>
         </div>
       </div>
 
@@ -643,5 +645,10 @@ rudder  1.0  0.0  0. 0. 0.  1
       .catch((err) => window.__debugLog?.(`App module failed: ${err?.message ?? err}`));
   </script>
   <script async defer src="https://buttons.github.io/buttons.js"></script>
+  <script>
+    document.getElementById('docsBtn').addEventListener('click', () => {
+      window.open('docs.html', 'vibelattice-docs', 'width=860,height=700,scrollbars=yes');
+    });
+  </script>
 </body>
 </html>

@@ -16,6 +16,39 @@ let THREE = null;
 let OrbitControls = null;
 let threeReady = false;
 
+/* ── localStorage persistence helpers ── */
+const LS_KEY_AVL_TEXT = 'vl_avl_text';
+const LS_KEY_AVL_NAME = 'vl_avl_name';
+const LS_KEY_MASS_TEXT = 'vl_mass_text';
+const LS_KEY_MASS_NAME = 'vl_mass_name';
+const LS_KEY_RUN_TEXT = 'vl_run_text';
+const LS_KEY_RUN_NAME = 'vl_run_name';
+
+function lsSave(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* quota exceeded or unavailable */ }
+}
+function lsLoad(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function saveAvlToStorage() {
+  if (uiState.text) {
+    lsSave(LS_KEY_AVL_TEXT, uiState.text);
+    lsSave(LS_KEY_AVL_NAME, uiState.filename || 'untitled.avl');
+  }
+}
+function saveMassToStorage() {
+  if (uiState.massFileText) {
+    lsSave(LS_KEY_MASS_TEXT, uiState.massFileText);
+    lsSave(LS_KEY_MASS_NAME, uiState.massPropsFilename || 'untitled.mass');
+  }
+}
+function saveRunToStorage() {
+  if (uiState.runCasesText) {
+    lsSave(LS_KEY_RUN_TEXT, uiState.runCasesText);
+    lsSave(LS_KEY_RUN_NAME, uiState.runCasesFilename || 'untitled.run');
+  }
+}
+
 const els = {
   fileInput: document.getElementById('fileInput'),
   saveBtn: document.getElementById('saveBtn'),
@@ -56,6 +89,7 @@ const els = {
   xcg: document.getElementById('xcg'),
   ycg: document.getElementById('ycg'),
   zcg: document.getElementById('zcg'),
+  toggleViscous: document.getElementById('toggleViscous'),
   trimBtn: document.getElementById('trimBtn'),
   useWasmExec: document.getElementById('useWasmExec'),
   appRoot: document.getElementById('appRoot'),
@@ -212,6 +246,7 @@ const uiState = {
   templateParams: [],
   resolvedText: '',
   templateParamSignature: '',
+  viscousEnabled: false,
 };
 
 const viewerState = {
@@ -4028,6 +4063,7 @@ async function handleFileLoad(file) {
   loadGeometryFromText(uiState.text, true, true);
   resetFlightCgToHeaderDefaults();
   resetTrimSeed();
+  saveAvlToStorage();
   logDebug(`Loaded file: ${file.name}`);
 }
 
@@ -4035,6 +4071,7 @@ async function loadRunCasesFromFile(file, source = 'Loaded') {
   const text = await readFileAsText(file);
   const parsed = parseRunsPayload(text);
   applyLoadedRunCases(parsed, file.name, source, text);
+  saveRunToStorage();
   logDebug(`${source} run cases: ${file.name}`);
 }
 
@@ -4042,6 +4079,7 @@ async function loadMassPropsFromFile(file, source = 'Loaded', options = {}) {
   const text = await readFileAsText(file);
   const props = parseMassFileText(text);
   applyLoadedMassProps(props, file.name, source, { ...options, rawText: text });
+  saveMassToStorage();
 }
 
 async function handleFileSelection(files) {
@@ -4134,6 +4172,20 @@ async function loadDefaultAVL() {
     syncFileEditorScroll();
     return;
   }
+  /* Try localStorage first */
+  const savedAvlText = lsLoad(LS_KEY_AVL_TEXT);
+  const savedAvlName = lsLoad(LS_KEY_AVL_NAME);
+  if (savedAvlText?.trim()) {
+    uiState.text = savedAvlText;
+    uiState.filename = savedAvlName || 'restored.avl';
+    uiState.sourceUrl = null;
+    updateEditorTabLabels();
+    applyEditorTab('avl');
+    setFileTextValue(savedAvlText);
+    if (els.fileMeta) els.fileMeta.textContent = `Restored: ${uiState.filename}`;
+    logDebug(`Restored AVL from localStorage: ${uiState.filename}`);
+    return;
+  }
   const defaultNames = ['supra.avl', 'plane.avl'];
   for (const defaultName of defaultNames) {
     const candidates = [
@@ -4177,6 +4229,35 @@ async function loadDefaultAVL() {
 }
 
 async function loadDefaultRunAndMass() {
+  /* Try localStorage first */
+  let restoredMass = false;
+  let restoredRun = false;
+  const savedMassText = lsLoad(LS_KEY_MASS_TEXT);
+  const savedMassName = lsLoad(LS_KEY_MASS_NAME);
+  if (savedMassText?.trim()) {
+    try {
+      const props = parseMassFileText(savedMassText);
+      applyLoadedMassProps(props, savedMassName || 'restored.mass', 'Restored', { applyMassInertiaOnly: true, rawText: savedMassText });
+      logDebug(`Restored mass from localStorage: ${savedMassName}`);
+      restoredMass = true;
+    } catch (err) {
+      logDebug(`Restore mass from localStorage failed: ${err?.message ?? err}`);
+    }
+  }
+  const savedRunText = lsLoad(LS_KEY_RUN_TEXT);
+  const savedRunName = lsLoad(LS_KEY_RUN_NAME);
+  if (savedRunText?.trim()) {
+    try {
+      const parsed = parseRunsPayload(savedRunText);
+      applyLoadedRunCases(parsed, savedRunName || 'restored.run', 'Restored', savedRunText);
+      logDebug(`Restored run cases from localStorage: ${savedRunName}`);
+      restoredRun = true;
+    } catch (err) {
+      logDebug(`Restore run cases from localStorage failed: ${err?.message ?? err}`);
+    }
+  }
+  if (restoredMass && restoredRun) return;
+  if (restoredMass) return; /* mass loaded; skip default search since mass drives the base selection */
   const defaultBases = ['supra', 'plane'];
   for (const base of defaultBases) {
     const massName = `${base}.mass`;
@@ -4316,6 +4397,7 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
       try {
         const props = parseMassFileText(massText);
         applyLoadedMassProps(props, massName, source, { applyMassInertiaOnly: true, rawText: massText });
+        saveMassToStorage();
         loadedMass = true;
       } catch (err) {
         if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${massName}`;
@@ -4335,6 +4417,7 @@ async function loadCompanionRunAndMassForAvl(avlFilename, source = 'Loaded') {
       try {
         const parsed = parseRunsPayload(runText);
         applyLoadedRunCases(parsed, runName, source, runText);
+        saveRunToStorage();
         logDebug(`${source} run cases: ${runName}`);
         loadedRun = true;
       } catch (err) {
@@ -4501,7 +4584,7 @@ els.massPropsInput?.addEventListener('change', async (evt) => {
       evt.target.value = '';
       if (!file) return;
       try {
-        await loadMassPropsFromFile(file, 'Loaded', { applyToActive: false });
+        await loadMassPropsFromFile(file, 'Loaded', { applyToActive: true });
       } catch (err) {
         if (els.massPropsMeta) els.massPropsMeta.textContent = `Failed to load ${file.name}`;
         logDebug(`Mass file load failed: ${err?.message ?? err}`);
@@ -4807,6 +4890,16 @@ els.mass?.addEventListener('input', () => {
   requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
 });
 
+els.toggleViscous?.addEventListener('click', () => {
+  const enabling = !uiState.viscousEnabled;
+  if (enabling) {
+    alert('Each airfoil section in the .avl file must specify a 6-coefficient polar: CL_min CD_min CL_ref CD_ref CL_max CD_max, for viscous drag to work correctly.');
+  }
+  uiState.viscousEnabled = enabling;
+  els.toggleViscous.textContent = enabling ? 'Disable Viscous Drag' : 'Enable Viscous Drag';
+  requestAutoUpdate(AUTO_UPDATE_STAGE.EXEC);
+});
+
 els.clLoop?.addEventListener('input', () => {
   updateFlightConditions('cl');
   requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
@@ -4836,6 +4929,7 @@ els.fileText.addEventListener('input', () => {
     clearTimeout(massFileUpdateTimer);
     massFileUpdateTimer = setTimeout(() => {
       applyEditedMassText(uiState.massFileText);
+      saveMassToStorage();
     }, 300);
     return;
   }
@@ -4844,6 +4938,7 @@ els.fileText.addEventListener('input', () => {
     clearTimeout(runFileUpdateTimer);
     runFileUpdateTimer = setTimeout(() => {
       applyEditedRunText(uiState.runCasesText);
+      saveRunToStorage();
     }, 300);
     return;
   }
@@ -4852,6 +4947,7 @@ els.fileText.addEventListener('input', () => {
   clearTimeout(fileUpdateTimer);
   fileUpdateTimer = setTimeout(() => {
     loadGeometryFromText(uiState.text, true, true);
+    saveAvlToStorage();
     requestAutoUpdate(
       AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN,
     );
@@ -7692,7 +7788,8 @@ function renderRequiredAirfoilFiles() {
     const name = document.createElement('div');
     name.className = 'airfoil-file-name';
     const displayName = airfoilDisplayNames.get(path);
-    name.textContent = displayName ? `${path} — ${displayName}` : path;
+    const tail = path.split(/[\\/]/).pop();
+    name.textContent = displayName ? `${tail} — ${displayName}` : tail;
 
     const statusEl = document.createElement('div');
     statusEl.className = 'airfoil-file-status';
@@ -11169,6 +11266,7 @@ function runExecFromText(text) {
   uiState.execSurfaceNames = buildExecSurfaceNames(model);
   const state = buildExecState(model);
   state.LNASA_SA = false;
+  state.LVISC = uiState.viscousEnabled;
   try {
     const rows = readConstraintRows();
     if (rows.length) {
