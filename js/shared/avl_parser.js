@@ -76,6 +76,27 @@ function parseControlLine(raw, readNextLine) {
   };
 }
 
+function parseCdclLine(trimmedLine, readNextLine) {
+  const inline = parseNumbers(trimmedLine.slice(4));
+  const vals = inline.length >= 6 ? inline : parseNumbers(readNextLine() || '');
+  if (vals.length < 6) return null;
+  const lmax = vals[0] > vals[2]
+    ? (vals[0] > vals[4] ? 0 : 2)
+    : (vals[2] > vals[4] ? 1 : 2);
+  const lmin = vals[0] < vals[2]
+    ? (vals[0] < vals[4] ? 0 : 2)
+    : (vals[2] < vals[4] ? 1 : 2);
+  const lmid = 3 - (lmin + lmax);
+  return [
+    vals[lmin * 2],
+    vals[(lmin * 2) + 1],
+    vals[lmid * 2],
+    vals[(lmid * 2) + 1],
+    vals[lmax * 2],
+    vals[(lmax * 2) + 1],
+  ];
+}
+
 function parseAirfoilBlock(lines, indexRef) {
   const coords = [];
   while (indexRef.i < lines.length) {
@@ -234,6 +255,7 @@ export function parseAVL(text) {
       angleDeg: 0.0,
       component: 0,
       lvalbe: true,
+      cdcl: null,
     };
 
     let currentSection = null;
@@ -289,9 +311,15 @@ export function parseAVL(text) {
             naca: null,
             airfoilFile: null,
             airfoilCoords: null,
+            cdcl: Array.isArray(surface.cdcl) ? surface.cdcl.slice() : null,
           };
           surface.sections.push(currentSection);
         }
+      } else if (subkey === 'CDCL') {
+        const cdcl = parseCdclLine(trimmed, nextLine);
+        if (!cdcl) continue;
+        if (currentSection) currentSection.cdcl = cdcl.slice();
+        else surface.cdcl = cdcl.slice();
       } else if (subkey === 'NACA') {
         if (!currentSection) continue;
         const code = stripInlineComment(trimmed.slice(4)).trim() || (nextLine() || '');

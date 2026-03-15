@@ -55,6 +55,9 @@ export function MAKESURF(state, isurf, surf) {
   const TASEC = surf.sections.map((s) => s.airfoilCamber?.t ?? []);
 
   const CLAF = surf.sections.map((s) => s.claf ?? 1.0);
+  const CLCDSEC = surf.sections.map((s) => (Array.isArray(s.cdcl) && s.cdcl.length >= 6
+    ? s.cdcl.slice(0, 6).map((v) => f32(Number(v) || 0))
+    : [0, 0, 0, 0, 0, 0]));
 
   // Per-section control declarations
   const NSCON = surf.sections.map((s) => s.controls.length);
@@ -473,7 +476,11 @@ export function MAKESURF(state, isurf, surf) {
           DCONTROL[idx2(i, n, state.NVMAX + 1)] = f32(gainda * (fract - fracl));
         }
 
-        LVISCSTRP[j] = false;
+        for (let l = 1; l <= 6; l += 1) {
+          CLCD[(j * 6) + (l - 1)] = f32((1.0 - fc) * CLCDSEC[isec - 1][l - 1]
+            + fc * CLCDSEC[isec][l - 1]);
+        }
+        LVISCSTRP[j] = CLCD[(j * 6) + 3] !== 0.0;
       }
     }
   }
@@ -540,7 +547,7 @@ export function SDUPL(state, baseSurf, ydup, newSurf) {
     }
 
     for (let l = 1; l <= 6; l += 1) {
-      state.CLCD[idx2(l, jji, 6)] = state.CLCD[idx2(l, jj, 6)];
+      state.CLCD[(jji * 6) + (l - 1)] = state.CLCD[(jj * 6) + (l - 1)];
     }
     state.LVISCSTRP[jji] = state.LVISCSTRP[jj];
 

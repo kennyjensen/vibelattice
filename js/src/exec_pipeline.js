@@ -297,6 +297,9 @@ export function applyYDuplicate(model) {
 }
 
 export function buildExecState(model, options = {}) {
+  const hasCdcl = Array.isArray(model?.surfaces)
+    && model.surfaces.some((surf) => Array.isArray(surf?.sections)
+      && surf.sections.some((sec) => Array.isArray(sec?.cdcl) && sec.cdcl.length >= 6 && Number(sec.cdcl[3]) !== 0));
   const unitlOpt = Number(options.unitl);
   const unitlUse = Number.isFinite(unitlOpt) && unitlOpt > 0 ? unitlOpt : 1.0;
   const defaults = {
@@ -464,7 +467,7 @@ export function buildExecState(model, options = {}) {
     LSEN: false,
     LOBAIC: false,
     LOBVEL: false,
-    LVISC: false,
+    LVISC: hasCdcl,
     LBFORCE: false,
     LTRFORCE: false,
     LNFLD_WV: false,

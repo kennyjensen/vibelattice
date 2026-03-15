@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -18,6 +19,13 @@ async function acquireLock(lockPath, timeoutMs = 300000) {
 }
 
 export async function ensureRefBuilt(target, refDir) {
+  const targetPath = path.join(refDir, target);
+  try {
+    await fs.access(targetPath, fsConstants.X_OK);
+    return;
+  } catch {
+    // Fall through and build if the binary is not already available.
+  }
   const lockPath = path.join(refDir, '.ref_build.lock');
   const lockHandle = await acquireLock(lockPath);
   try {

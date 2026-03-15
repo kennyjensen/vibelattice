@@ -250,6 +250,7 @@ let trimRequestId = 0;
 let execRequestId = 0;
 let execRerunPending = false;
 let trimRerunPending = false;
+let solverContextVersion = 0;
 let suspendAutoTrim = false;
 const AUTO_UPDATE_STAGE = {
   AIRCRAFT: 1 << 0,
@@ -315,6 +316,9 @@ function runAutoUpdatePipeline() {
 
 function requestAutoUpdate(mask, { delayMs = 120, immediate = false } = {}) {
   if (!mask) return;
+  if (mask & (AUTO_UPDATE_STAGE.AIRCRAFT | AUTO_UPDATE_STAGE.FLIGHT | AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC)) {
+    solverContextVersion += 1;
+  }
   autoUpdateMask |= mask;
   if (immediate) {
     if (autoUpdateTimer) {
@@ -2060,8 +2064,12 @@ function ensureExecWorker() {
       trimInProgress = false;
       updateTrefftzBusy();
       try {
-        applyTrimResults(msg.state);
-        lastTrimState = extractTrimSeed(msg.state);
+        if (msg.contextVersion === solverContextVersion) {
+          applyTrimResults(msg.state);
+          lastTrimState = extractTrimSeed(msg.state);
+        } else {
+          logDebug(`Ignoring stale trim result (context ${msg.contextVersion} != ${solverContextVersion}).`);
+        }
       } catch (err) {
         logDebug(`Trim apply failed: ${err?.message ?? err}`);
       }
@@ -2080,7 +2088,11 @@ function ensureExecWorker() {
         execTimeoutId = null;
       }
       try {
-        applyExecResults(msg);
+        if (msg.contextVersion === solverContextVersion) {
+          applyExecResults(msg);
+        } else {
+          logDebug(`Ignoring stale EXEC result (context ${msg.contextVersion} != ${solverContextVersion}).`);
+        }
       } catch (err) {
         logDebug(`EXEC apply failed: ${err?.message ?? err}`);
       }
@@ -4986,14 +4998,17 @@ function applyTrim({ useSeed = true } = {}) {
     }
   }
   const worker = ensureExecWorker();
+  const contextVersion = solverContextVersion;
   if (!worker) {
     try {
       const IR = 1;
       TRMSET_CORE(state, 1, IR, IR, IR);
       trimInProgress = false;
       updateTrefftzBusy();
-      applyTrimResults(state);
-      lastTrimState = extractTrimSeed(state);
+      if (contextVersion === solverContextVersion) {
+        applyTrimResults(state);
+        lastTrimState = extractTrimSeed(state);
+      }
     } catch (err) {
       logDebug(`Trim setup failed: ${err?.message ?? err}`);
       trimInProgress = false;
@@ -5001,7 +5016,7 @@ function applyTrim({ useSeed = true } = {}) {
     }
     return;
   }
-  worker.postMessage({ type: 'trim', state, requestId: trimRequestId });
+  worker.postMessage({ type: 'trim', state, requestId: trimRequestId, contextVersion });
 }
 
 function applyTrimResults(state) {
@@ -10546,6 +10561,9 @@ function loadGeometryFromText(text, shouldFit = true, clearOutputs = false) {
 }
 
 function buildExecState(model) {
+  const hasCdcl = Array.isArray(model?.surfaces)
+    && model.surfaces.some((surf) => Array.isArray(surf?.sections)
+      && surf.sections.some((sec) => Array.isArray(sec?.cdcl) && sec.cdcl.length >= 6 && Number(sec.cdcl[3]) !== 0));
   const unitlMassFile = Number(uiState.massFileProps?.lunitScale);
   const unitlMass = Number(uiState.massProps?.lunitScale);
   const unitlUse = (Number.isFinite(unitlMassFile) && unitlMassFile > 0)
@@ -10704,7 +10722,7 @@ function buildExecState(model) {
     LSEN: false,
     LOBAIC: false,
     LOBVEL: false,
-    LVISC: false,
+    LVISC: hasCdcl,
     LBFORCE: false,
     LTRFORCE: false,
     LNFLD_WV: false,
@@ -11283,10 +11301,11 @@ function runExecFromText(text) {
 
   execRequestId += 1;
   const useWasm = Boolean(els.useWasmExec?.checked);
+  const contextVersion = solverContextVersion;
   if (useWasm) {
     logDebug('EXEC wasm toggle enabled; using wasm-enabled kernels.');
   }
-  worker.postMessage({ state, requestId: execRequestId, useWasm });
+  worker.postMessage({ state, requestId: execRequestId, useWasm, contextVersion });
   const dt = performance.now() - t0;
   logDebug(`EXEC dispatched (${fmt(dt, 1)} ms)`);
 }

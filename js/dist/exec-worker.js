@@ -401,9 +401,16 @@ function log(message) {
 }
 
 onmessage = async (evt) => {
-  const { state, type, requestId, useWasm } = evt.data || {};
+  const {
+    state, type, requestId, useWasm, contextVersion,
+  } = evt.data || {};
   if (!state) {
-    postMessage({ type: 'error', message: 'Missing state.', requestId });
+    postMessage({
+      type: 'error',
+      message: 'Missing state.',
+      requestId,
+      contextVersion,
+    });
     return;
   }
   // Preserve caller-selected axis convention (standard AVL axes default false).
@@ -412,9 +419,19 @@ onmessage = async (evt) => {
     try {
       const IR = 1;
       TRMSET_CORE(state, 1, IR, IR, IR);
-      postMessage({ type: 'trimResult', state, requestId });
+      postMessage({
+        type: 'trimResult',
+        state,
+        requestId,
+        contextVersion,
+      });
     } catch (err) {
-      postMessage({ type: 'error', message: err?.message ?? String(err), requestId });
+      postMessage({
+        type: 'error',
+        message: err?.message ?? String(err),
+        requestId,
+        contextVersion,
+      });
     }
     return;
   }
@@ -552,6 +569,7 @@ onmessage = async (evt) => {
     postMessage({
       type: 'result',
       requestId,
+      contextVersion,
       SREF: state.SREF,
       CREF: state.CREF,
       BREF: state.BREF,
@@ -643,6 +661,11 @@ onmessage = async (evt) => {
       EIGEN: eigen,
     });
   } catch (err) {
-    postMessage({ type: 'error', message: err?.message ?? String(err), requestId });
+    postMessage({
+      type: 'error',
+      message: err?.message ?? String(err),
+      requestId,
+      contextVersion,
+    });
   }
 };
