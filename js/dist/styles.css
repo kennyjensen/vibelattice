@@ -924,6 +924,21 @@ textarea.code {
   touch-action: none;
 }
 
+.eigen-status {
+  position: absolute;
+  top: 34px;
+  left: 52px;
+  z-index: 4;
+  max-width: min(620px, calc(100% - 104px));
+  color: #fbbf24;
+  font: 12px/1.45 Consolas, "Courier New", monospace;
+  pointer-events: none;
+}
+
+.eigen-status[hidden] {
+  display: none;
+}
+
 .eigen-plot.pan-enabled {
   cursor: grab;
 }
