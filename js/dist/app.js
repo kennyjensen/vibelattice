@@ -73,6 +73,7 @@ const els = {
   viewer: document.getElementById('viewer'),
   viewerAircraftName: document.getElementById('viewerAircraftName'),
   trefftz: document.getElementById('trefftz'),
+  eigenStatus: document.getElementById('eigenStatus'),
   eigenPlot: document.getElementById('eigenPlot'),
   eigenHome: document.getElementById('eigenHome'),
   eigenZoomIn: document.getElementById('eigenZoomIn'),
@@ -190,6 +191,7 @@ const uiState = {
   testControlDeflections: null,
   eigenModes: [],
   eigenModesByRunCase: {},
+  eigenStatusMessage: '',
   selectedEigenMode: -1,
   eigenPoints: [],
   eigenZoom: 1,
@@ -2716,6 +2718,7 @@ function activeRunCaseEntry() {
 function clearEigenModeRunCaseCache() {
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
+  uiState.eigenStatusMessage = '';
   uiState.selectedEigenMode = -1;
   stopModeAnimation();
   drawEigenPlot();
@@ -3179,6 +3182,7 @@ function renderRunCasesList() {
       uiState.runCases.splice(idx, 1);
       uiState.eigenModesByRunCase = {};
       uiState.eigenModes = [];
+      uiState.eigenStatusMessage = '';
       uiState.selectedEigenMode = -1;
       stopModeAnimation();
       if (!uiState.runCases.length) {
@@ -3503,6 +3507,7 @@ function parseRunsPayload(text) {
 function applyLoadedRunCases(parsed, filename, source = 'Loaded', rawText = '') {
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
+  uiState.eigenStatusMessage = '';
   uiState.selectedEigenMode = -1;
   stopModeAnimation();
   uiState.runCases = parsed.cases;
@@ -3592,6 +3597,7 @@ function resetAuxPanelsForNewAvl() {
   updateRunCasesMeta();
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
+  uiState.eigenStatusMessage = '';
   uiState.selectedEigenMode = -1;
   stopModeAnimation();
   drawEigenPlot();
@@ -4487,6 +4493,7 @@ els.runCaseAddBtn?.addEventListener('click', () => {
   uiState.runCases.push(created);
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
+  uiState.eigenStatusMessage = '';
   uiState.selectedEigenMode = -1;
   stopModeAnimation();
   uiState.selectedRunCaseIndex = uiState.runCases.length - 1;
@@ -5860,6 +5867,7 @@ if (typeof window !== 'undefined') {
     },
     setEigenModes(modes) {
       uiState.eigenModes = Array.isArray(modes) ? modes : [];
+      setEigenStatusMessage('');
       uiState.selectedEigenMode = -1;
       uiState.eigenZoom = 1;
       uiState.eigenCenterRe = 0;
@@ -5890,6 +5898,9 @@ if (typeof window !== 'undefined') {
     },
     getEigenViewport() {
       return uiState.eigenViewport ? { ...uiState.eigenViewport } : null;
+    },
+    getEigenStatusMessage() {
+      return String(uiState.eigenStatusMessage || '');
     },
     getRunCases() {
       return Array.isArray(uiState.runCases)
@@ -6858,6 +6869,44 @@ function computeEigenModesFromExec(result) {
   return [];
 }
 
+function eigenStatusMessageFromExec(result, modes = []) {
+  if (Array.isArray(modes) && modes.length) return '';
+  const raw = String(result?.EIGEN?.message || '').trim();
+  return raw || '';
+}
+
+function setEigenStatusMessage(message = '') {
+  const text = String(message || '').trim();
+  uiState.eigenStatusMessage = text;
+  if (els.eigenStatus) {
+    els.eigenStatus.textContent = text;
+    els.eigenStatus.hidden = !text;
+  }
+  if (els.eigenPlot) {
+    const label = text || 'Eigenmode plot';
+    els.eigenPlot.dataset.emptyMessage = text;
+    els.eigenPlot.setAttribute('aria-label', label);
+  }
+}
+
+function drawPlotMessage(ctx, text, x, y, maxWidth, lineHeight = 17) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  if (!words.length) return;
+  let line = '';
+  let lineNo = 0;
+  words.forEach((word) => {
+    const next = line ? `${line} ${word}` : word;
+    if (line && ctx.measureText(next).width > maxWidth) {
+      ctx.fillText(line, x, y + lineNo * lineHeight);
+      line = word;
+      lineNo += 1;
+    } else {
+      line = next;
+    }
+  });
+  if (line) ctx.fillText(line, x, y + lineNo * lineHeight);
+}
+
 function drawEigenPlot() {
   const canvas = els.eigenPlot;
   if (!canvas?.getContext) return;
@@ -6888,11 +6937,16 @@ function drawEigenPlot() {
   if (!modes.length) {
     uiState.eigenPoints = [];
     uiState.eigenViewport = null;
-    ctx.fillStyle = '#8ea2b8';
-    ctx.font = '12px Consolas, "Courier New", monospace';
-    ctx.fillText('No eigenmodes available yet. Run trim/EXEC first.', x0 + 8, y0 + 18);
+    const message = uiState.eigenStatusMessage || 'No eigenmodes available yet. Run trim/EXEC first.';
+    setEigenStatusMessage(message);
+    if (!els.eigenStatus) {
+      ctx.fillStyle = '#8ea2b8';
+      ctx.font = '12px Consolas, "Courier New", monospace';
+      drawPlotMessage(ctx, message, x0 + 8, y0 + 18, Math.max(120, pw - 16));
+    }
     return;
   }
+  setEigenStatusMessage('');
 
   let maxRe = 0.2;
   let maxIm = 0.2;
@@ -11574,6 +11628,7 @@ function applyExecResults(result) {
     ? (result.LNASA_SA ? -1.0 : 1.0)
     : -1.0;
   const computedEigenModes = computeEigenModesFromExec(result);
+  const eigenStatusMessage = eigenStatusMessageFromExec(result, computedEigenModes);
   const activeCaseIdx = activeRunCaseIndex();
   if (activeCaseIdx >= 0 && Array.isArray(uiState.runCases) && uiState.runCases.length) {
     if (!uiState.eigenModesByRunCase || typeof uiState.eigenModesByRunCase !== 'object') {
@@ -11591,6 +11646,7 @@ function applyExecResults(result) {
     uiState.eigenModesByRunCase = {};
     uiState.eigenModes = computedEigenModes.map((m) => ({ ...m, runCaseIndex: -1 }));
   }
+  setEigenStatusMessage(uiState.eigenModes.length ? '' : eigenStatusMessage);
   if (uiState.selectedEigenMode >= uiState.eigenModes.length) {
     uiState.selectedEigenMode = -1;
   }
