@@ -894,6 +894,53 @@ textarea.code {
   color: #22d3ee;
 }
 
+.viewer-overlay .viewer-btn[data-tooltip]::after,
+.viewer-overlay-bottom .viewer-btn[data-tooltip]::after,
+.eigen-overlay .viewer-btn[data-tooltip]::after {
+  position: absolute;
+  z-index: 40;
+  width: max-content;
+  max-width: 220px;
+  padding: 5px 7px;
+  border: 1px solid rgba(125, 211, 252, 0.38);
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.96);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color: #e5f4ff;
+  content: attr(data-tooltip);
+  font: 600 11px/1.2 Consolas, "Courier New", monospace;
+  letter-spacing: 0;
+  opacity: 0;
+  pointer-events: none;
+  text-transform: none;
+  transition: none;
+  visibility: hidden;
+  white-space: normal;
+}
+
+.viewer-overlay .viewer-btn[data-tooltip]::after,
+.eigen-overlay .viewer-btn[data-tooltip]::after {
+  top: 50%;
+  right: calc(100% + 8px);
+  transform: translateY(-50%);
+}
+
+.viewer-overlay-bottom .viewer-btn[data-tooltip]::after {
+  left: 0;
+  bottom: calc(100% + 8px);
+  transform: none;
+}
+
+.viewer-overlay .viewer-btn[data-tooltip]:hover::after,
+.viewer-overlay .viewer-btn[data-tooltip]:focus-visible::after,
+.viewer-overlay-bottom .viewer-btn[data-tooltip]:hover::after,
+.viewer-overlay-bottom .viewer-btn[data-tooltip]:focus-visible::after,
+.eigen-overlay .viewer-btn[data-tooltip]:hover::after,
+.eigen-overlay .viewer-btn[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+
 .plot {
   width: 100%;
   height: clamp(200px, 30vh, 320px);
@@ -922,6 +969,21 @@ textarea.code {
   position: relative;
   display: block;
   touch-action: none;
+}
+
+.eigen-status {
+  position: absolute;
+  top: 34px;
+  left: 52px;
+  z-index: 4;
+  max-width: min(620px, calc(100% - 104px));
+  color: #fbbf24;
+  font: 12px/1.45 Consolas, "Courier New", monospace;
+  pointer-events: none;
+}
+
+.eigen-status[hidden] {
+  display: none;
 }
 
 .eigen-plot.pan-enabled {
@@ -981,10 +1043,10 @@ textarea.code {
   right: 6px;
   background: transparent;
   border-radius: 8px;
-  padding: 4px 6px;
+  padding: 5px 7px;
   display: grid;
-  gap: 0;
-  font: 16px Consolas, "Courier New", monospace;
+  gap: 2px;
+  font: 20px Consolas, "Courier New", monospace;
   color: #9aa8b7;
 }
 
@@ -1083,10 +1145,10 @@ textarea.code {
 .trefftz-legend-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin: -0.5em 0 0 0;
+  gap: 6px;
+  margin: -0.35em 0 0 0;
   padding: 0;
-  line-height: 1;
+  line-height: 1.05;
 }
 
 .trefftz-legend-item:first-child {
@@ -1094,9 +1156,9 @@ textarea.code {
 }
 
 .trefftz-legend-item .swatch.line {
-  width: 14px;
-  height: 10px;
-  stroke-width: 1.2;
+  width: 18px;
+  height: 12px;
+  stroke-width: 1.6;
   fill: none;
   flex: 0 0 auto;
 }
