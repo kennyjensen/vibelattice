@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { chromium } from 'playwright';
-import { startAppServer } from './helpers/app_test_harness.js';
+import { loadExampleAndWait, startAppServer } from './helpers/app_test_harness.js';
 
 test('viewer mass-point toggle renders markers, labels, and hover tooltip', async () => {
   const app = await startAppServer();
@@ -8,7 +8,8 @@ test('viewer mass-point toggle renders markers, labels, and hover tooltip', asyn
   const page = await browser.newPage();
 
   try {
-    await page.goto(`${app.baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
+    await loadExampleAndWait(page, app.baseUrl, 'supra.avl');
+    await expect(page.locator('#fileMeta')).toContainText('supra.avl', { timeout: 30000 });
     await page.waitForFunction(() => Boolean(window.__trefftzTestHook?.getMassPointVisualState), null, { timeout: 30000 });
     await expect(page.locator('#massPropsMeta')).toContainText('supra.mass', { timeout: 30000 });
     await expect(page.locator('#viewerMassPoints')).toBeVisible();

@@ -835,6 +835,10 @@ textarea.code {
   background: var(--panel);
 }
 
+.stage-geo .viewer.quad-view {
+  height: clamp(480px, 88vh, 920px);
+}
+
 .viewer-aircraft-name {
   position: absolute;
   top: 12px;
@@ -876,6 +880,70 @@ textarea.code {
   flex-direction: row;
   gap: 8px;
   z-index: 5;
+}
+
+.viewer-quad-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.viewer-quad-overlay[hidden] {
+  display: none !important;
+}
+
+.viewer-quad-overlay::before,
+.viewer-quad-overlay::after {
+  content: "";
+  position: absolute;
+  background: rgba(125, 211, 252, 0.22);
+}
+
+.viewer-quad-overlay::before {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+}
+
+.viewer-quad-overlay::after {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+}
+
+.viewer-quad-label {
+  position: absolute;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  background: rgba(2, 6, 23, 0.72);
+  color: #dbeafe;
+  font: 700 11px/1.2 Consolas, "Courier New", monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.viewer-quad-label-top {
+  top: calc(50% + 10px);
+  left: 12px;
+}
+
+.viewer-quad-label-side {
+  top: 42px;
+  left: 12px;
+}
+
+.viewer-quad-label-front {
+  top: 10px;
+  left: calc(50% + 12px);
+}
+
+.viewer-quad-label-iso {
+  top: calc(50% + 10px);
+  left: calc(50% + 12px);
 }
 
 .eigen-overlay {

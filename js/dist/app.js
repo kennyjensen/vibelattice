@@ -126,6 +126,8 @@ const els = {
   viewerZoomIn: document.getElementById('viewerZoomIn'),
   viewerZoomOut: document.getElementById('viewerZoomOut'),
   viewerHome: document.getElementById('viewerHome'),
+  viewerProjection: document.getElementById('viewerProjection'),
+  viewerQuad: document.getElementById('viewerQuad'),
   viewerView: document.getElementById('viewerView'),
   viewerGrid: document.getElementById('viewerGrid'),
   viewerText: document.getElementById('viewerText'),
@@ -137,6 +139,7 @@ const els = {
   viewerPanelSpacing: document.getElementById('viewerPanelSpacing'),
   viewerVortices: document.getElementById('viewerVortices'),
   viewerFlow: document.getElementById('viewerFlow'),
+  viewerQuadOverlay: document.getElementById('viewerQuadOverlay'),
   constraintRows: [],
   constraintTable: document.getElementById('constraintTable'),
   runCasesInput: document.getElementById('runCasesInput'),
@@ -225,12 +228,21 @@ const uiState = {
 
 const viewerState = {
   mode: 'rotate',
-  viewModes: ['top', 'forward', 'side'],
-  viewIndex: 2,
+  projectionMode: 'perspective',
+  layoutMode: 'single',
+  viewModes: ['top', 'forward', 'side', 'iso'],
+  viewIndex: 3,
   gridModes: ['xy', 'yz', 'xz', 'none'],
   gridIndex: 0,
   bounds: null,
   fitDistance: 12,
+  orthoFrustumHeight: 12,
+  quadPaneViews: {
+    top: { offsetX: 0, offsetY: 0, zoom: 1 },
+    side: { offsetX: 0, offsetY: 0, zoom: 1 },
+    front: { offsetX: 0, offsetY: 0, zoom: 1 },
+  },
+  quadThreeView: { zoom: 1 },
 };
 
 const FLOW_FIELD_MODES = ['induced', 'induced+rotation', 'full'];
@@ -238,7 +250,16 @@ const VIEW_MODE_LABELS = {
   top: 'Top (down)',
   forward: 'Forward (aft)',
   side: 'Side (Y axis)',
+  iso: 'Isometric',
 };
+const VIEWER_QUAD_PANES = [
+  { id: 'side', label: 'Side', mode: 'side-left', col: 0, row: 0 },
+  { id: 'front', label: 'Front', mode: 'front', col: 1, row: 0 },
+  { id: 'top', label: 'Top', mode: 'top', col: 0, row: 1 },
+  { id: 'iso', label: 'Iso', mode: 'iso', col: 1, row: 1 },
+];
+const VIEWER_QUAD_LAYOUT_MODES = ['single', 'quad-fit', 'quad-scale'];
+const VIEWER_QUAD_INTERACTIVE_PANES = new Set(['top', 'side', 'front']);
 
 let execInProgress = false;
 let trefftzPlot = null;
@@ -5485,25 +5506,19 @@ els.viewerPan?.addEventListener('click', () => {
   setControlMode('pan');
 });
 els.viewerZoomIn?.addEventListener('click', () => {
-  if (!controls) return;
-  if (typeof controls.dollyIn === 'function') {
-    controls.dollyIn(1.2);
-  } else if (camera) {
-    camera.position.multiplyScalar(0.9);
-  }
-  controls.update();
+  zoomViewerBy(1.2);
 });
 els.viewerZoomOut?.addEventListener('click', () => {
-  if (!controls) return;
-  if (typeof controls.dollyOut === 'function') {
-    controls.dollyOut(1.2);
-  } else if (camera) {
-    camera.position.multiplyScalar(1.1);
-  }
-  controls.update();
+  zoomViewerBy(1 / 1.2);
 });
 els.viewerHome?.addEventListener('click', () => {
   fitCameraToObject(aircraft);
+});
+els.viewerProjection?.addEventListener('click', () => {
+  toggleViewerProjectionMode();
+});
+els.viewerQuad?.addEventListener('click', () => {
+  toggleViewerQuadMode();
 });
 els.eigenHome?.addEventListener('click', () => {
   resetEigenViewport();
@@ -7450,6 +7465,16 @@ if (typeof window !== 'undefined') {
       return {
         mode,
         label: mode ? (VIEW_MODE_LABELS[mode] || mode) : null,
+        layoutMode: activeViewerQuadLayoutMode(),
+        quadEnabled: isViewerQuadMode(),
+        projectionMode: activeProjectionMode(),
+        cameraType: camera?.isOrthographicCamera ? 'OrthographicCamera' : (camera?.isPerspectiveCamera ? 'PerspectiveCamera' : null),
+        cameraZoom: Number.isFinite(Number(camera?.zoom)) ? Number(camera.zoom) : null,
+        controlsTarget: controls?.target ? {
+          x: Number(controls.target.x) || 0,
+          y: Number(controls.target.y) || 0,
+          z: Number(controls.target.z) || 0,
+        } : null,
         cameraPosition: camera ? {
           x: Number(camera.position?.x) || 0,
           y: Number(camera.position?.y) || 0,
@@ -7460,6 +7485,39 @@ if (typeof window !== 'undefined') {
           y: Number(camera.up?.y) || 0,
           z: Number(camera.up?.z) || 0,
         } : null,
+        quadPanes: getViewerQuadPaneStates(),
+      };
+    },
+    getViewerQuadState() {
+      return {
+        layoutMode: activeViewerQuadLayoutMode(),
+        enabled: isViewerQuadMode(),
+        projectionMode: activeProjectionMode(),
+        viewerClass: els.viewer?.className || '',
+        overlayHidden: Boolean(els.viewerQuadOverlay?.hidden),
+        paneLabels: VIEWER_QUAD_PANES.map((pane) => pane.label),
+        panes: getViewerQuadPaneStates(),
+      };
+    },
+    getViewerMouseControlState() {
+      const mouse = controls?.mouseButtons || {};
+      return {
+        mode: viewerState.mode,
+        left: viewerMouseActionName(mouse.LEFT),
+        middle: viewerMouseActionName(mouse.MIDDLE),
+        right: viewerMouseActionName(mouse.RIGHT),
+      };
+    },
+    getViewerFitState() {
+      const bounds = viewerState.bounds || (aircraft ? computeBounds(aircraft, { excludeViewerOverlays: true }) : null);
+      const cameraDistance = camera
+        ? Math.hypot(Number(camera.position?.x) || 0, Number(camera.position?.y) || 0, Number(camera.position?.z) || 0)
+        : null;
+      return {
+        fitDistance: Number.isFinite(Number(viewerState.fitDistance)) ? Number(viewerState.fitDistance) : null,
+        orthoFrustumHeight: Number.isFinite(Number(viewerState.orthoFrustumHeight)) ? Number(viewerState.orthoFrustumHeight) : null,
+        cameraDistance: Number.isFinite(Number(cameraDistance)) ? Number(cameraDistance) : null,
+        boundsMaxDim: Number.isFinite(Number(bounds?.maxDim)) ? Number(bounds.maxDim) : null,
       };
     },
     getTemplateParams() {
@@ -10745,7 +10803,7 @@ function rebuildAuxOverlays(bounds = null) {
   const vortexData = buildVortexData(uiState.displayModel);
   latestVortexData = vortexData;
   vortexGroup = buildVortexGroup(vortexData);
-  const effectiveBounds = bounds || computeBounds(aircraft);
+  const effectiveBounds = bounds || computeBounds(aircraft, { excludeViewerOverlays: true });
   const flowOffset = {
     x: Number(aircraft.position?.x) || 0,
     y: Number(aircraft.position?.y) || 0,
@@ -11517,8 +11575,8 @@ function addReferenceMarker(target, header, maxDim) {
   const yref = Number(header.yref);
   const zref = Number(header.zref);
   if (!Number.isFinite(xref) || !Number.isFinite(yref) || !Number.isFinite(zref)) return;
-  const size = Number.isFinite(maxDim) && maxDim > 0 ? maxDim : 1.0;
-  const radius = Math.max(0.03, Math.min(0.22, size * 0.012));
+  const size = getOverlayReferenceSize(maxDim);
+  const radius = clampNumber(size * 0.018, 0.006, 0.16);
 
   const geom = new THREE.SphereGeometry(radius, 20, 14);
   const mat = new THREE.MeshStandardMaterial({
@@ -11531,6 +11589,9 @@ function addReferenceMarker(target, header, maxDim) {
   const marker = new THREE.Mesh(geom, mat);
   marker.name = 'reference-marker';
   marker.renderOrder = 4;
+  marker.userData.referenceMarker = true;
+  marker.userData.radius = radius;
+  marker.userData.referenceSize = size;
   // Marker is attached to aircraft local space; aircraft translation already recenters the model.
   marker.position.set(xref, yref, zref);
   target.add(marker);
@@ -11552,11 +11613,14 @@ function rebuildAircraftVisual(shouldFit = false) {
     if (obj?.userData?.renderKind === 'wire' && !obj?.userData?.surfaceLabel) surfaceWireObjects.push(obj);
   });
   updateBank(Number(els.bank.value));
-  const bounds = computeBounds(aircraft);
+  const bounds = computeBounds(aircraft, { excludeViewerOverlays: true });
   if (bounds) {
     aircraft.position.sub(bounds.center);
     viewerState.bounds = bounds;
-    viewerState.fitDistance = bounds.maxDim * 1.6 + 4.0;
+    viewerState.fitDistance = fitDistanceForBounds(bounds);
+    viewerState.orthoFrustumHeight = orthographicHeightForBounds(bounds);
+    updateOrthographicFrustum();
+    applySurfaceLabelScales(aircraft, bounds.maxDim);
     addReferenceMarker(aircraft, uiState.modelHeader, bounds.maxDim);
     if (shouldFit) {
       rebuildGrid(bounds.maxDim);
@@ -11564,6 +11628,7 @@ function rebuildAircraftVisual(shouldFit = false) {
       updateAxesOriginAnchor();
     }
   } else {
+    applySurfaceLabelScales(aircraft, null);
     addReferenceMarker(aircraft, uiState.modelHeader, null);
   }
   updateAxesOriginAnchor();
@@ -11576,9 +11641,15 @@ function rebuildAircraftVisual(shouldFit = false) {
 
 let scene;
 let camera;
+let perspectiveCamera;
+let orthographicCamera;
+let quadPerspectiveCameras = null;
+let quadOrthographicCameras = null;
 let renderer;
 let controls;
 let aircraft;
+let viewerMiddleZDrag = null;
+let viewerQuadPaneDrag = null;
 let gridHelper;
 let axesHelper;
 let surfaceSkinMeshes = [];
@@ -11716,9 +11787,32 @@ function updateMassPointHover(clientX, clientY) {
     clearMassPointHover();
     return;
   }
-  massPointPointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-  massPointPointer.y = -(((clientY - rect.top) / rect.height) * 2 - 1);
-  massPointRaycaster.setFromCamera(massPointPointer, camera);
+  let hoverCamera = camera;
+  let paneRect = { x: 0, cssY: 0, width: rect.width, height: rect.height };
+  if (isViewerQuadMode()) {
+    const panes = viewerQuadPaneRects(rect.width, rect.height);
+    const localX = Number(clientX) - rect.left;
+    const localY = Number(clientY) - rect.top;
+    const pane = panes.find((candidate) => (
+      localX >= candidate.x
+      && localX <= candidate.x + candidate.width
+      && localY >= candidate.cssY
+      && localY <= candidate.cssY + candidate.height
+    )) || null;
+    if (!pane) {
+      clearMassPointHover();
+      return;
+    }
+    hoverCamera = configureViewerQuadCamera(pane, pane.width / Math.max(1, pane.height), panes);
+    paneRect = pane;
+  }
+  if (!hoverCamera) {
+    clearMassPointHover();
+    return;
+  }
+  massPointPointer.x = (((clientX - rect.left) - paneRect.x) / paneRect.width) * 2 - 1;
+  massPointPointer.y = -((((clientY - rect.top) - paneRect.cssY) / paneRect.height) * 2 - 1);
+  massPointRaycaster.setFromCamera(massPointPointer, hoverCamera);
   const hits = massPointRaycaster.intersectObjects(massPointMeshes, false);
   const hit = hits.length ? hits[0].object : null;
   if (!hit) {
@@ -11779,7 +11873,7 @@ function rebuildMassPointOverlay(bounds = null) {
 
   const maxDim = Number(bounds?.maxDim);
   const radius = Number.isFinite(maxDim) && maxDim > 0
-    ? Math.max(0.03, Math.min(0.3, maxDim * 0.003))
+    ? clampNumber(maxDim * 0.006, 0.006, 0.16)
     : 0.06;
   const group = new THREE.Group();
   group.name = 'mass-points';
@@ -11796,6 +11890,7 @@ function rebuildMassPointOverlay(bounds = null) {
     const marker = new THREE.Mesh(geom, mat);
     marker.name = 'mass-point';
     marker.position.set(x, y, z);
+    marker.userData.radius = radius;
     marker.userData.massPoint = {
       name: String(item?.name || ''),
       mass: Number(item?.mass),
@@ -11839,8 +11934,799 @@ function setViewerButtonTooltip(button, text) {
   button.setAttribute('aria-label', label);
 }
 
+function viewerAspectRatio() {
+  const width = Number(els.viewer?.clientWidth) || 1;
+  const height = Number(els.viewer?.clientHeight) || 1;
+  return Math.max(0.1, width / Math.max(1, height));
+}
+
+function orthographicHeightForBounds(bounds = null) {
+  const maxDim = Number(bounds?.maxDim);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return Math.max(1, Number(viewerState.fitDistance) || 12);
+  return Math.max(maxDim * 1.85, 0.5);
+}
+
+function updateOrthographicFrustum({ resetZoom = false } = {}) {
+  if (!orthographicCamera) return;
+  const aspect = viewerAspectRatio();
+  const height = Math.max(0.2, Number(viewerState.orthoFrustumHeight) || orthographicHeightForBounds(viewerState.bounds));
+  orthographicCamera.left = (-height * aspect) / 2;
+  orthographicCamera.right = (height * aspect) / 2;
+  orthographicCamera.top = height / 2;
+  orthographicCamera.bottom = -height / 2;
+  if (resetZoom) orthographicCamera.zoom = 1;
+  orthographicCamera.updateProjectionMatrix();
+}
+
+function setOrthographicFrustumForAspect(cam, aspect, { resetZoom = false, height: explicitHeight = null } = {}) {
+  if (!cam) return;
+  const safeAspect = Math.max(0.1, Number(aspect) || 1);
+  const requestedHeight = Number(explicitHeight);
+  const height = Math.max(
+    0.2,
+    Number.isFinite(requestedHeight) && requestedHeight > 0
+      ? requestedHeight
+      : (Number(viewerState.orthoFrustumHeight) || orthographicHeightForBounds(viewerState.bounds)),
+  );
+  cam.left = (-height * safeAspect) / 2;
+  cam.right = (height * safeAspect) / 2;
+  cam.top = height / 2;
+  cam.bottom = -height / 2;
+  if (resetZoom) cam.zoom = 1;
+  cam.updateProjectionMatrix();
+}
+
+function normalizeViewerLayoutMode(mode) {
+  if (mode === true || mode === 'quad') return 'quad-fit';
+  if (mode === false) return 'single';
+  return VIEWER_QUAD_LAYOUT_MODES.includes(mode) ? mode : 'single';
+}
+
+function isViewerQuadMode() {
+  return normalizeViewerLayoutMode(viewerState.layoutMode) !== 'single';
+}
+
+function activeViewerQuadLayoutMode() {
+  return normalizeViewerLayoutMode(viewerState.layoutMode);
+}
+
+function syncViewerQuadModeClass() {
+  const layout = activeViewerQuadLayoutMode();
+  const enabled = layout !== 'single';
+  els.viewer?.classList.toggle('quad-view', enabled);
+  els.viewer?.classList.toggle('quad-view-fit', layout === 'quad-fit');
+  els.viewer?.classList.toggle('quad-view-scale', layout === 'quad-scale');
+  if (els.viewerQuadOverlay) {
+    els.viewerQuadOverlay.hidden = !enabled;
+    els.viewerQuadOverlay.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    els.viewerQuadOverlay.dataset.layout = layout;
+  }
+}
+
+function setViewerQuadMode(layoutMode) {
+  viewerState.layoutMode = normalizeViewerLayoutMode(layoutMode);
+  syncViewerQuadModeClass();
+  clearMassPointHover();
+  handleResize();
+  updateViewerButtons();
+}
+
+function toggleViewerQuadMode() {
+  const layout = activeViewerQuadLayoutMode();
+  const nextLayout = layout === 'single'
+    ? 'quad-scale'
+    : (layout === 'quad-scale' ? 'quad-fit' : 'single');
+  setViewerQuadMode(nextLayout);
+  if (nextLayout === 'single') {
+    viewerState.viewIndex = viewerState.viewModes.indexOf('iso');
+    applyViewPreset('iso');
+    updateViewerButtons();
+  }
+}
+
+function fitDistanceForBoundsAtAspect(bounds = null, aspect = 1) {
+  const maxDim = Number(bounds?.maxDim);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return Number(viewerState.fitDistance) || 10;
+  const fovRad = ((Number(perspectiveCamera?.fov) || 45) * Math.PI) / 180;
+  const safeAspect = Math.max(0.2, Number(aspect) || 1);
+  const fitHeightDistance = maxDim / (2 * Math.tan(fovRad / 2));
+  const fitWidthDistance = fitHeightDistance / safeAspect;
+  return Math.max(fitHeightDistance, fitWidthDistance) * 1.75;
+}
+
+function ensureViewerQuadCameras() {
+  if (!THREE) return;
+  if (!quadPerspectiveCameras) {
+    quadPerspectiveCameras = {};
+    VIEWER_QUAD_PANES.forEach((pane) => {
+      quadPerspectiveCameras[pane.id] = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+    });
+  }
+  if (!quadOrthographicCameras) {
+    quadOrthographicCameras = {};
+    VIEWER_QUAD_PANES.forEach((pane) => {
+      quadOrthographicCameras[pane.id] = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 2000);
+    });
+  }
+}
+
+function viewerTargetVector() {
+  if (!THREE) return null;
+  return controls?.target?.clone?.() || new THREE.Vector3(0, 0, 0);
+}
+
+function viewerQuadTargetVector() {
+  if (!THREE) return null;
+  if (viewerState.bounds?.center?.isVector3) return viewerState.bounds.center.clone();
+  return viewerTargetVector();
+}
+
+function viewerDirectionForPane(mode, target = null) {
+  if (!THREE) return null;
+  if (mode === 'top') return new THREE.Vector3(0, 0, 1);
+  if (mode === 'side') return new THREE.Vector3(0, 1, 0);
+  if (mode === 'side-left') return new THREE.Vector3(0, -1, 0);
+  if (mode === 'front') return new THREE.Vector3(-1, 0, 0);
+  if (mode === 'forward') return new THREE.Vector3(1, 0, 0);
+  const activeTarget = target?.isVector3 ? target : (viewerTargetVector() || new THREE.Vector3(0, 0, 0));
+  if (camera) {
+    const dir = camera.position.clone().sub(activeTarget);
+    if (dir.lengthSq() > 1e-10) return dir.normalize();
+  }
+  return new THREE.Vector3(0.62, -0.45, 0.48).normalize();
+}
+
+function viewerUpForPane(mode) {
+  if (!THREE) return null;
+  if (mode === 'top') return new THREE.Vector3(0, 1, 0);
+  if (mode === 'iso' && camera?.up) return camera.up.clone();
+  return new THREE.Vector3(0, 0, 1);
+}
+
+function viewerProjectionForPane(pane) {
+  if (!pane || pane.id === 'iso') return activeProjectionMode();
+  return 'orthographic';
+}
+
+function viewerQuadPaneViewState(paneId) {
+  if (!VIEWER_QUAD_INTERACTIVE_PANES.has(String(paneId))) return null;
+  if (!viewerState.quadPaneViews || typeof viewerState.quadPaneViews !== 'object') viewerState.quadPaneViews = {};
+  if (!viewerState.quadPaneViews[paneId]) {
+    viewerState.quadPaneViews[paneId] = { offsetX: 0, offsetY: 0, zoom: 1 };
+  }
+  const view = viewerState.quadPaneViews[paneId];
+  view.offsetX = Number.isFinite(Number(view.offsetX)) ? Number(view.offsetX) : 0;
+  view.offsetY = Number.isFinite(Number(view.offsetY)) ? Number(view.offsetY) : 0;
+  view.zoom = clampNumber(Number(view.zoom) || 1, 0.08, 40);
+  return view;
+}
+
+function viewerQuadThreeViewState() {
+  if (!viewerState.quadThreeView || typeof viewerState.quadThreeView !== 'object') {
+    viewerState.quadThreeView = { zoom: 1 };
+  }
+  const view = viewerState.quadThreeView;
+  view.zoom = clampNumber(Number(view.zoom) || 1, 0.08, 40);
+  return view;
+}
+
+function resetViewerQuadPaneViews() {
+  VIEWER_QUAD_INTERACTIVE_PANES.forEach((paneId) => {
+    const view = viewerQuadPaneViewState(paneId);
+    if (!view) return;
+    view.offsetX = 0;
+    view.offsetY = 0;
+    view.zoom = 1;
+  });
+  viewerQuadThreeViewState().zoom = 1;
+}
+
+function isViewerQuadFitInteractivePane(pane) {
+  return activeViewerQuadLayoutMode() === 'quad-fit'
+    && pane
+    && VIEWER_QUAD_INTERACTIVE_PANES.has(String(pane.id));
+}
+
+function isViewerQuadScaleThreeViewPane(pane) {
+  return activeViewerQuadLayoutMode() === 'quad-scale'
+    && pane
+    && VIEWER_QUAD_INTERACTIVE_PANES.has(String(pane.id));
+}
+
+function viewerPaneAxesForMode(mode) {
+  if (!THREE) return null;
+  if (mode === 'top') {
+    return {
+      right: new THREE.Vector3(1, 0, 0),
+      up: new THREE.Vector3(0, 1, 0),
+    };
+  }
+  if (mode === 'side') {
+    return {
+      right: new THREE.Vector3(-1, 0, 0),
+      up: new THREE.Vector3(0, 0, 1),
+    };
+  }
+  if (mode === 'side-left') {
+    return {
+      right: new THREE.Vector3(1, 0, 0),
+      up: new THREE.Vector3(0, 0, 1),
+    };
+  }
+  if (mode === 'forward') {
+    return {
+      right: new THREE.Vector3(0, 1, 0),
+      up: new THREE.Vector3(0, 0, 1),
+    };
+  }
+  if (mode === 'front') {
+    return {
+      right: new THREE.Vector3(0, -1, 0),
+      up: new THREE.Vector3(0, 0, 1),
+    };
+  }
+  return null;
+}
+
+function viewerPlanarSizeForPane(mode, bounds = viewerState.bounds) {
+  const size = bounds?.size;
+  if (!size) return { width: 1, height: 1 };
+  const sx = Math.max(0.001, Number(size.x) || 0);
+  const sy = Math.max(0.001, Number(size.y) || 0);
+  const sz = Math.max(0.001, Number(size.z) || 0);
+  if (mode === 'top') return { width: sx, height: sy };
+  if (mode === 'side' || mode === 'side-left') return { width: sx, height: sz };
+  if (mode === 'forward' || mode === 'front') return { width: sy, height: sz };
+  const maxDim = Math.max(sx, sy, sz);
+  return { width: maxDim, height: maxDim };
+}
+
+function quadPaneFitHeightForAspect(pane, aspect = 1) {
+  const safeAspect = Math.max(0.1, Number(aspect) || 1);
+  const dims = pane?.id === 'iso'
+    ? { width: Number(viewerState.bounds?.maxDim) || 1, height: Number(viewerState.bounds?.maxDim) || 1 }
+    : viewerPlanarSizeForPane(pane?.mode);
+  const padding = pane?.id === 'iso' ? 1.7 : 1.18;
+  return Math.max(0.2, Math.max(dims.height, dims.width / safeAspect) * padding);
+}
+
+function sharedThreeViewWorldUnitsPerPixel(panes = []) {
+  const threeViewPanes = panes.filter((pane) => pane.id !== 'iso');
+  let unitsPerPixel = 0;
+  threeViewPanes.forEach((pane) => {
+    const dims = viewerPlanarSizeForPane(pane.mode);
+    const widthPx = Math.max(1, Number(pane.width) || 1);
+    const heightPx = Math.max(1, Number(pane.height) || 1);
+    unitsPerPixel = Math.max(
+      unitsPerPixel,
+      dims.width / widthPx,
+      dims.height / heightPx,
+    );
+  });
+  return Math.max(0.001, unitsPerPixel * 1.18);
+}
+
+function quadOrthographicHeightForPane(pane, aspect = 1, panes = []) {
+  if (!pane) return orthographicHeightForBounds(viewerState.bounds);
+  if (pane.id !== 'iso' && activeViewerQuadLayoutMode() === 'quad-scale') {
+    const shared = viewerQuadThreeViewState();
+    const zoom = Math.max(0.08, Number(shared?.zoom) || 1);
+    return (sharedThreeViewWorldUnitsPerPixel(panes) / zoom) * Math.max(1, Number(pane.height) || 1);
+  }
+  const fitHeight = quadPaneFitHeightForAspect(pane, aspect);
+  if (isViewerQuadFitInteractivePane(pane)) {
+    const view = viewerQuadPaneViewState(pane.id);
+    return fitHeight / Math.max(0.08, Number(view?.zoom) || 1);
+  }
+  return fitHeight;
+}
+
+function configureViewerQuadCamera(pane, aspect = 1, panes = []) {
+  if (!THREE || !pane) return null;
+  ensureViewerQuadCameras();
+  const projection = viewerProjectionForPane(pane);
+  const cam = projection === 'orthographic'
+    ? quadOrthographicCameras?.[pane.id]
+    : quadPerspectiveCameras?.[pane.id];
+  if (!cam) return null;
+
+  const safeAspect = Math.max(0.1, Number(aspect) || 1);
+  if (pane.id === 'iso') {
+    const source = camera || cam;
+    const activeTarget = controls?.target?.clone?.() || viewerQuadTargetVector() || new THREE.Vector3(0, 0, 0);
+    cam.near = Number(source?.near) || 0.001;
+    cam.far = Number(source?.far) || 2000;
+    cam.position.copy(source.position);
+    cam.up.copy(source.up);
+    if (source.quaternion && cam.quaternion) cam.quaternion.copy(source.quaternion);
+    if (cam.isPerspectiveCamera) {
+      cam.fov = Number(source?.fov) || Number(perspectiveCamera?.fov) || 45;
+      cam.aspect = safeAspect;
+      cam.zoom = Number(source?.zoom) || 1;
+      cam.updateProjectionMatrix();
+      cam.userData.quadProjection = 'perspective';
+      cam.userData.quadScaleMode = 'active-view';
+      cam.userData.quadVisibleHeight = null;
+      cam.userData.quadWorldUnitsPerPixel = null;
+    } else {
+      const sourceHeight = source?.isOrthographicCamera
+        ? Math.abs((Number(source.top) || 0) - (Number(source.bottom) || 0))
+        : 0;
+      const height = Math.max(
+        0.2,
+        Number.isFinite(sourceHeight) && sourceHeight > 0
+          ? sourceHeight
+          : (Number(viewerState.orthoFrustumHeight) || orthographicHeightForBounds(viewerState.bounds)),
+      );
+      cam.left = (-height * safeAspect) / 2;
+      cam.right = (height * safeAspect) / 2;
+      cam.top = height / 2;
+      cam.bottom = -height / 2;
+      cam.zoom = Number(source?.zoom) || 1;
+      cam.updateProjectionMatrix();
+      cam.userData.quadProjection = 'orthographic';
+      cam.userData.quadScaleMode = 'active-view';
+      cam.userData.quadVisibleHeight = height / Math.max(0.001, Number(cam.zoom) || 1);
+      cam.userData.quadWorldUnitsPerPixel = cam.userData.quadVisibleHeight / Math.max(1, Number(pane.height) || 1);
+    }
+    cam.userData.quadPaneZoom = null;
+    cam.userData.quadPaneOffsetX = null;
+    cam.userData.quadPaneOffsetY = null;
+    cam.userData.quadTargetX = Number(activeTarget.x) || 0;
+    cam.userData.quadTargetY = Number(activeTarget.y) || 0;
+    cam.userData.quadTargetZ = Number(activeTarget.z) || 0;
+    return cam;
+  }
+
+  const target = viewerQuadTargetVector() || new THREE.Vector3(0, 0, 0);
+  if (isViewerQuadFitInteractivePane(pane)) {
+    const axes = viewerPaneAxesForMode(pane.mode);
+    const view = viewerQuadPaneViewState(pane.id);
+    if (axes && view) {
+      target
+        .add(axes.right.multiplyScalar(Number(view.offsetX) || 0))
+        .add(axes.up.multiplyScalar(Number(view.offsetY) || 0));
+    }
+  }
+  const fitDist = fitDistanceForBoundsAtAspect(viewerState.bounds, safeAspect);
+  const dist = fitDist;
+  const near = Math.max(0.001, Math.min(fitDist, dist) / 1000);
+  const far = Math.max(2000, Math.max(fitDist, dist) * 20);
+  const dir = viewerDirectionForPane(pane.mode, target) || new THREE.Vector3(0.62, -0.45, 0.48).normalize();
+  const up = viewerUpForPane(pane.mode) || new THREE.Vector3(0, 0, 1);
+
+  cam.near = near;
+  cam.far = far;
+  cam.position.copy(target).add(dir.multiplyScalar(Math.max(0.01, dist)));
+  cam.up.copy(up);
+  if (cam.isPerspectiveCamera) {
+    cam.fov = Number(perspectiveCamera?.fov) || 45;
+    cam.aspect = safeAspect;
+    cam.updateProjectionMatrix();
+    cam.userData.quadProjection = 'perspective';
+    cam.userData.quadScaleMode = 'perspective-fit';
+    cam.userData.quadVisibleHeight = null;
+    cam.userData.quadWorldUnitsPerPixel = null;
+  } else {
+    const orthoHeight = quadOrthographicHeightForPane(pane, safeAspect, panes);
+    cam.zoom = 1;
+    setOrthographicFrustumForAspect(cam, safeAspect, { height: orthoHeight });
+    cam.userData.quadProjection = 'orthographic';
+    cam.userData.quadScaleMode = pane.id !== 'iso' && activeViewerQuadLayoutMode() === 'quad-scale'
+      ? 'shared-scale'
+      : 'pane-fit';
+    cam.userData.quadVisibleHeight = orthoHeight;
+    cam.userData.quadWorldUnitsPerPixel = orthoHeight / Math.max(1, Number(pane.height) || 1);
+    if (isViewerQuadFitInteractivePane(pane)) {
+      const view = viewerQuadPaneViewState(pane.id);
+      cam.userData.quadPaneZoom = Number(view?.zoom) || 1;
+      cam.userData.quadPaneOffsetX = Number(view?.offsetX) || 0;
+      cam.userData.quadPaneOffsetY = Number(view?.offsetY) || 0;
+    } else if (isViewerQuadScaleThreeViewPane(pane)) {
+      const view = viewerQuadThreeViewState();
+      cam.userData.quadPaneZoom = Number(view?.zoom) || 1;
+      cam.userData.quadPaneOffsetX = null;
+      cam.userData.quadPaneOffsetY = null;
+    } else {
+      cam.userData.quadPaneZoom = null;
+      cam.userData.quadPaneOffsetX = null;
+      cam.userData.quadPaneOffsetY = null;
+    }
+  }
+  cam.lookAt(target);
+  cam.userData.quadTargetX = Number(target.x) || 0;
+  cam.userData.quadTargetY = Number(target.y) || 0;
+  cam.userData.quadTargetZ = Number(target.z) || 0;
+  return cam;
+}
+
+function viewerQuadPaneRects(width, height) {
+  const w = Math.max(1, Math.floor(Number(width) || 1));
+  const h = Math.max(1, Math.floor(Number(height) || 1));
+  const leftW = Math.max(1, Math.floor(w / 2));
+  const rightW = Math.max(1, w - leftW);
+  const bottomH = Math.max(1, Math.floor(h / 2));
+  const topH = Math.max(1, h - bottomH);
+  return VIEWER_QUAD_PANES.map((pane) => ({
+    ...pane,
+    x: pane.col === 0 ? 0 : leftW,
+    y: pane.row === 0 ? bottomH : 0,
+    cssY: pane.row === 0 ? 0 : topH,
+    width: pane.col === 0 ? leftW : rightW,
+    height: pane.row === 0 ? topH : bottomH,
+  }));
+}
+
+function viewerQuadPaneAtClientPoint(clientX, clientY) {
+  if (!renderer?.domElement) return null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const localX = Number(clientX) - rect.left;
+  const localY = Number(clientY) - rect.top;
+  if (!Number.isFinite(localX) || !Number.isFinite(localY)) return null;
+  if (localX < 0 || localX > rect.width || localY < 0 || localY > rect.height) return null;
+  const panes = viewerQuadPaneRects(rect.width, rect.height);
+  return panes.find((pane) => (
+    localX >= pane.x
+    && localX <= pane.x + pane.width
+    && localY >= pane.cssY
+    && localY <= pane.cssY + pane.height
+  )) || null;
+}
+
+function getViewerQuadPaneStates() {
+  ensureViewerQuadCameras();
+  const width = Number(els.viewer?.clientWidth) || 1;
+  const height = Number(els.viewer?.clientHeight) || 1;
+  const panes = viewerQuadPaneRects(width, height);
+  return panes.map((pane) => {
+    const cam = configureViewerQuadCamera(pane, pane.width / Math.max(1, pane.height), panes);
+    const visibleHeight = Number(cam?.userData?.quadVisibleHeight);
+    const worldUnitsPerPixel = Number(cam?.userData?.quadWorldUnitsPerPixel);
+    const paneZoom = Number(cam?.userData?.quadPaneZoom);
+    const paneOffsetX = Number(cam?.userData?.quadPaneOffsetX);
+    const paneOffsetY = Number(cam?.userData?.quadPaneOffsetY);
+    const targetX = Number(cam?.userData?.quadTargetX);
+    const targetY = Number(cam?.userData?.quadTargetY);
+    const targetZ = Number(cam?.userData?.quadTargetZ);
+    return {
+      id: pane.id,
+      label: pane.label,
+      mode: pane.mode,
+      row: pane.row,
+      col: pane.col,
+      layoutMode: activeViewerQuadLayoutMode(),
+      projectionMode: viewerProjectionForPane(pane),
+      scaleMode: cam?.userData?.quadScaleMode || null,
+      cameraType: cam?.isOrthographicCamera ? 'OrthographicCamera' : (cam?.isPerspectiveCamera ? 'PerspectiveCamera' : null),
+      aspect: Number.isFinite(Number(cam?.aspect)) ? Number(cam.aspect) : (pane.width / Math.max(1, pane.height)),
+      visibleHeight: Number.isFinite(visibleHeight) ? visibleHeight : null,
+      worldUnitsPerPixel: Number.isFinite(worldUnitsPerPixel) ? worldUnitsPerPixel : null,
+      paneZoom: Number.isFinite(paneZoom) ? paneZoom : null,
+      paneOffsetX: Number.isFinite(paneOffsetX) ? paneOffsetX : null,
+      paneOffsetY: Number.isFinite(paneOffsetY) ? paneOffsetY : null,
+      target: Number.isFinite(targetX) && Number.isFinite(targetY) && Number.isFinite(targetZ) ? {
+        x: targetX,
+        y: targetY,
+        z: targetZ,
+      } : null,
+      cameraPosition: cam?.position ? {
+        x: Number(cam.position.x) || 0,
+        y: Number(cam.position.y) || 0,
+        z: Number(cam.position.z) || 0,
+      } : null,
+      cameraUp: cam?.up ? {
+        x: Number(cam.up.x) || 0,
+        y: Number(cam.up.y) || 0,
+        z: Number(cam.up.z) || 0,
+      } : null,
+    };
+  });
+}
+
+function configureViewerControls(target = null) {
+  if (!OrbitControls || !renderer || !camera) return;
+  const nextTarget = target?.isVector3 ? target.clone() : new THREE.Vector3(0, 0, 0);
+  if (controls) controls.dispose();
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.rotateSpeed = 0.6;
+  controls.zoomSpeed = 0.8;
+  controls.enablePan = true;
+  controls.enableZoom = true;
+  controls.enableRotate = true;
+  controls.screenSpacePanning = false;
+  controls.target.copy(nextTarget);
+  applyControlMode(viewerState.mode || 'rotate');
+}
+
+function activeProjectionMode() {
+  return camera?.isOrthographicCamera ? 'orthographic' : 'perspective';
+}
+
+function setViewerProjectionMode(mode, options = {}) {
+  if (!THREE || !perspectiveCamera || !orthographicCamera) return;
+  const nextMode = mode === 'orthographic' ? 'orthographic' : 'perspective';
+  const oldCamera = camera || perspectiveCamera;
+  const oldTarget = controls?.target?.clone?.() || new THREE.Vector3(0, 0, 0);
+  const nextCamera = nextMode === 'orthographic' ? orthographicCamera : perspectiveCamera;
+  nextCamera.position.copy(oldCamera.position);
+  nextCamera.up.copy(oldCamera.up);
+  nextCamera.near = oldCamera.near;
+  nextCamera.far = oldCamera.far;
+  if (nextMode === 'orthographic') {
+    viewerState.orthoFrustumHeight = orthographicHeightForBounds(viewerState.bounds);
+    updateOrthographicFrustum({ resetZoom: Boolean(options.resetZoom ?? true) });
+  } else {
+    nextCamera.aspect = viewerAspectRatio();
+    nextCamera.updateProjectionMatrix();
+  }
+  camera = nextCamera;
+  viewerState.projectionMode = nextMode;
+  configureViewerControls(oldTarget);
+  if (nextMode === 'orthographic' && options.applyIso !== false) {
+    viewerState.viewIndex = viewerState.viewModes.indexOf('iso');
+    applyViewPreset('iso');
+  } else {
+    controls.update();
+  }
+  updateViewerButtons();
+}
+
+function toggleViewerProjectionMode() {
+  const next = activeProjectionMode() === 'orthographic' ? 'perspective' : 'orthographic';
+  setViewerProjectionMode(next, { applyIso: next === 'orthographic', resetZoom: true });
+}
+
+function zoomViewerBy(factor) {
+  if (!controls || !camera) return;
+  const zoomFactor = Number(factor);
+  if (!Number.isFinite(zoomFactor) || zoomFactor <= 0) return;
+  if (camera.isOrthographicCamera) {
+    camera.zoom = clampNumber((Number(camera.zoom) || 1) * zoomFactor, 0.05, 80);
+    camera.updateProjectionMatrix();
+  } else if (zoomFactor > 1 && typeof controls.dollyIn === 'function') {
+    controls.dollyIn(zoomFactor);
+  } else if (zoomFactor < 1 && typeof controls.dollyOut === 'function') {
+    controls.dollyOut(1 / zoomFactor);
+  } else {
+    camera.position.multiplyScalar(1 / zoomFactor);
+  }
+  controls.update();
+}
+
+function viewerMouseActionName(value) {
+  if (!THREE) return null;
+  if (value === THREE.MOUSE.ROTATE) return 'ROTATE';
+  if (value === THREE.MOUSE.DOLLY) return 'DOLLY';
+  if (value === THREE.MOUSE.PAN) return 'PAN';
+  return null;
+}
+
+function viewerMiddleZScale() {
+  const height = Math.max(1, Number(els.viewer?.clientHeight) || 1);
+  const ref = Number(viewerState.bounds?.maxDim) || Number(viewerState.fitDistance) || 1;
+  return Math.max(ref, 0.2) * 1.35 / height;
+}
+
+function viewerMiddleHorizontalPanVector(dx) {
+  if (!THREE || !camera || !controls || !renderer?.domElement) return null;
+  const dragX = Number(dx);
+  if (!Number.isFinite(dragX) || dragX === 0) return null;
+  const dom = renderer.domElement;
+  let distance = 0;
+  if (camera.isPerspectiveCamera) {
+    const offset = new THREE.Vector3().copy(camera.position).sub(controls.target);
+    const targetDistance = offset.length() * Math.tan((Number(camera.fov) || 45) * Math.PI / 360);
+    distance = (2 * dragX * targetDistance) / Math.max(1, Number(dom.clientHeight) || 1);
+  } else if (camera.isOrthographicCamera) {
+    distance = dragX * ((Number(camera.right) || 0) - (Number(camera.left) || 0))
+      / Math.max(0.001, Number(camera.zoom) || 1)
+      / Math.max(1, Number(dom.clientWidth) || 1);
+  }
+  if (!Number.isFinite(distance) || distance === 0) return null;
+  return new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).multiplyScalar(-distance);
+}
+
+function viewerQuadInteractivePaneAtEvent(evt) {
+  if (!isViewerQuadMode()) return null;
+  const pane = viewerQuadPaneAtClientPoint(evt?.clientX, evt?.clientY);
+  return isViewerQuadFitInteractivePane(pane) || isViewerQuadScaleThreeViewPane(pane) ? pane : null;
+}
+
+function viewerQuadPaneUnitsPerPixel(pane) {
+  if (!pane) return 0;
+  const aspect = Number(pane.width) / Math.max(1, Number(pane.height) || 1);
+  const rect = renderer?.domElement?.getBoundingClientRect?.();
+  const panes = rect?.width && rect?.height ? viewerQuadPaneRects(rect.width, rect.height) : [pane];
+  const activePane = panes.find((entry) => entry.id === pane.id) || pane;
+  return quadOrthographicHeightForPane(activePane, aspect, panes) / Math.max(1, Number(activePane.height) || 1);
+}
+
+function handleViewerQuadWheel(evt) {
+  const pane = viewerQuadInteractivePaneAtEvent(evt);
+  if (!pane) return;
+  if (isViewerQuadScaleThreeViewPane(pane)) {
+    const view = viewerQuadThreeViewState();
+    const oldZoom = clampNumber(Number(view.zoom) || 1, 0.08, 40);
+    const zoomFactor = clampNumber(Math.exp((-Number(evt.deltaY) || 0) * 0.0012), 0.35, 2.85);
+    const nextZoom = clampNumber(oldZoom * zoomFactor, 0.08, 40);
+    if (!Number.isFinite(nextZoom) || Math.abs(nextZoom - oldZoom) < 1e-9) return;
+    evt.preventDefault();
+    evt.stopImmediatePropagation?.();
+    view.zoom = nextZoom;
+    renderViewerScene();
+    updateMassPointHover(evt.clientX, evt.clientY);
+    return;
+  }
+  const view = viewerQuadPaneViewState(pane.id);
+  if (!view) return;
+  evt.preventDefault();
+  evt.stopImmediatePropagation?.();
+  const oldZoom = clampNumber(Number(view.zoom) || 1, 0.08, 40);
+  const zoomFactor = clampNumber(Math.exp((-Number(evt.deltaY) || 0) * 0.0012), 0.35, 2.85);
+  const nextZoom = clampNumber(oldZoom * zoomFactor, 0.08, 40);
+  if (!Number.isFinite(nextZoom) || Math.abs(nextZoom - oldZoom) < 1e-9) return;
+  const baseHeight = quadPaneFitHeightForAspect(pane, pane.width / Math.max(1, pane.height));
+  const oldUnits = (baseHeight / oldZoom) / Math.max(1, pane.height);
+  const nextUnits = (baseHeight / nextZoom) / Math.max(1, pane.height);
+  const rect = renderer?.domElement?.getBoundingClientRect?.();
+  const localX = Number(evt.clientX) - Number(rect?.left || 0) - pane.x;
+  const localY = Number(evt.clientY) - Number(rect?.top || 0) - pane.cssY;
+  const dxFromCenter = localX - (pane.width * 0.5);
+  const dyFromCenter = localY - (pane.height * 0.5);
+  view.offsetX += dxFromCenter * (oldUnits - nextUnits);
+  view.offsetY += -dyFromCenter * (oldUnits - nextUnits);
+  view.zoom = nextZoom;
+  renderViewerScene();
+  updateMassPointHover(evt.clientX, evt.clientY);
+}
+
+function endViewerQuadPaneDrag(evt = null) {
+  if (!viewerQuadPaneDrag) return;
+  if (evt) {
+    evt.preventDefault?.();
+    evt.stopImmediatePropagation?.();
+  }
+  const drag = viewerQuadPaneDrag;
+  viewerQuadPaneDrag = null;
+  if (controls) controls.enabled = drag.controlsEnabled;
+  const dom = renderer?.domElement;
+  if (dom) {
+    dom.style.cursor = '';
+    if (Number.isFinite(Number(drag.pointerId))) {
+      try {
+        dom.releasePointerCapture?.(drag.pointerId);
+      } catch {
+        // Pointer capture may already be released by the browser.
+      }
+    }
+  }
+  window.removeEventListener('pointermove', handleViewerQuadPaneDragMove, true);
+  window.removeEventListener('pointerup', endViewerQuadPaneDrag, true);
+  window.removeEventListener('pointercancel', endViewerQuadPaneDrag, true);
+}
+
+function handleViewerQuadPaneDragMove(evt) {
+  if (!viewerQuadPaneDrag) return;
+  if (Number(evt.pointerId) !== Number(viewerQuadPaneDrag.pointerId)) return;
+  const view = viewerQuadPaneViewState(viewerQuadPaneDrag.paneId);
+  if (!view || !renderer?.domElement) return;
+  evt.preventDefault();
+  evt.stopImmediatePropagation();
+  const rect = renderer.domElement.getBoundingClientRect();
+  const pane = viewerQuadPaneRects(rect.width, rect.height).find((entry) => entry.id === viewerQuadPaneDrag.paneId);
+  if (!pane) return;
+  const nextX = Number(evt.clientX);
+  const nextY = Number(evt.clientY);
+  const dx = nextX - Number(viewerQuadPaneDrag.lastX);
+  const dy = nextY - Number(viewerQuadPaneDrag.lastY);
+  viewerQuadPaneDrag.lastX = nextX;
+  viewerQuadPaneDrag.lastY = nextY;
+  const units = viewerQuadPaneUnitsPerPixel(pane);
+  if (!Number.isFinite(units) || units <= 0) return;
+  view.offsetX -= dx * units;
+  view.offsetY += dy * units;
+  renderViewerScene();
+  updateMassPointHover(evt.clientX, evt.clientY);
+}
+
+function beginViewerQuadPaneDrag(evt) {
+  if (![0, 2].includes(Number(evt?.button))) return false;
+  const pane = viewerQuadInteractivePaneAtEvent(evt);
+  if (!pane || !isViewerQuadFitInteractivePane(pane)) return false;
+  evt.preventDefault();
+  evt.stopImmediatePropagation?.();
+  const dom = renderer?.domElement;
+  dom?.setPointerCapture?.(evt.pointerId);
+  if (dom) dom.style.cursor = 'grabbing';
+  viewerQuadPaneDrag = {
+    pointerId: evt.pointerId,
+    paneId: pane.id,
+    lastX: Number(evt.clientX),
+    lastY: Number(evt.clientY),
+    controlsEnabled: controls ? controls.enabled : true,
+  };
+  if (controls) controls.enabled = false;
+  window.addEventListener('pointermove', handleViewerQuadPaneDragMove, true);
+  window.addEventListener('pointerup', endViewerQuadPaneDrag, true);
+  window.addEventListener('pointercancel', endViewerQuadPaneDrag, true);
+  return true;
+}
+
+function endViewerMiddleZDrag(evt = null) {
+  if (!viewerMiddleZDrag) return;
+  if (evt) {
+    evt.preventDefault?.();
+    evt.stopImmediatePropagation?.();
+  }
+  const drag = viewerMiddleZDrag;
+  viewerMiddleZDrag = null;
+  if (controls) controls.enabled = drag.controlsEnabled;
+  const dom = renderer?.domElement;
+  if (dom && Number.isFinite(Number(drag.pointerId))) {
+    try {
+      dom.releasePointerCapture?.(drag.pointerId);
+    } catch {
+      // Pointer capture may already be released by the browser.
+    }
+  }
+  window.removeEventListener('pointermove', handleViewerMiddleZDragMove, true);
+  window.removeEventListener('pointerup', endViewerMiddleZDrag, true);
+  window.removeEventListener('pointercancel', endViewerMiddleZDrag, true);
+}
+
+function handleViewerMiddleZDragMove(evt) {
+  if (!viewerMiddleZDrag || !camera || !controls) return;
+  if (Number(evt.pointerId) !== Number(viewerMiddleZDrag.pointerId)) return;
+  evt.preventDefault();
+  evt.stopImmediatePropagation();
+  const nextX = Number(evt.clientX);
+  const nextY = Number(evt.clientY);
+  if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) return;
+  const dx = nextX - Number(viewerMiddleZDrag.lastX);
+  const dy = nextY - Number(viewerMiddleZDrag.lastY);
+  viewerMiddleZDrag.lastX = nextX;
+  viewerMiddleZDrag.lastY = nextY;
+  let changed = false;
+  const pan = viewerMiddleHorizontalPanVector(dx);
+  if (pan) {
+    camera.position.add(pan);
+    controls.target.add(pan);
+    changed = true;
+  }
+  const dz = dy * viewerMiddleZScale();
+  if (Number.isFinite(dz) && dz !== 0) {
+    camera.position.z += dz;
+    controls.target.z += dz;
+    changed = true;
+  }
+  if (changed) controls.update();
+}
+
+function handleViewerPointerDown(evt) {
+  if (beginViewerQuadPaneDrag(evt)) return;
+  if (evt.button !== 1 || !camera || !controls) return;
+  evt.preventDefault();
+  evt.stopImmediatePropagation();
+  const dom = renderer?.domElement;
+  dom?.setPointerCapture?.(evt.pointerId);
+  viewerMiddleZDrag = {
+    pointerId: evt.pointerId,
+    lastX: Number(evt.clientX),
+    lastY: Number(evt.clientY),
+    controlsEnabled: controls.enabled,
+  };
+  controls.enabled = false;
+  window.addEventListener('pointermove', handleViewerMiddleZDragMove, true);
+  window.addEventListener('pointerup', endViewerMiddleZDrag, true);
+  window.addEventListener('pointercancel', endViewerMiddleZDrag, true);
+}
+
 function updateViewerButtons() {
   if (!els.viewerPan || !els.viewerView || !els.viewerGrid) return;
+  syncViewerQuadModeClass();
   els.viewerPan.classList.toggle('active', viewerState.mode === 'pan');
   const viewLabel = viewerState.viewModes[viewerState.viewIndex] || 'top';
   const viewTitle = VIEW_MODE_LABELS[viewLabel] || viewLabel;
@@ -11849,6 +12735,20 @@ function updateViewerButtons() {
   setViewerButtonTooltip(els.viewerZoomIn, 'Zoom in');
   setViewerButtonTooltip(els.viewerZoomOut, 'Zoom out');
   setViewerButtonTooltip(els.viewerPan, viewerState.mode === 'pan' ? 'Pan mode on' : 'Pan mode');
+  if (els.viewerProjection) {
+    const isOrtho = activeProjectionMode() === 'orthographic';
+    els.viewerProjection.classList.toggle('active', isOrtho);
+    els.viewerProjection.textContent = isOrtho ? 'O' : 'P';
+    setViewerButtonTooltip(els.viewerProjection, isOrtho ? 'Projection: orthographic' : 'Projection: perspective');
+  }
+  if (els.viewerQuad) {
+    const quadLayout = activeViewerQuadLayoutMode();
+    const isQuad = quadLayout !== 'single';
+    els.viewerQuad.classList.toggle('active', isQuad);
+    if (quadLayout === 'quad-fit') setViewerButtonTooltip(els.viewerQuad, 'Quad view: fitted panes');
+    else if (quadLayout === 'quad-scale') setViewerButtonTooltip(els.viewerQuad, 'Quad view: scaled 3-view');
+    else setViewerButtonTooltip(els.viewerQuad, 'Quad view off');
+  }
   setViewerButtonTooltip(els.viewerView, `View: ${viewTitle}`);
   setViewerButtonTooltip(els.viewerGrid, `Grid: ${gridLabel.toUpperCase()}`);
   if (els.viewerLoad) {
@@ -11895,28 +12795,61 @@ function updateViewerButtons() {
   }
 }
 
-function setControlMode(mode) {
+function applyControlMode(mode) {
   if (!controls || !THREE) return;
-  const next = viewerState.mode === mode ? 'rotate' : mode;
+  const next = mode === 'pan' ? 'pan' : 'rotate';
   viewerState.mode = next;
   controls.enableRotate = true;
   controls.enablePan = true;
   controls.enableZoom = true;
   const mouse = controls.mouseButtons;
   const touch = controls.touches;
+  mouse.LEFT = THREE.MOUSE.PAN;
+  mouse.MIDDLE = null;
+  mouse.RIGHT = THREE.MOUSE.ROTATE;
   if (next === 'pan') {
-    mouse.LEFT = THREE.MOUSE.PAN;
     touch.ONE = THREE.TOUCH.PAN ?? THREE.TOUCH.DOLLY_PAN ?? THREE.TOUCH.ROTATE;
   } else {
-    mouse.LEFT = THREE.MOUSE.ROTATE;
     touch.ONE = THREE.TOUCH.ROTATE ?? THREE.TOUCH.DOLLY_PAN;
   }
   updateViewerButtons();
 }
 
-function computeBounds(obj) {
+function setControlMode(mode) {
+  const next = viewerState.mode === mode ? 'rotate' : mode;
+  applyControlMode(next);
+}
+
+function isViewerOverlayBoundsObject(obj) {
+  if (!obj) return false;
+  if (obj.userData?.surfaceLabel || obj.userData?.massPointLabel || obj.userData?.referenceMarker) return true;
+  const name = String(obj.name || '');
+  return name === 'reference-marker'
+    || name === 'mass-point'
+    || name === 'panel-spacing'
+    || name === 'panel-spacing-lines'
+    || name === 'vortices'
+    || name === 'bound-vortices'
+    || name === 'leg-vortices';
+}
+
+function computeBounds(obj, options = {}) {
   if (!THREE || !obj) return null;
-  const box = new THREE.Box3().setFromObject(obj);
+  const excludeViewerOverlays = Boolean(options?.excludeViewerOverlays);
+  let box;
+  if (excludeViewerOverlays) {
+    box = new THREE.Box3();
+    const childBox = new THREE.Box3();
+    obj.updateWorldMatrix?.(true, true);
+    obj.traverse((child) => {
+      if (isViewerOverlayBoundsObject(child)) return;
+      if (!child?.isMesh && !child?.isLine && !child?.isLineSegments && !child?.isPoints && !child?.isSprite) return;
+      childBox.setFromObject(child);
+      if (!childBox.isEmpty()) box.union(childBox);
+    });
+  } else {
+    box = new THREE.Box3().setFromObject(obj);
+  }
   if (box.isEmpty()) return null;
   const size = new THREE.Vector3();
   const center = new THREE.Vector3();
@@ -11924,6 +12857,16 @@ function computeBounds(obj) {
   box.getCenter(center);
   const maxDim = Math.max(size.x, size.y, size.z);
   return { box, size, center, maxDim };
+}
+
+function fitDistanceForBounds(bounds = null) {
+  const maxDim = Number(bounds?.maxDim);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return 10;
+  const fovRad = ((Number(camera?.fov) || 45) * Math.PI) / 180;
+  const aspect = Math.max(0.2, Number(camera?.aspect) || 1);
+  const fitHeightDistance = maxDim / (2 * Math.tan(fovRad / 2));
+  const fitWidthDistance = fitHeightDistance / aspect;
+  return Math.max(fitHeightDistance, fitWidthDistance) * 1.75;
 }
 
 function axisSizeFromMax(maxDim) {
@@ -11986,6 +12929,13 @@ function setCameraUp(vec) {
   camera.up.set(vec.x, vec.y, vec.z);
 }
 
+function setDefaultCameraPosition(distance) {
+  if (!camera || !THREE) return;
+  const dist = Number.isFinite(Number(distance)) && Number(distance) > 0 ? Number(distance) : 10;
+  const direction = new THREE.Vector3(0.62, -0.45, 0.48).normalize().multiplyScalar(dist);
+  camera.position.copy(direction);
+}
+
 function applyViewPreset(mode) {
   if (!camera || !controls || !viewerState.bounds) return;
   const dist = viewerState.fitDistance || 10;
@@ -11998,10 +12948,14 @@ function applyViewPreset(mode) {
   } else if (mode === 'side') {
     setCameraUp(new THREE.Vector3(0, 0, 1));
     camera.position.set(0, dist, 0);
+  } else if (mode === 'iso') {
+    setCameraUp(new THREE.Vector3(0, 0, 1));
+    setDefaultCameraPosition(dist);
   } else {
     setCameraUp(new THREE.Vector3(0, 0, 1));
-    camera.position.set(dist * 0.6, -dist * 0.4, dist * 0.28);
+    setDefaultCameraPosition(dist);
   }
+  if (camera.isOrthographicCamera) updateOrthographicFrustum();
   controls.target.set(0, 0, 0);
   controls.update();
 }
@@ -12013,9 +12967,14 @@ function initScene() {
 
   const width = els.viewer.clientWidth;
   const height = els.viewer.clientHeight;
-  camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
-  camera.position.set(6, 3, 8);
-  camera.up.set(0, 0, 1);
+  perspectiveCamera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
+  perspectiveCamera.position.set(6, 3, 8);
+  perspectiveCamera.up.set(0, 0, 1);
+  orthographicCamera = new THREE.OrthographicCamera(-6, 6, 6, -6, 0.1, 2000);
+  orthographicCamera.position.copy(perspectiveCamera.position);
+  orthographicCamera.up.copy(perspectiveCamera.up);
+  updateOrthographicFrustum({ resetZoom: true });
+  camera = perspectiveCamera;
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(width, height);
@@ -12027,17 +12986,11 @@ function initScene() {
   renderer.domElement.addEventListener('pointerleave', () => {
     clearMassPointHover();
   });
+  renderer.domElement.addEventListener('pointerdown', handleViewerPointerDown, true);
+  renderer.domElement.addEventListener('wheel', handleViewerQuadWheel, { capture: true, passive: false });
+  renderer.domElement.addEventListener('contextmenu', (evt) => evt.preventDefault());
 
-  controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.rotateSpeed = 0.6;
-  controls.zoomSpeed = 0.8;
-  controls.enablePan = true;
-  controls.enableZoom = true;
-  controls.enableRotate = true;
-  controls.screenSpacePanning = false;
-  setControlMode('rotate');
+  configureViewerControls(new THREE.Vector3(0, 0, 0));
 
   const hemi = new THREE.HemisphereLight(0x9fb9ff, 0x0b0f17, 0.9);
   scene.add(hemi);
@@ -13484,13 +14437,51 @@ function fitCameraToObject(obj) {
     if (!bounds) return;
     obj.position.sub(bounds.center);
     viewerState.bounds = bounds;
-    viewerState.fitDistance = bounds.maxDim * 1.6 + 4.0;
   }
+  viewerState.fitDistance = fitDistanceForBounds(bounds);
+  viewerState.orthoFrustumHeight = orthographicHeightForBounds(bounds);
+  resetViewerQuadPaneViews();
   const fitDist = viewerState.fitDistance || 10;
+  [perspectiveCamera, orthographicCamera].forEach((cam) => {
+    if (!cam) return;
+    cam.near = Math.max(0.001, fitDist / 1000);
+    cam.far = Math.max(2000, fitDist * 20);
+  });
+  updateOrthographicFrustum({ resetZoom: camera?.isOrthographicCamera });
+  camera.updateProjectionMatrix();
   camera.up.set(0, 0, 1);
-  camera.position.set(fitDist * 0.6, -fitDist * 0.4, fitDist * 0.28);
+  setDefaultCameraPosition(fitDist);
   controls.target.set(0, 0, 0);
   controls.update();
+}
+
+function renderViewerScene() {
+  if (!renderer || !scene || !camera || !THREE) return;
+  const size = new THREE.Vector2();
+  renderer.getSize(size);
+  const width = Math.max(1, Math.floor(Number(size.x) || 1));
+  const height = Math.max(1, Math.floor(Number(size.y) || 1));
+  if (!isViewerQuadMode()) {
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, width, height);
+    renderer.render(scene, camera);
+    return;
+  }
+
+  const oldAutoClear = renderer.autoClear;
+  renderer.autoClear = false;
+  renderer.setScissorTest(true);
+  const panes = viewerQuadPaneRects(width, height);
+  panes.forEach((pane) => {
+    const cam = configureViewerQuadCamera(pane, pane.width / Math.max(1, pane.height), panes);
+    if (!cam) return;
+    renderer.setViewport(pane.x, pane.y, pane.width, pane.height);
+    renderer.setScissor(pane.x, pane.y, pane.width, pane.height);
+    renderer.clear(true, true, true);
+    renderer.render(scene, cam);
+  });
+  renderer.setScissorTest(false);
+  renderer.autoClear = oldAutoClear;
 }
 
 function animate() {
@@ -13498,7 +14489,7 @@ function animate() {
   updateModeAnimation();
   updateFlowFieldAnimation();
   if (controls) controls.update();
-  if (renderer && scene && camera) renderer.render(scene, camera);
+  renderViewerScene();
 }
 
 function handleResize() {
@@ -13507,7 +14498,12 @@ function handleResize() {
   const width = els.viewer.clientWidth;
   const height = els.viewer.clientHeight;
   renderer.setSize(width, height);
-  camera.aspect = width / height;
+  if (perspectiveCamera) {
+    perspectiveCamera.aspect = width / height;
+    perspectiveCamera.updateProjectionMatrix();
+  }
+  updateOrthographicFrustum();
+  if (camera?.isPerspectiveCamera) camera.aspect = width / height;
   camera.updateProjectionMatrix();
   drawEigenPlot();
 }

@@ -293,7 +293,9 @@
                 <path d="M17 9l3 3-3 3" />
               </svg>
             </button>
-            <button class="viewer-btn icon-btn" id="viewerView" type="button" aria-label="Cycle view" data-tooltip="Cycle view">
+            <button class="viewer-btn icon-btn text-icon-btn" id="viewerProjection" type="button" aria-label="Projection: perspective" data-tooltip="Projection: perspective">P</button>
+            <button class="viewer-btn icon-btn text-icon-btn" id="viewerQuad" type="button" aria-label="Quad view off" data-tooltip="Quad view off">Q</button>
+            <button class="viewer-btn icon-btn" id="viewerView" type="button" aria-label="View: Isometric" data-tooltip="View: Isometric">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M18 8.5a7.5 7.5 0 0 0-11.5-2.3" />
                 <path d="M6.5 6.2 8.6213 2.5257M6.5 6.2 10.1743 8.3213" />
@@ -301,7 +303,7 @@
                 <path d="M17.5 17.8 13.8257 15.6787M17.5 17.8 15.3787 21.4743" />
               </svg>
             </button>
-            <button class="viewer-btn icon-btn" id="viewerGrid" type="button" aria-label="Cycle grid" data-tooltip="Cycle grid">
+            <button class="viewer-btn icon-btn" id="viewerGrid" type="button" aria-label="Grid: XY" data-tooltip="Grid: XY">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <rect x="4" y="4" width="16" height="16" rx="1.5" />
                 <path d="M4 12h16M12 4v16" />
@@ -311,33 +313,33 @@
             <button class="viewer-btn icon-btn text-icon-btn" id="viewerMassPoints" type="button" aria-label="Mass points off" data-tooltip="Mass points off">M</button>
           </div>
           <div class="viewer-overlay-bottom">
-            <button class="viewer-btn icon-btn" id="viewerSurface" type="button" aria-label="Surface mode" data-tooltip="Surface mode">
+            <button class="viewer-btn icon-btn" id="viewerSurface" type="button" aria-label="Render: wireframe only" data-tooltip="Render: wireframe only">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 7l8-4 8 4-8 4-8-4z" />
                 <path d="M4 12l8 4 8-4" />
                 <path d="M4 17l8 4 8-4" />
               </svg>
             </button>
-            <button class="viewer-btn icon-btn" id="viewerPanelSpacing" type="button" aria-label="Panel spacing" data-tooltip="Panel spacing">
+            <button class="viewer-btn icon-btn" id="viewerPanelSpacing" type="button" aria-label="Panel spacing off" data-tooltip="Panel spacing off">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <rect x="4" y="4" width="16" height="16" rx="1.2" />
                 <path d="M4 9.5h16M4 14.5h16M9.5 4v16M14.5 4v16" />
               </svg>
             </button>
-            <button class="viewer-btn icon-btn" id="viewerVortices" type="button" aria-label="Bound and leg vortices" data-tooltip="Bound and leg vortices">
+            <button class="viewer-btn icon-btn" id="viewerVortices" type="button" aria-label="Bound + leg vortices off" data-tooltip="Bound + leg vortices off">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 12h8" />
                 <path d="M12 12l4-4M12 12l4 4" />
                 <path d="M16 8h4M16 16h4" />
               </svg>
             </button>
-            <button class="viewer-btn icon-btn" id="viewerPressure" type="button" aria-label="Toggle pressure" data-tooltip="Toggle pressure">
+            <button class="viewer-btn icon-btn" id="viewerPressure" type="button" aria-label="Pressure shading off" data-tooltip="Pressure shading off">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 3c2.8 3.7 5 6.2 5 9.2a5 5 0 1 1-10 0c0-3 2.2-5.5 5-9.2z" />
                 <path d="M9.3 13.2a2.9 2.9 0 0 0 2.7 2.8" />
               </svg>
             </button>
-            <button class="viewer-btn icon-btn" id="viewerLoad" type="button" aria-label="Toggle loading" data-tooltip="Toggle loading">
+            <button class="viewer-btn icon-btn" id="viewerLoad" type="button" aria-label="Loading vectors off" data-tooltip="Loading vectors off">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 19h16" />
                 <path d="M7 17V7" />
@@ -345,7 +347,7 @@
                 <path d="M17 17V9" />
               </svg>
             </button>
-            <button class="viewer-btn icon-btn" id="viewerFlow" type="button" aria-label="Flow velocity field" data-tooltip="Flow velocity field">
+            <button class="viewer-btn icon-btn" id="viewerFlow" type="button" aria-label="Flow off (next: induced only)" data-tooltip="Flow off (next: induced only)">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 8h10" />
                 <path d="M4 12h14" />
@@ -361,6 +363,12 @@
                 <path d="M6.5 14.5 4.5 17.5l3 2" />
               </svg>
             </button>
+          </div>
+          <div id="viewerQuadOverlay" class="viewer-quad-overlay" aria-hidden="true" hidden>
+            <div class="viewer-quad-label viewer-quad-label-top">Top</div>
+            <div class="viewer-quad-label viewer-quad-label-side">Side</div>
+            <div class="viewer-quad-label viewer-quad-label-front">Front</div>
+            <div class="viewer-quad-label viewer-quad-label-iso">Iso</div>
           </div>
           <div id="viewerHoverTip" class="viewer-hover-tip" hidden></div>
         </div>
