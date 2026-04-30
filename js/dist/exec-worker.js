@@ -322,6 +322,39 @@ function normalizeEigenVec(vr, vi, nsys) {
   };
 }
 
+function eigenSetupDiagnostic(state, ir) {
+  const idx = (i, j) => idx2(i, j, state.IPTOT || 30);
+  const par = state.PARVAL || [];
+  const checks = [
+    ['velocity', state.IPVEE || 12, 'positive velocity'],
+    ['mass', state.IPMASS || 20, 'positive mass'],
+    ['Ixx', state.IPIXX || 21, 'positive Ixx'],
+    ['Iyy', state.IPIYY || 22, 'positive Iyy'],
+    ['Izz', state.IPIZZ || 23, 'positive Izz'],
+  ];
+  const missing = checks.filter(([, ip]) => {
+    const value = Number(par[idx(ip, ir)]);
+    return !Number.isFinite(value) || value <= 0;
+  });
+  if (!missing.length) return null;
+
+  const labels = missing.map(([label]) => label);
+  const inertiaLabels = labels.filter((label) => ['Ixx', 'Iyy', 'Izz'].includes(label));
+  if (inertiaLabels.length) {
+    const suffix = labels.includes('mass')
+      ? 'positive mass and principal inertias'
+      : `positive principal inertias (${inertiaLabels.join(', ')})`;
+    return `Eigenmodes need ${suffix}. Load a .mass file or enter positive mass-property values, then run Trim/EXEC again.`;
+  }
+  if (labels.includes('velocity')) {
+    return 'Eigenmodes need a positive flight velocity. Enter a positive Velocity value, then run Trim/EXEC again.';
+  }
+  if (labels.includes('mass')) {
+    return 'Eigenmodes need a positive mass. Load a .mass file or enter a positive Mass value, then run Trim/EXEC again.';
+  }
+  return `Eigenmodes need valid setup values: ${missing.map(([, , label]) => label).join(', ')}.`;
+}
+
 async function computeEigenmodes(state, useWasm) {
   ensureAmodeState(state);
   const IR = 1;
@@ -332,6 +365,11 @@ async function computeEigenmodes(state, useWasm) {
     } catch (err) {
       log(`APPGET failed: ${err?.message ?? err}`);
     }
+  }
+  const setupMessage = eigenSetupDiagnostic(state, IR);
+  if (setupMessage) {
+    log(`Eigenmodes unavailable: ${setupMessage}`);
+    return { nsys: 0, modes: [], status: 'invalid-setup', message: setupMessage };
   }
   let sysRes = null;
   let eigRes = null;
@@ -365,6 +403,11 @@ async function computeEigenmodes(state, useWasm) {
     eigRes = EIGSOL(state, IR, ETOL, ASYS, sysRes?.NSYS || 0);
   }
   const nsys = sysRes?.NSYS || 0;
+  if (!nsys || sysRes?.LTERR) {
+    const message = 'Eigenmodes could not be solved for this run case. Check mass, principal inertias, velocity, and duplicated constraints.';
+    log(`Eigenmodes unavailable: ${message}`);
+    return { nsys: 0, modes: [], status: 'sysmat-failed', message };
+  }
   const evals = eigRes?.EVAL || [];
   const evecs = eigRes?.EVEC || [];
   const names = ['u', 'w', 'q', 'theta', 'v', 'p', 'r', 'phi', 'x', 'y', 'z', 'psi'];

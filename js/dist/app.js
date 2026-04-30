@@ -68,16 +68,21 @@ const els = {
   settingsCol: document.getElementById('settingsCol'),
   plotsCol: document.getElementById('plotsCol'),
   outputsCol: document.getElementById('outputsCol'),
+  resizeSettingsPlots: document.getElementById('resizeSettingsPlots'),
+  resizePlotsOutputs: document.getElementById('resizePlotsOutputs'),
   editorDesktopAnchor: document.getElementById('editorDesktopAnchor'),
   editorPanel: document.getElementById('editorPanel'),
   viewer: document.getElementById('viewer'),
   viewerAircraftName: document.getElementById('viewerAircraftName'),
   trefftz: document.getElementById('trefftz'),
+  eigenStatus: document.getElementById('eigenStatus'),
   eigenPlot: document.getElementById('eigenPlot'),
   eigenHome: document.getElementById('eigenHome'),
   eigenZoomIn: document.getElementById('eigenZoomIn'),
   eigenZoomOut: document.getElementById('eigenZoomOut'),
   eigenPan: document.getElementById('eigenPan'),
+  eigenScaleLock: document.getElementById('eigenScaleLock'),
+  eigenDivergence: document.getElementById('eigenDivergence'),
   eigenDownload: document.getElementById('eigenDownload'),
   trefftzOverlay: document.getElementById('trefftzOverlay'),
   outAlpha: document.getElementById('outAlpha'),
@@ -121,6 +126,8 @@ const els = {
   viewerZoomIn: document.getElementById('viewerZoomIn'),
   viewerZoomOut: document.getElementById('viewerZoomOut'),
   viewerHome: document.getElementById('viewerHome'),
+  viewerProjection: document.getElementById('viewerProjection'),
+  viewerQuad: document.getElementById('viewerQuad'),
   viewerView: document.getElementById('viewerView'),
   viewerGrid: document.getElementById('viewerGrid'),
   viewerText: document.getElementById('viewerText'),
@@ -132,6 +139,7 @@ const els = {
   viewerPanelSpacing: document.getElementById('viewerPanelSpacing'),
   viewerVortices: document.getElementById('viewerVortices'),
   viewerFlow: document.getElementById('viewerFlow'),
+  viewerQuadOverlay: document.getElementById('viewerQuadOverlay'),
   constraintRows: [],
   constraintTable: document.getElementById('constraintTable'),
   runCasesInput: document.getElementById('runCasesInput'),
@@ -190,13 +198,17 @@ const uiState = {
   testControlDeflections: null,
   eigenModes: [],
   eigenModesByRunCase: {},
+  eigenStatusMessage: '',
   selectedEigenMode: -1,
   eigenPoints: [],
   eigenZoom: 1,
   eigenCenterRe: 0,
   eigenCenterIm: 0,
   eigenViewport: null,
+  eigenPlotRenderState: null,
   eigenPanMode: false,
+  eigenScaleLocked: false,
+  eigenShowDivergence: false,
   runCases: [],
   runCasesFilename: null,
   needsRunCaseConstraintSync: false,
@@ -216,12 +228,21 @@ const uiState = {
 
 const viewerState = {
   mode: 'rotate',
-  viewModes: ['top', 'forward', 'side'],
-  viewIndex: 2,
+  projectionMode: 'perspective',
+  layoutMode: 'single',
+  viewModes: ['top', 'forward', 'side', 'iso'],
+  viewIndex: 3,
   gridModes: ['xy', 'yz', 'xz', 'none'],
   gridIndex: 0,
   bounds: null,
   fitDistance: 12,
+  orthoFrustumHeight: 12,
+  quadPaneViews: {
+    top: { offsetX: 0, offsetY: 0, zoom: 1 },
+    side: { offsetX: 0, offsetY: 0, zoom: 1 },
+    front: { offsetX: 0, offsetY: 0, zoom: 1 },
+  },
+  quadThreeView: { zoom: 1 },
 };
 
 const FLOW_FIELD_MODES = ['induced', 'induced+rotation', 'full'];
@@ -229,7 +250,16 @@ const VIEW_MODE_LABELS = {
   top: 'Top (down)',
   forward: 'Forward (aft)',
   side: 'Side (Y axis)',
+  iso: 'Isometric',
 };
+const VIEWER_QUAD_PANES = [
+  { id: 'side', label: 'Side', mode: 'side-left', col: 0, row: 0 },
+  { id: 'front', label: 'Front', mode: 'front', col: 1, row: 0 },
+  { id: 'top', label: 'Top', mode: 'top', col: 0, row: 1 },
+  { id: 'iso', label: 'Iso', mode: 'iso', col: 1, row: 1 },
+];
+const VIEWER_QUAD_LAYOUT_MODES = ['single', 'quad-fit', 'quad-scale'];
+const VIEWER_QUAD_INTERACTIVE_PANES = new Set(['top', 'side', 'front']);
 
 let execInProgress = false;
 let trefftzPlot = null;
@@ -268,6 +298,7 @@ let lastTrimState = null;
 let loadingGroup = null;
 let outputFontFitRaf = 0;
 let fileSummarySyncing = false;
+let syncingExpertGeometryDisclosure = false;
 
 function recordAutoUpdateTrace(stage, detail = '') {
   const entry = `${stage}${detail ? `:${detail}` : ''}`;
@@ -357,6 +388,187 @@ const TEMPLATE_POSITIVE_FIELD_INDICES = {
   surfaceSpacing: new Set([0, 2]),
   sectionData: new Set([3, 5]),
 };
+const COLUMN_LAYOUT_STORAGE_KEY = 'vibelattice.columnLayout.v1';
+const COLUMN_LAYOUT_DEFAULTS = {
+  settings: 360,
+  outputs: 420,
+};
+const COLUMN_LAYOUT_LIMITS = {
+  settingsMin: 280,
+  settingsMax: 1320,
+  outputsMin: 320,
+  outputsMax: 780,
+};
+const EIGEN_MODE_DAMPING_TARGET = Math.SQRT1_2;
+const EIGEN_MODE_REAL_AXIS_TARGET = 1.0;
+const EIGEN_MODE_REAL_AXIS_SIGMA_FLOOR = 0.001;
+const EIGEN_MODE_COMPONENT_PENALTY_CAP = 4000;
+const EIGEN_MODE_QUALITY_PENALTY_CAP = 9000;
+const DESIGN_EIGEN_DEFAULT_STATE_ORDER = ['u', 'w', 'q', 'theta', 'v', 'p', 'r', 'phi', 'x', 'y', 'z', 'psi'];
+const DESIGN_EIGEN_TARGETS = {
+  worst: {
+    key: 'worstEigenReal',
+    label: 'Worst mode',
+    targetMax: -0.001,
+    neutralMax: 0,
+    hardMax: 0.08,
+    displayMin: -0.25,
+    digits: 4,
+  },
+  shortPeriod: {
+    key: 'eigenShortPeriod',
+    label: 'Short period',
+    targetMax: -0.020,
+    neutralMax: 0,
+    hardMax: 0.12,
+    displayMin: -0.45,
+    digits: 4,
+    dampingMin: EIGEN_MODE_DAMPING_TARGET,
+    dampingSoftMin: 0.35,
+    dampingPenaltyWeight: 1.4,
+    dampingBarrierWeight: 1.5,
+    cyclesToHalfMax: 0.35,
+    halfLifeMax: 1.5,
+    realAxisRatioPreferred: EIGEN_MODE_REAL_AXIS_TARGET,
+    realAxisRatioActive: 1.6,
+    realAxisPenaltyWeight: 1.0,
+    realAxisBarrierWeight: 1.4,
+  },
+  phugoid: {
+    key: 'eigenPhugoid',
+    label: 'Phugoid',
+    targetMax: -0.001,
+    neutralMax: 0,
+    hardMax: 0.05,
+    displayMin: -0.08,
+    digits: 4,
+    dampingMin: 0.08,
+    dampingSoftMin: 0.015,
+    dampingPreferred: 0.16,
+    dampingPenaltyWeight: 0.18,
+    dampingBarrierWeight: 0.25,
+    cyclesToHalfMax: 8.0,
+    halfLifeMax: 18.0,
+    realAxisRatioPreferred: 12.0,
+    realAxisRatioActive: 40.0,
+    realAxisPenaltyWeight: 0.05,
+    realAxisBarrierWeight: 0.08,
+  },
+  dutchRoll: {
+    key: 'eigenDutchRoll',
+    label: 'Dutch roll',
+    targetMax: -0.010,
+    neutralMax: 0,
+    hardMax: 0.10,
+    displayMin: -0.25,
+    digits: 4,
+    dampingMin: EIGEN_MODE_DAMPING_TARGET,
+    dampingSoftMin: 0.35,
+    dampingPenaltyWeight: 2.2,
+    dampingBarrierWeight: 3.0,
+    cyclesToHalfMax: 0.35,
+    halfLifeMax: 1.8,
+    realAxisRatioPreferred: EIGEN_MODE_REAL_AXIS_TARGET,
+    realAxisRatioActive: 1.6,
+    realAxisPenaltyWeight: 1.8,
+    realAxisBarrierWeight: 3.0,
+  },
+  spiral: {
+    key: 'eigenSpiral',
+    label: 'Spiral',
+    targetMax: -0.001,
+    neutralMax: 0,
+    hardMax: 0.05,
+    displayMin: -0.08,
+    digits: 4,
+  },
+  rollSubsidence: {
+    key: 'eigenRollSubsidence',
+    label: 'Roll subsidence',
+    targetMax: -0.020,
+    neutralMax: 0,
+    hardMax: 0.12,
+    displayMin: -0.45,
+    digits: 4,
+  },
+  lateralOscillation: {
+    key: 'eigenLateralOscillation',
+    label: 'Lateral osc.',
+    targetMax: -0.010,
+    neutralMax: 0,
+    hardMax: 0.08,
+    displayMin: -0.16,
+    digits: 4,
+    dampingMin: EIGEN_MODE_DAMPING_TARGET,
+    dampingSoftMin: 0.45,
+    dampingPenaltyWeight: 3.0,
+    dampingBarrierWeight: 5.0,
+    cyclesToHalfMax: 0.25,
+    halfLifeMax: 1.5,
+    realAxisRatioPreferred: EIGEN_MODE_REAL_AXIS_TARGET,
+    realAxisRatioActive: 1.4,
+    realAxisPenaltyWeight: 2.5,
+    realAxisBarrierWeight: 5.0,
+  },
+  pitchSubsidence: {
+    key: 'eigenPitchSubsidence',
+    label: 'Pitch subsidence',
+    targetMax: -0.010,
+    neutralMax: 0,
+    hardMax: 0.08,
+    displayMin: -0.20,
+    digits: 4,
+  },
+  longitudinalDrift: {
+    key: 'eigenLongitudinalDrift',
+    label: 'Long. drift',
+    targetMax: -0.001,
+    neutralMax: 0,
+    hardMax: 0.05,
+    displayMin: -0.08,
+    digits: 4,
+  },
+  unknown: {
+    key: 'eigenUnknown',
+    label: 'Unknown mode',
+    targetMax: -0.001,
+    neutralMax: 0,
+    hardMax: 0.08,
+    displayMin: -0.16,
+    digits: 4,
+  },
+};
+const DESIGN_EIGEN_CLASS_ORDER = [
+  'shortPeriod',
+  'phugoid',
+  'dutchRoll',
+  'spiral',
+  'rollSubsidence',
+  'lateralOscillation',
+  'pitchSubsidence',
+  'longitudinalDrift',
+  'unknown',
+];
+const DESIGN_EIGEN_ASSIGNABLE_CLASSES = [
+  'shortPeriod',
+  'phugoid',
+  'dutchRoll',
+  'rollSubsidence',
+  'spiral',
+  'pitchSubsidence',
+  'longitudinalDrift',
+  'lateralOscillation',
+];
+const DESIGN_EIGEN_CLASS_SCORE_MIN = 0.58;
+const EIGEN_PLOT_MIN_ZOOM = 0.5;
+const EIGEN_PLOT_MAX_ZOOM = 64;
+const EIGEN_PLOT_BOX_MIN_PX = 8;
+const EIGEN_MODE_ANIMATION_REAL_SCALE = 0.25;
+const EIGEN_MODE_ANIMATION_DIVERGENCE_INITIAL_AMPLITUDE = 0.08;
+const EIGEN_MODE_ANIMATION_DIVERGENCE_RESET_SPANS = 3;
+const EIGEN_MODE_ANIMATION_DIVERGENCE_SAFETY_CAP = 1e6;
+const VIEWER_SKIN_FILL_EMISSIVE_INTENSITY = 0.24;
+const VIEWER_PRESSURE_OVERLAY_FILL_EMISSIVE_INTENSITY = 0.08;
 const EXAMPLE_MANIFEST_FILENAME = 'examples.json';
 const FALLBACK_EXAMPLE_AVL_FILES = [
   'al.avl',
@@ -693,6 +905,12 @@ function clampNumber(value, min, max) {
     hi = tmp;
   }
   return Math.min(hi, Math.max(lo, value));
+}
+
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === '') return Number.NaN;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : Number.NaN;
 }
 
 function parseTemplateNumberToken(token) {
@@ -1125,6 +1343,8 @@ function getTemplateParamPositiveFloor(param) {
   return decimalStep;
 }
 
+
+
 function buildTemplateParamList(rawText) {
   const text = String(rawText || '');
   const prevMap = new Map();
@@ -1325,6 +1545,103 @@ function queueTemplateParamApply() {
   }, 80);
 }
 
+function hasHorizontalOverflow(container, itemSelector) {
+  if (!container) return false;
+  const nodes = container.querySelectorAll(itemSelector);
+  for (const node of nodes) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.offsetParent === null) continue;
+    if (node.scrollWidth - node.clientWidth > 1) return true;
+  }
+  return false;
+}
+
+function fitGridFontVar({
+  grid,
+  cssVar,
+  maxPx,
+  minPx,
+  stepPx,
+  itemSelector,
+  extraOverflowCheck = null,
+}) {
+  if (!grid) return;
+  let size = maxPx;
+  grid.style.setProperty(cssVar, `${size.toFixed(2)}px`);
+  let overflow = hasHorizontalOverflow(grid, itemSelector) || (typeof extraOverflowCheck === 'function' && extraOverflowCheck());
+  while (overflow && size > minPx) {
+    size = Math.max(minPx, size - stepPx);
+    grid.style.setProperty(cssVar, `${size.toFixed(2)}px`);
+    overflow = hasHorizontalOverflow(grid, itemSelector) || (typeof extraOverflowCheck === 'function' && extraOverflowCheck());
+  }
+}
+
+function fitOutputGridFontsNow() {
+  fitGridFontVar({
+    grid: els.outTotalForces,
+    cssVar: '--forces-font-size',
+    maxPx: 16,
+    minPx: 8,
+    stepPx: 0.25,
+    itemSelector: '.force-cell:not(.control-row)',
+  });
+
+  fitGridFontVar({
+    grid: els.outStability,
+    cssVar: '--deriv-font-size',
+    maxPx: 14,
+    minPx: 7.5,
+    stepPx: 0.25,
+    itemSelector: '.stability-cell',
+    extraOverflowCheck: () => {
+      const n = els.outStabilityNeutral;
+      if (!(n instanceof HTMLElement) || n.offsetParent === null) return false;
+      return n.scrollWidth - n.clientWidth > 1;
+    },
+  });
+
+  fitGridFontVar({
+    grid: els.outBodyDeriv,
+    cssVar: '--deriv-font-size',
+    maxPx: 14,
+    minPx: 7,
+    stepPx: 0.25,
+    itemSelector: '.stability-cell',
+  });
+
+  fitGridFontVar({
+    grid: els.outForcesSurface,
+    cssVar: '--surface-font-size',
+    maxPx: 14,
+    minPx: 7,
+    stepPx: 0.25,
+    itemSelector: '.stability-cell',
+  });
+}
+
+function updateSurfaceNameColumnWidth() {
+  if (!els.outForcesSurface) return;
+  const names = [...els.outForcesSurface.querySelectorAll('.surface-name-text')]
+    .map((el) => String(el.textContent || '').trim())
+    .filter(Boolean);
+  if (!names.length) {
+    els.outForcesSurface.style.removeProperty('--surface-name-col');
+    return;
+  }
+  const maxChars = names.reduce((m, s) => Math.max(m, s.length), 0);
+  const widthCh = Math.max(8, Math.min(32, maxChars + 1));
+  els.outForcesSurface.style.setProperty('--surface-name-col', `${widthCh}ch`);
+}
+
+function scheduleOutputGridFontFit() {
+  if (outputFontFitRaf) return;
+  outputFontFitRaf = requestAnimationFrame(() => {
+    outputFontFitRaf = 0;
+    fitOutputGridFontsNow();
+  });
+}
+
+
 function renderTemplateParamControls() {
   if (!els.templateParamsPanel || !els.templateParamsList) return;
   const params = Array.isArray(uiState.templateParams) ? uiState.templateParams : [];
@@ -1522,162 +1839,506 @@ function resolveTemplateParamsInText(rawText) {
   });
 }
 
-function hasHorizontalOverflow(container, itemSelector) {
-  if (!container) return false;
-  const nodes = container.querySelectorAll(itemSelector);
-  for (const node of nodes) {
-    if (!(node instanceof HTMLElement)) continue;
-    if (node.offsetParent === null) continue;
-    if (node.scrollWidth - node.clientWidth > 1) return true;
-  }
-  return false;
+
+function eigenVectorComplexMagnitude(re, im) {
+  const r = Number(re);
+  const i = Number(im);
+  return Math.hypot(Number.isFinite(r) ? r : 0, Number.isFinite(i) ? i : 0);
 }
 
-function fitGridFontVar({
-  grid,
-  cssVar,
-  maxPx,
-  minPx,
-  stepPx,
-  itemSelector,
-  extraOverflowCheck = null,
-}) {
-  if (!grid) return;
-  let size = maxPx;
-  grid.style.setProperty(cssVar, `${size.toFixed(2)}px`);
-  let overflow = hasHorizontalOverflow(grid, itemSelector) || (typeof extraOverflowCheck === 'function' && extraOverflowCheck());
-  while (overflow && size > minPx) {
-    size = Math.max(minPx, size - stepPx);
-    grid.style.setProperty(cssVar, `${size.toFixed(2)}px`);
-    overflow = hasHorizontalOverflow(grid, itemSelector) || (typeof extraOverflowCheck === 'function' && extraOverflowCheck());
-  }
-}
-
-function fitOutputGridFontsNow() {
-  fitGridFontVar({
-    grid: els.outTotalForces,
-    cssVar: '--forces-font-size',
-    maxPx: 16,
-    minPx: 8,
-    stepPx: 0.25,
-    itemSelector: '.force-cell:not(.control-row)',
-  });
-
-  fitGridFontVar({
-    grid: els.outStability,
-    cssVar: '--deriv-font-size',
-    maxPx: 14,
-    minPx: 7.5,
-    stepPx: 0.25,
-    itemSelector: '.stability-cell',
-    extraOverflowCheck: () => {
-      const n = els.outStabilityNeutral;
-      if (!(n instanceof HTMLElement) || n.offsetParent === null) return false;
-      return n.scrollWidth - n.clientWidth > 1;
-    },
-  });
-
-  fitGridFontVar({
-    grid: els.outBodyDeriv,
-    cssVar: '--deriv-font-size',
-    maxPx: 14,
-    minPx: 7,
-    stepPx: 0.25,
-    itemSelector: '.stability-cell',
-  });
-
-  fitGridFontVar({
-    grid: els.outForcesSurface,
-    cssVar: '--surface-font-size',
-    maxPx: 14,
-    minPx: 7,
-    stepPx: 0.25,
-    itemSelector: '.stability-cell',
-  });
-}
-
-function updateSurfaceNameColumnWidth() {
-  if (!els.outForcesSurface) return;
-  const names = [...els.outForcesSurface.querySelectorAll('.surface-name-text')]
-    .map((el) => String(el.textContent || '').trim())
-    .filter(Boolean);
-  if (!names.length) {
-    els.outForcesSurface.style.removeProperty('--surface-name-col');
-    return;
-  }
-  const maxChars = names.reduce((m, s) => Math.max(m, s.length), 0);
-  const widthCh = Math.max(8, Math.min(32, maxChars + 1));
-  els.outForcesSurface.style.setProperty('--surface-name-col', `${widthCh}ch`);
-}
-
-function scheduleOutputGridFontFit() {
-  if (outputFontFitRaf) return;
-  outputFontFitRaf = requestAnimationFrame(() => {
-    outputFontFitRaf = 0;
-    fitOutputGridFontsNow();
-  });
-}
-
-function isAvlCommentLine(line) {
-  const t = String(line || '').trim();
-  return !t || t.startsWith('#') || t.startsWith('!') || t.startsWith('%');
-}
-
-function replaceAvlTitleLine(text, title) {
-  const lineBreak = text.includes('\r\n') ? '\r\n' : '\n';
-  const lines = String(text || '').split(/\r?\n/);
-  for (let i = 0; i < lines.length; i += 1) {
-    if (isAvlCommentLine(lines[i])) continue;
-    lines[i] = title;
-    return lines.join(lineBreak);
-  }
-  return title;
-}
-
-function replaceAvlHeaderReferenceLines(text, refs) {
-  const formatByToken = (value, token, options = {}) => {
-    const { minDecimals = 1, integer = false } = options;
-    const v = Number(value);
-    if (!Number.isFinite(v)) return integer ? '0' : '0.0';
-    if (integer) return String(Math.trunc(v));
-    const tokenText = String(token || '');
-    const frac = tokenText.match(/\.(\d+)/);
-    const decimals = Math.max(minDecimals, frac ? frac[1].length : 0);
-    return v.toFixed(decimals);
-  };
-
-  const rewriteTriple = (line, values, options = [{}, {}, {}]) => {
-    const m = String(line).match(/^(\s*)(\S+)(\s+)(\S+)(\s+)(\S+)(\s*)$/);
-    if (!m) {
-      return `${formatByToken(values[0], '', options[0])}  ${formatByToken(values[1], '', options[1])}  ${formatByToken(values[2], '', options[2])}`;
+function designEigenStateMagnitudes(mode) {
+  const out = Object.fromEntries(DESIGN_EIGEN_DEFAULT_STATE_ORDER.map((name) => [name, 0]));
+  const order = Array.isArray(mode?.stateOrder) && mode.stateOrder.length
+    ? mode.stateOrder.map((name) => String(name || '').trim().toLowerCase())
+    : DESIGN_EIGEN_DEFAULT_STATE_ORDER;
+  const eig = mode?.eigenvector || null;
+  const re = Array.isArray(eig?.re) ? eig.re : null;
+  const im = Array.isArray(eig?.im) ? eig.im : null;
+  if (re && im) {
+    const count = Math.min(order.length, re.length, im.length);
+    for (let i = 0; i < count; i += 1) {
+      const name = order[i];
+      if (!name) continue;
+      out[name] = Math.max(Number(out[name]) || 0, eigenVectorComplexMagnitude(re[i], im[i]));
     }
-    const [, lead, t1, s1, t2, s2, t3, trail] = m;
-    const n1 = formatByToken(values[0], t1, options[0]);
-    const n2 = formatByToken(values[1], t2, options[1]);
-    const n3 = formatByToken(values[2], t3, options[2]);
-    return `${lead}${n1}${s1}${n2}${s2}${n3}${trail}`;
-  };
-
-  const lineBreak = text.includes('\r\n') ? '\r\n' : '\n';
-  const lines = String(text || '').split(/\r?\n/);
-  const dataLineIdx = [];
-  for (let i = 0; i < lines.length; i += 1) {
-    if (!isAvlCommentLine(lines[i])) dataLineIdx.push(i);
-    if (dataLineIdx.length >= 5) break;
   }
-  if (dataLineIdx.length < 5) return text;
-  const symIdx = dataLineIdx[2];
-  const srefIdx = dataLineIdx[3];
-  const xrefIdx = dataLineIdx[4];
-  lines[symIdx] = rewriteTriple(
-    lines[symIdx],
-    [refs.iysym, refs.izsym, refs.zsym],
-    [{ integer: true, minDecimals: 0 }, { integer: true, minDecimals: 0 }, { minDecimals: 1 }],
-  );
-  lines[srefIdx] = rewriteTriple(lines[srefIdx], [refs.sref, refs.cref, refs.bref]);
-  lines[xrefIdx] = rewriteTriple(lines[xrefIdx], [refs.xref, refs.yref, refs.zref]);
-  return lines.join(lineBreak);
+  if (!Object.values(out).some((value) => Number(value) > 0)) {
+    const vec = mode?.vec || {};
+    out.u = Math.abs(Number(vec.tx) || 0);
+    out.v = Math.abs(Number(vec.ty) || 0);
+    out.w = Math.abs(Number(vec.tz) || 0);
+    out.p = Math.abs(Number(vec.rx) || 0);
+    out.q = Math.abs(Number(vec.ry) || 0);
+    out.r = Math.abs(Number(vec.rz) || 0);
+    out.phi = out.p * 0.6;
+    out.theta = out.q * 0.6;
+    out.psi = out.r * 0.6;
+  }
+  return out;
 }
+
+function designEigenStateSum(magnitudes, names) {
+  return names.reduce((sum, name) => sum + (Number(magnitudes?.[name]) || 0), 0);
+}
+
+function designEigenModeFeatures(mode) {
+  const re = Number(mode?.re);
+  const im = Number(mode?.im);
+  const mag = designEigenStateMagnitudes(mode);
+  const longitudinal = designEigenStateSum(mag, ['u', 'w', 'q', 'theta', 'x', 'z']);
+  const lateral = designEigenStateSum(mag, ['v', 'p', 'r', 'phi', 'y', 'psi']);
+  const pitch = designEigenStateSum(mag, ['q', 'theta', 'w']);
+  const surge = designEigenStateSum(mag, ['u', 'x', 'z']);
+  const roll = designEigenStateSum(mag, ['p', 'phi']);
+  const yaw = designEigenStateSum(mag, ['v', 'r', 'psi', 'y']);
+  const total = longitudinal + lateral;
+  const absIm = Math.abs(Number.isFinite(im) ? im : 0);
+  const absRe = Math.abs(Number.isFinite(re) ? re : 0);
+  return {
+    re,
+    im,
+    absIm,
+    absRe,
+    longitudinal,
+    lateral,
+    pitch,
+    surge,
+    roll,
+    yaw,
+    total,
+    longRatio: total > 1e-10 ? longitudinal / total : 0,
+    latRatio: total > 1e-10 ? lateral / total : 0,
+    pitchRatio: (pitch + surge) > 1e-10 ? pitch / (pitch + surge) : 0,
+    surgeRatio: (pitch + surge) > 1e-10 ? surge / (pitch + surge) : 0,
+    rollRatio: (roll + yaw) > 1e-10 ? roll / (roll + yaw) : 0,
+    yawRatio: (roll + yaw) > 1e-10 ? yaw / (roll + yaw) : 0,
+    oscillatory: absIm > 1e-4,
+  };
+}
+
+function designEigenScoreForClass(features, classKey) {
+  const f = features || {};
+  const clamp01 = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+  const osc = Boolean(f.oscillatory);
+  const longRatio = clamp01(f.longRatio);
+  const latRatio = clamp01(f.latRatio);
+  const pitchRatio = clamp01(f.pitchRatio);
+  const surgeRatio = clamp01(f.surgeRatio);
+  const rollRatio = clamp01(f.rollRatio);
+  const yawRatio = clamp01(f.yawRatio);
+  const absIm = Math.max(0, Number(f.absIm) || 0);
+  const absRe = Math.max(0, Number(f.absRe) || 0);
+  const highFreq = clamp01(absIm / 0.9);
+  const lowFreq = 1 - clamp01(absIm / 0.9);
+  const realRoot = osc ? 0 : 1;
+  if (classKey === 'shortPeriod') {
+    if (!osc) return 0;
+    return clamp01((0.52 * longRatio) + (0.34 * pitchRatio) + (0.14 * highFreq) - (surgeRatio > 0.70 ? 0.18 : 0));
+  }
+  if (classKey === 'phugoid') {
+    if (!osc) return 0;
+    return clamp01((0.52 * longRatio) + (0.34 * surgeRatio) + (0.14 * lowFreq) - (pitchRatio > 0.66 ? 0.25 : 0));
+  }
+  if (classKey === 'dutchRoll') {
+    if (!osc) return 0;
+    return clamp01((0.54 * latRatio) + (0.34 * yawRatio) + (0.12 * clamp01(absIm / 0.45)) - (rollRatio > 0.72 ? 0.12 : 0));
+  }
+  if (classKey === 'lateralOscillation') {
+    if (!osc) return 0;
+    return clamp01((0.58 * latRatio) + (0.26 * rollRatio) + (0.16 * clamp01(absIm / 0.45)) - (yawRatio > 0.72 ? 0.12 : 0));
+  }
+  if (classKey === 'rollSubsidence') {
+    return clamp01((0.50 * realRoot) + (0.26 * latRatio) + (0.18 * rollRatio) + (0.06 * clamp01(absRe / 0.08)) - (absRe < 0.002 ? 0.16 : 0));
+  }
+  if (classKey === 'spiral') {
+    return clamp01((0.50 * realRoot) + (0.26 * latRatio) + (0.18 * yawRatio) + (0.06 * (1 - clamp01(absRe / 0.08))) - (rollRatio > 0.70 ? 0.16 : 0));
+  }
+  if (classKey === 'pitchSubsidence') {
+    return clamp01((0.50 * realRoot) + (0.30 * longRatio) + (0.20 * pitchRatio) - (absRe < 0.002 ? 0.12 : 0));
+  }
+  if (classKey === 'longitudinalDrift') {
+    return clamp01((0.50 * realRoot) + (0.30 * longRatio) + (0.20 * surgeRatio) - (absRe > 0.12 ? 0.14 : 0));
+  }
+  return 0;
+}
+
+function designEigenOscillationMetrics(re, im) {
+  const sigma = Number(re);
+  const omega = Math.abs(Number(im));
+  if (!Number.isFinite(sigma) || !Number.isFinite(omega) || omega <= 1e-4) {
+    return {
+      oscillatory: false,
+      sigma,
+      omega,
+      dampingRatio: Number.NaN,
+      realAxisRatio: Number.NaN,
+      naturalFrequency: Number.NaN,
+      period: Number.NaN,
+      halfLife: Number.NaN,
+      cyclesToHalf: Number.NaN,
+    };
+  }
+  const naturalFrequency = Math.hypot(sigma, omega);
+  const dampingRatio = naturalFrequency > 1e-9 ? -sigma / naturalFrequency : Number.NaN;
+  const realAxisRatio = omega / Math.max(EIGEN_MODE_REAL_AXIS_SIGMA_FLOOR, -sigma);
+  const period = (Math.PI * 2) / omega;
+  const halfLife = sigma < -1e-9 ? Math.LN2 / -sigma : Number.NaN;
+  const cyclesToHalf = Number.isFinite(halfLife) && Number.isFinite(period) && period > 1e-9
+    ? halfLife / period
+    : Number.NaN;
+  return {
+    oscillatory: true,
+    sigma,
+    omega,
+    dampingRatio,
+    realAxisRatio,
+    naturalFrequency,
+    period,
+    halfLife,
+    cyclesToHalf,
+  };
+}
+
+function designEigenQualityComponents(row = {}, spec = {}) {
+  const sigma = Number(row?.sigma);
+  const dampingMin = Number(spec?.dampingMin);
+  const dampingPreferred = Number.isFinite(Number(spec?.dampingPreferred)) ? Number(spec.dampingPreferred) : dampingMin;
+  const zeta = Number(row?.dampingRatio);
+  const dampingSoftMin = Number(spec?.dampingSoftMin);
+  const cyclesMax = Number(spec?.cyclesToHalfMax);
+  const halfLifeMax = Number(spec?.halfLifeMax);
+  const axisPreferred = Number(spec?.realAxisRatioPreferred);
+  const axisActive = Number(spec?.realAxisRatioActive);
+  const axisRatio = Number(row?.realAxisRatio);
+  const dampingWeight = Number.isFinite(Number(spec?.dampingPenaltyWeight)) ? Number(spec.dampingPenaltyWeight) : 1;
+  const dampingBarrierWeight = Number.isFinite(Number(spec?.dampingBarrierWeight)) ? Number(spec.dampingBarrierWeight) : 1;
+  const axisWeight = Number.isFinite(Number(spec?.realAxisPenaltyWeight)) ? Number(spec.realAxisPenaltyWeight) : 1;
+  const axisBarrierWeight = Number.isFinite(Number(spec?.realAxisBarrierWeight)) ? Number(spec.realAxisBarrierWeight) : 4;
+  const components = {
+    damping: 0,
+    dampingBarrier: 0,
+    axis: 0,
+    axisBarrier: 0,
+    cycles: 0,
+    halfLife: 0,
+    instability: 0,
+  };
+  if (Number.isFinite(sigma) && sigma > 0) {
+    components.instability = 12 + Math.pow(sigma / 0.025, 2);
+  }
+  if (Number.isFinite(dampingPreferred) && Number.isFinite(zeta) && zeta < dampingPreferred) {
+    components.damping = Math.pow((dampingPreferred - zeta) / Math.max(0.01, Math.abs(dampingPreferred)), 2) * dampingWeight;
+  }
+  if (Number.isFinite(dampingSoftMin) && Number.isFinite(zeta) && zeta < dampingSoftMin) {
+    components.dampingBarrier = Math.pow((dampingSoftMin - zeta) / Math.max(0.01, Math.abs(dampingSoftMin)), 2) * dampingBarrierWeight;
+  }
+  if (Number.isFinite(axisPreferred) && axisPreferred > 0 && Number.isFinite(axisRatio)) {
+    components.axis = Math.pow(Math.max(0, axisRatio - axisPreferred) / axisPreferred, 2) * axisWeight;
+    if (Number.isFinite(axisActive) && axisActive > axisPreferred) {
+      components.axisBarrier = Math.pow(Math.max(0, axisRatio - axisActive) / axisActive, 2) * axisBarrierWeight;
+    }
+  }
+  if (Number.isFinite(cyclesMax) && cyclesMax > 0 && Number.isFinite(Number(row?.cyclesToHalf))) {
+    components.cycles = Math.pow(Math.max(0, Number(row.cyclesToHalf) - cyclesMax) / cyclesMax, 2) * 0.60;
+  }
+  if (Number.isFinite(halfLifeMax) && halfLifeMax > 0 && Number.isFinite(Number(row?.halfLife))) {
+    components.halfLife = Math.pow(Math.max(0, Number(row.halfLife) - halfLifeMax) / halfLifeMax, 2) * 0.75;
+  }
+  Object.keys(components).forEach((key) => {
+    components[key] = Math.min(
+      EIGEN_MODE_COMPONENT_PENALTY_CAP,
+      Math.max(0, Number(components[key]) || 0),
+    );
+  });
+  const multiplier = Number.isFinite(Number(spec?.qualityPenaltyWeight)) ? Number(spec.qualityPenaltyWeight) : 1;
+  const rawTotal = Object.values(components).reduce((sum, value) => sum + (Number(value) || 0), 0) * multiplier;
+  const total = Math.min(EIGEN_MODE_QUALITY_PENALTY_CAP, rawTotal);
+  return { ...components, multiplier, rawTotal, total };
+}
+
+function designEigenQualityPenalty(row = {}, spec = {}) {
+  return designEigenQualityComponents(row, spec).total;
+}
+
+function designEigenBestClassForFeatures(features, usedClasses = new Set()) {
+  let best = {
+    classKey: 'unknown',
+    classLabel: 'Unclassified',
+    confidence: 0,
+  };
+  DESIGN_EIGEN_ASSIGNABLE_CLASSES.forEach((key) => {
+    if (usedClasses.has(key)) return;
+    const score = designEigenScoreForClass(features, key);
+    if (score > best.confidence) {
+      const target = DESIGN_EIGEN_TARGETS[key] || DESIGN_EIGEN_TARGETS.unknown;
+      best = {
+        classKey: key,
+        classLabel: target.label,
+        confidence: score,
+      };
+    }
+  });
+  if (best.confidence < DESIGN_EIGEN_CLASS_SCORE_MIN) {
+    return {
+      classKey: 'unknown',
+      classLabel: 'Unclassified',
+      confidence: best.confidence,
+    };
+  }
+  return best;
+}
+
+function classifyDesignEigenMode(mode) {
+  const features = designEigenModeFeatures(mode);
+  const best = designEigenBestClassForFeatures(features);
+  return {
+    classKey: best.classKey,
+    classLabel: best.classLabel,
+    confidence: best.confidence,
+    participation: {
+      longitudinal: features.longitudinal,
+      lateral: features.lateral,
+      pitch: features.pitch,
+      surge: features.surge,
+      roll: features.roll,
+      yaw: features.yaw,
+    },
+  };
+}
+
+function groupDesignEigenModes(sourceModes = []) {
+  const modes = sourceModes
+    .map((mode, index) => ({
+      mode,
+      index,
+      re: Number(mode?.re),
+      im: Number(mode?.im),
+      runCaseIndex: Number.isInteger(mode?.runCaseIndex) ? Number(mode.runCaseIndex) : -1,
+    }))
+    .filter((entry) => Number.isFinite(entry.re) && Number.isFinite(entry.im));
+  const used = new Set();
+  const groups = [];
+  modes.forEach((entry) => {
+    if (used.has(entry.index)) return;
+    used.add(entry.index);
+    const absIm = Math.abs(entry.im);
+    const groupEntries = [entry];
+    if (absIm > 1e-4) {
+      let best = null;
+      modes.forEach((candidate) => {
+        if (used.has(candidate.index)) return;
+        if (candidate.index === entry.index) return;
+        if (entry.runCaseIndex !== candidate.runCaseIndex) return;
+        if (entry.im * candidate.im >= 0) return;
+        const reScale = Math.max(1e-6, Math.abs(entry.re), Math.abs(candidate.re));
+        const imScale = Math.max(1e-6, absIm, Math.abs(candidate.im));
+        const reErr = Math.abs(entry.re - candidate.re) / reScale;
+        const imErr = Math.abs(entry.im + candidate.im) / imScale;
+        const score = reErr + imErr;
+        if (reErr <= 0.03 && imErr <= 0.03 && (!best || score < best.score)) {
+          best = { candidate, score };
+        }
+      });
+      if (best) {
+        used.add(best.candidate.index);
+        groupEntries.push(best.candidate);
+      }
+    }
+    const representative = groupEntries
+      .slice()
+      .sort((a, b) => Math.abs(b.im) - Math.abs(a.im) || b.im - a.im || a.index - b.index)[0];
+    groups.push({
+      id: groups.length,
+      entries: groupEntries,
+      indices: groupEntries.map((item) => item.index),
+      representativeIndex: representative.index,
+      re: groupEntries.reduce((sum, item) => sum + item.re, 0) / groupEntries.length,
+      im: representative.im,
+      absIm: Math.max(...groupEntries.map((item) => Math.abs(item.im))),
+      mode: representative.mode,
+      features: designEigenModeFeatures(representative.mode),
+    });
+  });
+  return groups;
+}
+
+function assignDesignEigenGroups(groups = []) {
+  const classBits = new Map(DESIGN_EIGEN_ASSIGNABLE_CLASSES.map((key, idx) => [key, 1 << idx]));
+  const candidateLists = groups.map((group) => {
+    const candidates = DESIGN_EIGEN_ASSIGNABLE_CLASSES
+      .map((key) => {
+        const score = designEigenScoreForClass(group.features, key);
+        return {
+          classKey: key,
+          classLabel: (DESIGN_EIGEN_TARGETS[key] || DESIGN_EIGEN_TARGETS.unknown).label,
+          confidence: score,
+        };
+      })
+      .filter((entry) => entry.confidence >= DESIGN_EIGEN_CLASS_SCORE_MIN)
+      .sort((a, b) => b.confidence - a.confidence);
+    candidates.push({ classKey: 'unknown', classLabel: 'Unclassified', confidence: 0 });
+    return candidates;
+  });
+  const memo = new Map();
+  const solve = (groupIdx, usedMask) => {
+    if (groupIdx >= groups.length) return { score: 0, choices: [] };
+    const key = `${groupIdx}:${usedMask}`;
+    if (memo.has(key)) return memo.get(key);
+    let best = { score: -Infinity, choices: [] };
+    candidateLists[groupIdx].forEach((candidate) => {
+      const bit = classBits.get(candidate.classKey) || 0;
+      if (bit && (usedMask & bit)) return;
+      const rest = solve(groupIdx + 1, usedMask | bit);
+      const bonus = candidate.classKey === 'unknown' ? 0 : 0.02;
+      const score = Number(candidate.confidence) + bonus + Number(rest.score || 0);
+      if (score > best.score) {
+        best = { score, choices: [candidate, ...rest.choices] };
+      }
+    });
+    memo.set(key, best);
+    return best;
+  };
+  return solve(0, 0).choices;
+}
+
+function summarizeDesignEigenModes(modes = []) {
+  const sourceModes = Array.isArray(modes) ? modes : [];
+  const groups = groupDesignEigenModes(sourceModes);
+  const assignments = assignDesignEigenGroups(groups);
+  const assignedByGroup = new Map(groups.map((group, idx) => [group.id, assignments[idx] || {
+    classKey: 'unknown',
+    classLabel: 'Unclassified',
+    confidence: 0,
+  }]));
+  const modeAssignments = new Map();
+  groups.forEach((group) => {
+    const assignment = assignedByGroup.get(group.id) || { classKey: 'unknown', classLabel: 'Unclassified', confidence: 0 };
+    group.entries.forEach((entry) => {
+      modeAssignments.set(entry.index, {
+        ...assignment,
+        groupId: group.id,
+        representativeIndex: group.representativeIndex,
+        labelVisible: assignment.classKey !== 'unknown'
+          && (group.entries.length > 1 || entry.index === group.representativeIndex),
+      });
+    });
+  });
+  const classifiedModes = sourceModes
+    .map((mode, index) => {
+      const re = Number(mode?.re);
+      const im = Number(mode?.im);
+      if (!Number.isFinite(re) || !Number.isFinite(im)) return null;
+      const assignment = modeAssignments.get(index) || {
+        classKey: 'unknown',
+        classLabel: 'Unclassified',
+        confidence: 0,
+        groupId: -1,
+        representativeIndex: index,
+        labelVisible: false,
+      };
+      const features = designEigenModeFeatures(mode);
+      return {
+        ...mode,
+        index,
+        re,
+        im,
+        classKey: assignment.classKey,
+        classLabel: assignment.classLabel,
+        classConfidence: assignment.confidence,
+        groupId: assignment.groupId,
+        representativeIndex: assignment.representativeIndex,
+        labelVisible: Boolean(assignment.labelVisible),
+        participation: {
+          longitudinal: features.longitudinal,
+          lateral: features.lateral,
+          pitch: features.pitch,
+          surge: features.surge,
+          roll: features.roll,
+          yaw: features.yaw,
+        },
+      };
+    })
+    .filter(Boolean);
+  const byClass = {};
+  groups.forEach((group) => {
+    const assignment = assignedByGroup.get(group.id);
+    if (!assignment || assignment.classKey === 'unknown') return;
+    const key = assignment.classKey;
+    const worstRe = Math.max(...group.entries.map((entry) => entry.re));
+    const worstEntry = group.entries.reduce((best, entry) => (!best || entry.re > best.re ? entry : best), null);
+    const existing = byClass[key];
+    if (!existing || worstRe > Number(existing.worstReal)) {
+      const oscillation = designEigenOscillationMetrics(worstRe, group.im);
+      const target = DESIGN_EIGEN_TARGETS[key] || DESIGN_EIGEN_TARGETS.unknown;
+      const qualityComponents = designEigenQualityComponents(oscillation, target);
+      byClass[key] = {
+        key,
+        label: assignment.classLabel || (DESIGN_EIGEN_TARGETS[key]?.label || 'Unknown mode'),
+        worstReal: Number(worstRe),
+        worstImag: Number(group.im),
+        dampingRatio: oscillation.dampingRatio,
+        realAxisRatio: oscillation.realAxisRatio,
+        naturalFrequency: oscillation.naturalFrequency,
+        period: oscillation.period,
+        halfLife: oscillation.halfLife,
+        cyclesToHalf: oscillation.cyclesToHalf,
+        qualityPenalty: qualityComponents.total,
+        qualityComponents,
+        modeIndex: Number(worstEntry?.index),
+        groupId: group.id,
+        confidence: Number(assignment.confidence) || 0,
+      };
+    }
+  });
+  const worst = classifiedModes.reduce((best, mode) => {
+    if (!best || Number(mode.re) > Number(best.re)) return mode;
+    return best;
+  }, null);
+  const classRows = Object.values(byClass)
+    .sort((a, b) => {
+      const ai = DESIGN_EIGEN_CLASS_ORDER.indexOf(a.key);
+      const bi = DESIGN_EIGEN_CLASS_ORDER.indexOf(b.key);
+      const ao = ai >= 0 ? ai : 999;
+      const bo = bi >= 0 ? bi : 999;
+      return ao - bo || Number(a.modeIndex) - Number(b.modeIndex);
+    });
+  const qualityRows = classRows.filter((row) => Number(row.qualityPenalty) > 0);
+  const worstQuality = qualityRows.reduce((best, row) => (!best || Number(row.qualityPenalty) > Number(best.qualityPenalty) ? row : best), null);
+  return {
+    modes: classifiedModes,
+    classRows,
+    groups: groups.map((group) => {
+      const assignment = assignedByGroup.get(group.id) || {};
+      return {
+        id: group.id,
+        indices: group.indices.slice(),
+        representativeIndex: group.representativeIndex,
+        re: group.re,
+        im: group.im,
+        absIm: group.absIm,
+        classKey: assignment.classKey || 'unknown',
+        classLabel: assignment.classLabel || 'Unclassified',
+        confidence: Number(assignment.confidence) || 0,
+      };
+    }),
+    modeCount: classifiedModes.length,
+    worstReal: worst ? Number(worst.re) : Number.NaN,
+    worstImag: worst ? Number(worst.im) : Number.NaN,
+    worstLabel: worst ? (worst.classKey === 'unknown' ? 'unclassified' : (worst.classLabel || '')) : '',
+    worstClassKey: worst?.classKey || '',
+    worstModeIndex: worst ? Number(worst.index) : -1,
+    unstableCount: classifiedModes.filter((mode) => Number(mode.re) > 0).length,
+    qualityPenalty: qualityRows.reduce((sum, row) => sum + (Number(row.qualityPenalty) || 0), 0),
+    worstQualityLabel: worstQuality?.label || '',
+    worstQualityClassKey: worstQuality?.key || '',
+    worstQualityPenalty: Number(worstQuality?.qualityPenalty) || 0,
+    worstQualityDampingRatio: finiteNumber(worstQuality?.dampingRatio),
+    worstQualityRealAxisRatio: finiteNumber(worstQuality?.realAxisRatio),
+    worstQualityCyclesToHalf: finiteNumber(worstQuality?.cyclesToHalf),
+    worstQualityComponents: worstQuality?.qualityComponents ? { ...worstQuality.qualityComponents } : null,
+  };
+}
+
 
 function computeModelCounts(model) {
   if (!model?.surfaces?.length) return { surfaces: 0, strips: 0, vortices: 0 };
@@ -1921,6 +2582,176 @@ function initTopNav() {
   });
 }
 
+function isDesktopColumnLayout() {
+  return !(typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 900px)').matches);
+}
+
+function readColumnLayout() {
+  try {
+    const parsed = JSON.parse(window.localStorage?.getItem(COLUMN_LAYOUT_STORAGE_KEY) || '{}');
+    return {
+      settings: Number(parsed?.settings),
+      outputs: Number(parsed?.outputs),
+    };
+  } catch {
+    return { settings: Number.NaN, outputs: Number.NaN };
+  }
+}
+
+function saveColumnLayout(layout) {
+  try {
+    window.localStorage?.setItem(COLUMN_LAYOUT_STORAGE_KEY, JSON.stringify({
+      settings: Number(layout?.settings),
+      outputs: Number(layout?.outputs),
+    }));
+  } catch {
+    // Storage may be unavailable in private or file contexts; resizing still works for this session.
+  }
+}
+
+function appRootLayoutWidth() {
+  const width = Number(els.appRoot?.getBoundingClientRect?.().width);
+  if (Number.isFinite(width) && width > 0) return width;
+  return Math.max(0, (Number(window.innerWidth) || 0) - 48);
+}
+
+function maxSettingsColumnWidth() {
+  return Math.min(
+    COLUMN_LAYOUT_LIMITS.settingsMax,
+    Math.max(COLUMN_LAYOUT_LIMITS.settingsMin, appRootLayoutWidth() - 760),
+  );
+}
+
+function maxOutputsColumnWidth() {
+  return Math.min(
+    COLUMN_LAYOUT_LIMITS.outputsMax,
+    Math.max(COLUMN_LAYOUT_LIMITS.outputsMin, appRootLayoutWidth() - 820),
+  );
+}
+
+function applyColumnLayout(layout = readColumnLayout()) {
+  if (!els.appRoot) return;
+  const settings = clampNumber(
+    Number(layout?.settings),
+    COLUMN_LAYOUT_LIMITS.settingsMin,
+    maxSettingsColumnWidth(),
+  );
+  const outputs = clampNumber(
+    Number(layout?.outputs),
+    COLUMN_LAYOUT_LIMITS.outputsMin,
+    maxOutputsColumnWidth(),
+  );
+  if (Number.isFinite(settings)) els.appRoot.style.setProperty('--settings-col-width', `${settings}px`);
+  else els.appRoot.style.removeProperty('--settings-col-width');
+  if (Number.isFinite(outputs)) els.appRoot.style.setProperty('--outputs-col-width', `${outputs}px`);
+  else els.appRoot.style.removeProperty('--outputs-col-width');
+  handleResize();
+}
+
+function resetColumnLayout() {
+  if (!els.appRoot) return;
+  els.appRoot.style.removeProperty('--settings-col-width');
+  els.appRoot.style.removeProperty('--outputs-col-width');
+  try {
+    window.localStorage?.removeItem(COLUMN_LAYOUT_STORAGE_KEY);
+  } catch {
+    // Ignore storage failures; the inline style reset is enough for the current session.
+  }
+  handleResize();
+}
+
+function currentColumnLayout() {
+  const settings = Number(els.settingsCol?.getBoundingClientRect?.().width);
+  const outputs = Number(els.outputsCol?.getBoundingClientRect?.().width);
+  return {
+    settings: Number.isFinite(settings) ? settings : COLUMN_LAYOUT_DEFAULTS.settings,
+    outputs: Number.isFinite(outputs) ? outputs : COLUMN_LAYOUT_DEFAULTS.outputs,
+  };
+}
+
+function initColumnResize() {
+  if (!els.appRoot) return;
+  applyColumnLayout();
+  let activeResize = false;
+  const bindHandle = (handle, kind) => {
+    if (!handle) return;
+    handle.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      resetColumnLayout();
+    });
+    handle.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home'].includes(event.key)) return;
+      if (!isDesktopColumnLayout()) return;
+      event.preventDefault();
+      if (event.key === 'Home') {
+        resetColumnLayout();
+        return;
+      }
+      const direction = event.key === 'ArrowRight' ? 1 : -1;
+      const current = currentColumnLayout();
+      if (kind === 'settings') current.settings = clampNumber(current.settings + direction * 24, COLUMN_LAYOUT_LIMITS.settingsMin, maxSettingsColumnWidth());
+      if (kind === 'outputs') current.outputs = clampNumber(current.outputs - direction * 24, COLUMN_LAYOUT_LIMITS.outputsMin, maxOutputsColumnWidth());
+      applyColumnLayout(current);
+      saveColumnLayout(current);
+    });
+    const startDrag = (event) => {
+      if (activeResize) return;
+      if (!isDesktopColumnLayout()) return;
+      event.preventDefault();
+      activeResize = true;
+      if (event.type === 'pointerdown') handle.setPointerCapture?.(event.pointerId);
+      document.body.classList.add('column-resizing');
+      handle.classList.add('active');
+      const startX = Number(event.clientX) || 0;
+      const start = currentColumnLayout();
+      const onMove = (moveEvent) => {
+        const dx = (Number(moveEvent.clientX) || 0) - startX;
+        const next = { ...start };
+        if (kind === 'settings') {
+          next.settings = clampNumber(start.settings + dx, COLUMN_LAYOUT_LIMITS.settingsMin, maxSettingsColumnWidth());
+        } else {
+          next.outputs = clampNumber(start.outputs - dx, COLUMN_LAYOUT_LIMITS.outputsMin, maxOutputsColumnWidth());
+        }
+        applyColumnLayout(next);
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        handle.classList.remove('active');
+        document.body.classList.remove('column-resizing');
+        activeResize = false;
+        saveColumnLayout(currentColumnLayout());
+      };
+      if (event.type === 'pointerdown') {
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp, { once: true });
+        window.addEventListener('pointercancel', onUp, { once: true });
+      } else {
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp, { once: true });
+      }
+    };
+    handle.addEventListener('pointerdown', startDrag);
+    handle.addEventListener('mousedown', startDrag);
+  };
+  bindHandle(els.resizeSettingsPlots, 'settings');
+  bindHandle(els.resizePlotsOutputs, 'outputs');
+}
+
+
+
+
+
+
+
+
+
+
+
+
 function initPanelCollapse() {
   const panels = document.querySelectorAll('.panel');
   panels.forEach((panel, idx) => {
@@ -2017,6 +2848,12 @@ function applyYDuplicate(model) {
   model.surfaces = next;
   return model;
 }
+
+
+
+
+
+
 
 function ensureExecWorker() {
   if (execWorker) return execWorker;
@@ -2716,6 +3553,7 @@ function activeRunCaseEntry() {
 function clearEigenModeRunCaseCache() {
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
+  uiState.eigenStatusMessage = '';
   uiState.selectedEigenMode = -1;
   stopModeAnimation();
   drawEigenPlot();
@@ -2904,10 +3742,6 @@ function renderMassProps(props = null) {
   show(els.massIxy, mp.ixy, 4);
   show(els.massIxz, mp.ixz, 4);
   show(els.massIyz, mp.iyz, 4);
-  if (els.massPropsMeta) {
-    const name = ensureMassFileExtension(uiState.massPropsFilename || 'model.mass');
-    els.massPropsMeta.textContent = `Loaded file: ${name}`;
-  }
 }
 
 function parseMassFileText(text) {
@@ -3179,6 +4013,7 @@ function renderRunCasesList() {
       uiState.runCases.splice(idx, 1);
       uiState.eigenModesByRunCase = {};
       uiState.eigenModes = [];
+      uiState.eigenStatusMessage = '';
       uiState.selectedEigenMode = -1;
       stopModeAnimation();
       if (!uiState.runCases.length) {
@@ -3296,22 +4131,25 @@ function applyRunCaseToUI(entry) {
     }
     return false;
   };
-  const nextMassProps = { ...(uiState.massProps || readMassPropsFromUI() || makeDefaultMassProps()) };
-  let massChanged = false;
-  massChanged = updateMassProp(nextMassProps, 'mass', inputs.mass) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'xcg', inputs.xcg) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'ycg', inputs.ycg) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'zcg', inputs.zcg) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'ixx', inputs.ixx) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'iyy', inputs.iyy) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'izz', inputs.izz) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'ixy', inputs.ixy) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'iyz', inputs.iyz) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'ixz', inputs.ixz) || massChanged;
-  massChanged = updateMassProp(nextMassProps, 'ixz', inputs.izx) || massChanged;
-  if (massChanged) {
-    uiState.massProps = nextMassProps;
-    renderMassProps(nextMassProps);
+  if (false) {
+  } else {
+    const nextMassProps = { ...(uiState.massProps || readMassPropsFromUI() || makeDefaultMassProps()) };
+    let massChanged = false;
+    massChanged = updateMassProp(nextMassProps, 'mass', inputs.mass) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'xcg', inputs.xcg) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'ycg', inputs.ycg) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'zcg', inputs.zcg) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'ixx', inputs.ixx) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'iyy', inputs.iyy) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'izz', inputs.izz) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'ixy', inputs.ixy) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'iyz', inputs.iyz) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'ixz', inputs.ixz) || massChanged;
+    massChanged = updateMassProp(nextMassProps, 'ixz', inputs.izx) || massChanged;
+    if (massChanged) {
+      uiState.massProps = nextMassProps;
+      renderMassProps(nextMassProps);
+    }
   }
 
   const byVar = new Map();
@@ -3503,6 +4341,7 @@ function parseRunsPayload(text) {
 function applyLoadedRunCases(parsed, filename, source = 'Loaded', rawText = '') {
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
+  uiState.eigenStatusMessage = '';
   uiState.selectedEigenMode = -1;
   stopModeAnimation();
   uiState.runCases = parsed.cases;
@@ -3576,6 +4415,7 @@ function applyLoadedMassProps(props, filename, source = 'Loaded', { applyToActiv
     renderFileHighlight();
     syncFileEditorScroll();
   }
+  if (els.massPropsMeta) els.massPropsMeta.textContent = `Loaded file: ${ensureMassFileExtension(filename)}`;
   rebuildMassPointOverlay(viewerState.bounds || null);
   logDebug(`${source} mass file: ${filename}`);
 }
@@ -3592,6 +4432,7 @@ function resetAuxPanelsForNewAvl() {
   updateRunCasesMeta();
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
+  uiState.eigenStatusMessage = '';
   uiState.selectedEigenMode = -1;
   stopModeAnimation();
   drawEigenPlot();
@@ -4177,7 +5018,8 @@ async function loadDefaultAVL() {
 }
 
 async function loadDefaultRunAndMass() {
-  const defaultBases = ['supra', 'plane'];
+  const currentBase = basenamePath(String(uiState.filename || '')).replace(/\.[^.]+$/, '').toLowerCase();
+  const defaultBases = currentBase ? [currentBase] : ['supra', 'plane'];
   for (const base of defaultBases) {
     const massName = `${base}.mass`;
     const massCandidates = [
@@ -4212,6 +5054,10 @@ async function loadDefaultRunAndMass() {
       return;
     }
   }
+  resetMassSessionDefaults();
+  resetRunCaseSessionDefaults();
+  uiState.seedNoRunFlightFromExec = false;
+  if (currentBase) logDebug(`No default companion run/mass for ${currentBase}; using session defaults.`);
 }
 
 async function fetchTextFromCandidates(candidates) {
@@ -4487,6 +5333,7 @@ els.runCaseAddBtn?.addEventListener('click', () => {
   uiState.runCases.push(created);
   uiState.eigenModesByRunCase = {};
   uiState.eigenModes = [];
+  uiState.eigenStatusMessage = '';
   uiState.selectedEigenMode = -1;
   stopModeAnimation();
   uiState.selectedRunCaseIndex = uiState.runCases.length - 1;
@@ -4511,6 +5358,22 @@ els.massPropsInput?.addEventListener('change', async (evt) => {
 els.massPropsSaveBtn?.addEventListener('click', () => {
   const filename = ensureMassFileExtension(uiState.massPropsFilename || 'model.mass');
   uiState.massPropsFilename = filename;
+  if (false) {
+    const props = uiState.massProps || readMassPropsFromUI();
+    uiState.massFileProps = { ...props };
+    uiState.massFileText = serializeMassFile(props);
+    renderMassFileProps(uiState.massFileProps);
+    updateEditorTabLabels();
+    if (els.massPropsMeta) els.massPropsMeta.textContent = `Saved file: ${filename}`;
+    downloadText(filename, uiState.massFileText);
+    if (uiState.editorTab === 'mass' && els.fileText) {
+      els.fileText.value = getEditorTabText('mass');
+      fitFileEditorFontSize();
+      renderFileHighlight();
+      syncFileEditorScroll();
+    }
+    return;
+  }
   const sourceText = (() => {
     if (uiState.editorTab === 'mass' && els.fileText) return String(els.fileText.value || '');
     return String(uiState.massFileText || '');
@@ -4526,6 +5389,7 @@ els.massPropsSaveBtn?.addEventListener('click', () => {
   }
   updateEditorTabLabels();
   downloadText(filename, uiState.massFileText);
+  if (els.massPropsMeta) els.massPropsMeta.textContent = `Saved file: ${filename}`;
   if (uiState.editorTab === 'mass' && els.fileText) {
     els.fileText.value = getEditorTabText('mass');
     fitFileEditorFontSize();
@@ -4560,6 +5424,7 @@ els.editorTabRun?.addEventListener('click', () => applyEditorTab('run'));
 ].forEach((el) => {
   if (!el) return;
   el.addEventListener('input', () => {
+    if (false) return;
     uiState.massProps = readMassPropsFromUI();
     if (el === els.massTotal && els.mass) {
       const next = Number(els.massTotal.value);
@@ -4578,6 +5443,10 @@ els.editorTabRun?.addEventListener('click', () => applyEditorTab('run'));
     }
   });
   el.addEventListener('change', () => {
+    if (false) {
+      renderMassProps(uiState.massProps);
+      return;
+    }
     uiState.massProps = readMassPropsFromUI();
     renderMassProps(uiState.massProps);
     if (el === els.massTotal) {
@@ -4599,6 +5468,7 @@ els.editorTabRun?.addEventListener('click', () => applyEditorTab('run'));
 ].forEach(([el, key, mirror]) => {
   if (!el) return;
   el.addEventListener('input', () => {
+    if (false) return;
     const next = Number(el.value);
     if (!Number.isFinite(next)) return;
     const props = { ...(uiState.massProps || readMassPropsFromUI()) };
@@ -4609,6 +5479,10 @@ els.editorTabRun?.addEventListener('click', () => applyEditorTab('run'));
     }
   });
   el.addEventListener('change', () => {
+    if (false) {
+      renderMassProps(uiState.massProps);
+      return;
+    }
     const next = Number(el.value);
     if (!Number.isFinite(next)) {
       renderMassProps(uiState.massProps || readMassPropsFromUI());
@@ -4632,25 +5506,19 @@ els.viewerPan?.addEventListener('click', () => {
   setControlMode('pan');
 });
 els.viewerZoomIn?.addEventListener('click', () => {
-  if (!controls) return;
-  if (typeof controls.dollyIn === 'function') {
-    controls.dollyIn(1.2);
-  } else if (camera) {
-    camera.position.multiplyScalar(0.9);
-  }
-  controls.update();
+  zoomViewerBy(1.2);
 });
 els.viewerZoomOut?.addEventListener('click', () => {
-  if (!controls) return;
-  if (typeof controls.dollyOut === 'function') {
-    controls.dollyOut(1.2);
-  } else if (camera) {
-    camera.position.multiplyScalar(1.1);
-  }
-  controls.update();
+  zoomViewerBy(1 / 1.2);
 });
 els.viewerHome?.addEventListener('click', () => {
   fitCameraToObject(aircraft);
+});
+els.viewerProjection?.addEventListener('click', () => {
+  toggleViewerProjectionMode();
+});
+els.viewerQuad?.addEventListener('click', () => {
+  toggleViewerQuadMode();
 });
 els.eigenHome?.addEventListener('click', () => {
   resetEigenViewport();
@@ -4663,6 +5531,12 @@ els.eigenZoomOut?.addEventListener('click', () => {
 });
 els.eigenPan?.addEventListener('click', () => {
   setEigenPanMode(!uiState.eigenPanMode);
+});
+els.eigenScaleLock?.addEventListener('click', () => {
+  setEigenScaleLocked(!uiState.eigenScaleLocked);
+});
+els.eigenDivergence?.addEventListener('click', () => {
+  setEigenDivergenceMode(!uiState.eigenShowDivergence);
 });
 els.eigenDownload?.addEventListener('click', () => {
   const rows = buildEigenmodeRows();
@@ -4752,6 +5626,7 @@ els.trefftz?.addEventListener('pointermove', handleTrefftzPointerMove);
 els.trefftz?.addEventListener('pointerdown', handleTrefftzPointerMove);
 els.trefftz?.addEventListener('pointerleave', handleTrefftzPointerLeave);
 els.eigenPlot?.addEventListener('click', handleEigenCanvasClick);
+els.eigenPlot?.addEventListener('dblclick', handleEigenCanvasDoubleClick);
 els.eigenPlot?.addEventListener('pointerdown', handleEigenPointerDown);
 els.eigenPlot?.addEventListener('pointermove', handleEigenPointerMove);
 els.eigenPlot?.addEventListener('pointerup', handleEigenPointerUp);
@@ -4794,6 +5669,10 @@ els.gee?.addEventListener('input', () => {
   requestAutoUpdate(AUTO_UPDATE_STAGE.CONSTRAINTS | AUTO_UPDATE_STAGE.EXEC | AUTO_UPDATE_STAGE.EIGEN);
 });
 els.mass?.addEventListener('input', () => {
+  if (false) {
+    renderMassProps(uiState.massProps);
+    return;
+  }
   const next = Number(els.mass.value);
   if (Number.isFinite(next)) {
     if (els.massTotal && document.activeElement !== els.massTotal) {
@@ -5165,6 +6044,31 @@ function handleTrefftzPointerLeave(evt) {
   trefftzHoverState.yPx = null;
   if (uiState.trefftzData?.strips?.length) {
     updateTrefftz(uiState.lastCL ?? Number(els.cl?.value || 0));
+  }
+}
+
+function drawCanvasRoundRect(ctx, x, y, w, h, r) {
+  const radius = Math.max(0, Math.min(Number(r) || 0, Math.abs(w) / 2, Math.abs(h) / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + w - radius, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+  ctx.lineTo(x + w, y + h - radius);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+  ctx.lineTo(x + radius, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+}
+
+function trefftzHoverDisplayLabel(series) {
+  switch (series) {
+    case 'clp': return 'Cl perp';
+    case 'cl': return 'Cl';
+    case 'cnc': return 'Cl*c/Cref';
+    case 'ai': return 'ai';
+    default: return String(series || '').trim() || 'value';
   }
 }
 
@@ -5624,6 +6528,7 @@ function updateTrefftz(cl) {
     const seriesDefs = [
       {
         id: 'clp',
+        label: 'cl_perp',
         color: '#ef4444',
         dash: [6, 4],
         valueOf: (entry) => Number(entry?.[4]),
@@ -5631,6 +6536,7 @@ function updateTrefftz(cl) {
       },
       {
         id: 'cl',
+        label: 'cl',
         color: '#fb923c',
         dash: [6, 3, 1.5, 3],
         valueOf: (entry) => Number(entry?.[3]),
@@ -5638,6 +6544,7 @@ function updateTrefftz(cl) {
       },
       {
         id: 'cnc',
+        label: 'cl*c/cref',
         color: '#22c55e',
         dash: [],
         valueOf: (entry) => Number(entry?.[2]) / crefSafe,
@@ -5645,6 +6552,7 @@ function updateTrefftz(cl) {
       },
       {
         id: 'ai',
+        label: 'ai',
         color: '#3b82f6',
         dash: [1.5, 3],
         valueOf: (entry) => -Number(entry?.[5]),
@@ -5737,6 +6645,7 @@ function updateTrefftz(cl) {
           if (!Number.isFinite(yPx) || yPx < (y0 - 2) || yPx > (y1 + 2)) return;
           markers.push({
             series: series.id,
+            seriesLabel: series.label,
             color: series.color,
             x: hoverX,
             y: yPx,
@@ -5765,9 +6674,51 @@ function updateTrefftz(cl) {
       const sortedMarkers = markers
         .filter((marker) => Number.isFinite(marker.value))
         .sort((a, b) => a.y - b.y);
-      ctx.font = '11px Consolas, "Courier New", monospace';
+      ctx.font = '12px Consolas, "Courier New", monospace';
       ctx.textBaseline = 'middle';
-      let prevLabelY = -Infinity;
+      const labelFont = ctx.font;
+      const labelHeight = 20;
+      const labelRadius = 6;
+      const labelPadLeft = 20;
+      const labelPadRight = 7;
+      const labelGap = 9;
+      const labelMinGap = 4;
+      const labelTopLimit = y0 + labelHeight / 2 + 4;
+      const labelBottomLimit = y1 - labelHeight / 2 - 4;
+      const labelItems = sortedMarkers.map((marker) => {
+        const valueText = fmt(marker.value, 3);
+        const displayLabel = trefftzHoverDisplayLabel(marker.series);
+        const labelText = `${displayLabel} ${valueText}`;
+        const labelW = Math.ceil(ctx.measureText(labelText).width + labelPadLeft + labelPadRight);
+        const preferRight = (marker.x + labelGap + labelW) <= (x1 - 4);
+        const unclampedBoxX = preferRight ? (marker.x + labelGap) : (marker.x - labelGap - labelW);
+        const boxX = clampNumber(unclampedBoxX, x0 + 4, Math.max(x0 + 4, x1 - labelW - 4));
+        return {
+          marker,
+          valueText,
+          displayLabel,
+          labelText,
+          labelW,
+          boxX,
+          labelY: clampNumber(marker.y, labelTopLimit, labelBottomLimit),
+        };
+      });
+      for (let i = 1; i < labelItems.length; i += 1) {
+        labelItems[i].labelY = Math.max(labelItems[i].labelY, labelItems[i - 1].labelY + labelHeight + labelMinGap);
+      }
+      if (labelItems.length) {
+        const overflow = labelItems[labelItems.length - 1].labelY - labelBottomLimit;
+        if (overflow > 0) {
+          labelItems[labelItems.length - 1].labelY = labelBottomLimit;
+          for (let i = labelItems.length - 2; i >= 0; i -= 1) {
+            labelItems[i].labelY = Math.min(labelItems[i].labelY, labelItems[i + 1].labelY - labelHeight - labelMinGap);
+          }
+          for (let i = 0; i < labelItems.length; i += 1) {
+            labelItems[i].labelY = Math.max(labelTopLimit, labelItems[i].labelY);
+            if (i > 0) labelItems[i].labelY = Math.max(labelItems[i].labelY, labelItems[i - 1].labelY + labelHeight + labelMinGap);
+          }
+        }
+      }
       sortedMarkers.forEach((marker) => {
         ctx.beginPath();
         ctx.fillStyle = marker.color;
@@ -5776,19 +6727,40 @@ function updateTrefftz(cl) {
         ctx.strokeStyle = 'rgba(8, 10, 12, 0.92)';
         ctx.lineWidth = 1.1;
         ctx.stroke();
-        const labelText = fmt(marker.value, 3);
-        const labelW = ctx.measureText(labelText).width;
-        const preferRight = (marker.x + 8 + labelW) <= (x1 - 4);
-        ctx.textAlign = preferRight ? 'left' : 'right';
-        let labelY = Math.max(y0 + 6, Math.min(y1 - 6, marker.y));
-        if (labelY < prevLabelY + 11) labelY = Math.min(y1 - 6, prevLabelY + 11);
-        prevLabelY = labelY;
-        const labelX = preferRight ? (marker.x + 8) : (marker.x - 8);
-        ctx.lineWidth = 2.2;
-        ctx.strokeStyle = 'rgba(8, 10, 12, 0.92)';
-        ctx.strokeText(labelText, labelX, labelY);
+      });
+      labelItems.forEach((item) => {
+        const marker = item.marker;
+        const boxY = item.labelY - labelHeight / 2;
+        const boxX = item.boxX;
+        const boxW = item.labelW;
+        ctx.save();
+        ctx.globalAlpha = 0.58;
+        ctx.strokeStyle = marker.color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const leaderTargetX = boxX > marker.x ? boxX : boxX + boxW;
+        ctx.moveTo(marker.x, marker.y);
+        ctx.lineTo(leaderTargetX, item.labelY);
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        drawCanvasRoundRect(ctx, boxX, boxY, boxW, labelHeight, labelRadius);
+        ctx.fillStyle = 'rgba(3, 7, 18, 0.88)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.30)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.beginPath();
         ctx.fillStyle = marker.color;
-        ctx.fillText(labelText, labelX, labelY);
+        ctx.arc(boxX + 9, item.labelY, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = labelFont;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(item.labelText, boxX + labelPadLeft, item.labelY);
+        ctx.restore();
       });
       hoverInfo = {
         active: true,
@@ -5798,12 +6770,26 @@ function updateTrefftz(cl) {
         spanLabelY,
         markerCount: sortedMarkers.length,
         markers: sortedMarkers.map((marker) => ({
+          ...(() => {
+            const item = labelItems.find((candidate) => candidate.marker === marker);
+            return item ? {
+              displayLabel: item.displayLabel,
+              labelBox: {
+                x: item.boxX,
+                y: item.labelY - labelHeight / 2,
+                width: item.labelW,
+                height: labelHeight,
+              },
+            } : {};
+          })(),
           series: marker.series,
+          seriesLabel: marker.seriesLabel,
           color: marker.color,
           x: marker.x,
           y: marker.y,
           value: marker.value,
-          label: fmt(marker.value, 3),
+          valueLabel: fmt(marker.value, 3),
+          label: `${marker.seriesLabel || marker.series} ${fmt(marker.value, 3)}`,
           surfaceIndex: marker.surfaceIndex,
         })),
       };
@@ -5860,6 +6846,7 @@ if (typeof window !== 'undefined') {
     },
     setEigenModes(modes) {
       uiState.eigenModes = Array.isArray(modes) ? modes : [];
+      setEigenStatusMessage('');
       uiState.selectedEigenMode = -1;
       uiState.eigenZoom = 1;
       uiState.eigenCenterRe = 0;
@@ -5885,11 +6872,56 @@ if (typeof window !== 'undefined') {
     getEigenPanMode() {
       return Boolean(uiState.eigenPanMode);
     },
+    getEigenScaleLocked() {
+      return Boolean(uiState.eigenScaleLocked);
+    },
+    getEigenDivergenceMode() {
+      return Boolean(uiState.eigenShowDivergence);
+    },
     getEigenPoints() {
       return Array.isArray(uiState.eigenPoints) ? uiState.eigenPoints.map((p) => ({ ...p })) : [];
     },
     getEigenViewport() {
       return uiState.eigenViewport ? { ...uiState.eigenViewport } : null;
+    },
+    getEigenPlotRenderState() {
+      return uiState.eigenPlotRenderState ? JSON.parse(JSON.stringify(uiState.eigenPlotRenderState)) : null;
+    },
+    getEigenStatusMessage() {
+      return String(uiState.eigenStatusMessage || '');
+    },
+    startEigenModeAnimationForTest(index = 0) {
+      startModeAnimation(Number(index) || 0);
+      return window.__trefftzTestHook.getModeAnimationState();
+    },
+    setEigenDivergenceModeForTest(enabled) {
+      setEigenDivergenceMode(Boolean(enabled));
+      return window.__trefftzTestHook.getEigenDivergenceMode();
+    },
+    setModeAnimationElapsedForTest(seconds = 0) {
+      if (modeAnimation) {
+        modeAnimation.started = performance.now() - Math.max(0, Number(seconds) || 0) * 1000;
+        updateModeAnimation();
+      }
+      return window.__trefftzTestHook.getModeAnimationState();
+    },
+    getModeAnimationState() {
+      if (!modeAnimation) return null;
+      return {
+        sigma: Number(modeAnimation.sigma),
+        rawReal: Number(modeAnimation.rawReal),
+        showDivergence: Boolean(modeAnimation.showDivergence),
+        initialAmplitude: Number(modeAnimation.initialAmplitude),
+        amplitude: Number(modeAnimation.lastAmplitude),
+        rawAmplitude: Number(modeAnimation.lastRawAmplitude),
+        amplitudeCap: Number(modeAnimation.amplitudeCap),
+        positionError: Number(modeAnimation.positionError),
+        resetPositionError: Number(modeAnimation.resetPositionError),
+        referenceSpan: Number(modeAnimation.referenceSpan),
+        loopCount: Number(modeAnimation.loopCount),
+        elapsed: Number(modeAnimation.elapsed),
+        selectedMode: Number(uiState.selectedEigenMode),
+      };
     },
     getRunCases() {
       return Array.isArray(uiState.runCases)
@@ -6193,16 +7225,44 @@ if (typeof window !== 'undefined') {
       let labelCount = 0;
       let labelMinWidth = Infinity;
       let labelMaxWidth = 0;
+      let labelMinHeight = Infinity;
+      let labelMaxHeight = 0;
       let labelMaxChord = 0;
       let labelMinWidthToChord = Infinity;
       let labelMaxWidthToChord = 0;
+      let labelMaxHeightToReferenceSize = 0;
       let labelVisibleCount = 0;
       let labelClipFailures = 0;
       let labelMaxOverflowPx = 0;
       let labelMaxTextLength = 0;
+      let skinMeshCount = 0;
+      let skinMeshVisible = 0;
+      let skinMaterialMinEmissiveIntensity = Infinity;
+      let skinMaterialMinEmissiveLuma = Infinity;
+      const skinMaterials = [];
       const labels = [];
       if (aircraft) {
         aircraft.traverse((obj) => {
+          if (obj?.isMesh && obj.name === 'surface-skin') {
+            skinMeshCount += 1;
+            if (obj.visible) skinMeshVisible += 1;
+            const mat = obj.material || {};
+            const intensity = Number(mat.emissiveIntensity);
+            const emissive = mat.emissive;
+            const luma = emissive
+              ? (0.2126 * Number(emissive.r || 0)) + (0.7152 * Number(emissive.g || 0)) + (0.0722 * Number(emissive.b || 0))
+              : 0;
+            if (Number.isFinite(intensity)) skinMaterialMinEmissiveIntensity = Math.min(skinMaterialMinEmissiveIntensity, intensity);
+            if (Number.isFinite(luma)) skinMaterialMinEmissiveLuma = Math.min(skinMaterialMinEmissiveLuma, luma);
+            skinMaterials.push({
+              name: String(obj.parent?.userData?.surfaceName || obj.name || ''),
+              colorHex: mat.color ? `#${mat.color.getHexString()}` : null,
+              emissiveHex: emissive ? `#${emissive.getHexString()}` : null,
+              emissiveIntensity: Number.isFinite(intensity) ? intensity : null,
+              emissiveLuma: Number.isFinite(luma) ? luma : null,
+              side: Number.isFinite(Number(mat.side)) ? Number(mat.side) : null,
+            });
+          }
           if (obj?.isLine && obj.name === 'surface-airfoil-outline') {
             airfoilOutlineCount += 1;
             if (obj.visible) airfoilOutlineVisible += 1;
@@ -6249,11 +7309,17 @@ if (typeof window !== 'undefined') {
           if (obj?.isSprite && obj?.userData?.surfaceLabel) {
             labelCount += 1;
             const w = Number(obj.scale?.x);
+            const h = Number(obj.scale?.y);
             const chord = Number(obj.userData?.chordWorld);
+            const labelReferenceSize = Number(obj.userData?.labelReferenceSize);
             if (obj.visible) labelVisibleCount += 1;
             if (Number.isFinite(w)) {
               if (w < labelMinWidth) labelMinWidth = w;
               if (w > labelMaxWidth) labelMaxWidth = w;
+            }
+            if (Number.isFinite(h)) {
+              if (h < labelMinHeight) labelMinHeight = h;
+              if (h > labelMaxHeight) labelMaxHeight = h;
             }
             if (Number.isFinite(chord) && chord > 1e-9) {
               if (chord > labelMaxChord) labelMaxChord = chord;
@@ -6262,6 +7328,10 @@ if (typeof window !== 'undefined') {
                 if (ratio < labelMinWidthToChord) labelMinWidthToChord = ratio;
                 if (ratio > labelMaxWidthToChord) labelMaxWidthToChord = ratio;
               }
+            }
+            if (Number.isFinite(h) && Number.isFinite(labelReferenceSize) && labelReferenceSize > 1e-9) {
+              const ratio = h / labelReferenceSize;
+              if (Number.isFinite(ratio) && ratio > labelMaxHeightToReferenceSize) labelMaxHeightToReferenceSize = ratio;
             }
             const text = String(obj.userData?.labelText ?? '');
             if (text.length > labelMaxTextLength) labelMaxTextLength = text.length;
@@ -6291,6 +7361,9 @@ if (typeof window !== 'undefined') {
               canvasHeightPx: Number.isFinite(canvasHeightPx) ? canvasHeightPx : null,
               textWidthPx: Number.isFinite(textWidthPx) ? textWidthPx : null,
               paddingXPx: Number.isFinite(paddingXPx) ? paddingXPx : null,
+              worldWidth: Number.isFinite(w) ? w : null,
+              worldHeight: Number.isFinite(h) ? h : null,
+              referenceSize: Number.isFinite(labelReferenceSize) ? labelReferenceSize : null,
               labelFits: explicitFit !== false,
               overflowPx: Number.isFinite(overflowPx) ? overflowPx : null,
             });
@@ -6312,9 +7385,17 @@ if (typeof window !== 'undefined') {
         labelMaxTextLength,
         labelMinWidth: Number.isFinite(labelMinWidth) ? labelMinWidth : 0,
         labelMaxWidth,
+        labelMinHeight: Number.isFinite(labelMinHeight) ? labelMinHeight : 0,
+        labelMaxHeight,
         labelMaxChord,
         labelMinWidthToChord: Number.isFinite(labelMinWidthToChord) ? labelMinWidthToChord : 0,
         labelMaxWidthToChord,
+        labelMaxHeightToReferenceSize,
+        skinMeshCount,
+        skinMeshVisible,
+        skinMaterialMinEmissiveIntensity: Number.isFinite(skinMaterialMinEmissiveIntensity) ? skinMaterialMinEmissiveIntensity : 0,
+        skinMaterialMinEmissiveLuma: Number.isFinite(skinMaterialMinEmissiveLuma) ? skinMaterialMinEmissiveLuma : 0,
+        skinMaterials,
         labels,
       };
     },
@@ -6384,6 +7465,16 @@ if (typeof window !== 'undefined') {
       return {
         mode,
         label: mode ? (VIEW_MODE_LABELS[mode] || mode) : null,
+        layoutMode: activeViewerQuadLayoutMode(),
+        quadEnabled: isViewerQuadMode(),
+        projectionMode: activeProjectionMode(),
+        cameraType: camera?.isOrthographicCamera ? 'OrthographicCamera' : (camera?.isPerspectiveCamera ? 'PerspectiveCamera' : null),
+        cameraZoom: Number.isFinite(Number(camera?.zoom)) ? Number(camera.zoom) : null,
+        controlsTarget: controls?.target ? {
+          x: Number(controls.target.x) || 0,
+          y: Number(controls.target.y) || 0,
+          z: Number(controls.target.z) || 0,
+        } : null,
         cameraPosition: camera ? {
           x: Number(camera.position?.x) || 0,
           y: Number(camera.position?.y) || 0,
@@ -6394,6 +7485,39 @@ if (typeof window !== 'undefined') {
           y: Number(camera.up?.y) || 0,
           z: Number(camera.up?.z) || 0,
         } : null,
+        quadPanes: getViewerQuadPaneStates(),
+      };
+    },
+    getViewerQuadState() {
+      return {
+        layoutMode: activeViewerQuadLayoutMode(),
+        enabled: isViewerQuadMode(),
+        projectionMode: activeProjectionMode(),
+        viewerClass: els.viewer?.className || '',
+        overlayHidden: Boolean(els.viewerQuadOverlay?.hidden),
+        paneLabels: VIEWER_QUAD_PANES.map((pane) => pane.label),
+        panes: getViewerQuadPaneStates(),
+      };
+    },
+    getViewerMouseControlState() {
+      const mouse = controls?.mouseButtons || {};
+      return {
+        mode: viewerState.mode,
+        left: viewerMouseActionName(mouse.LEFT),
+        middle: viewerMouseActionName(mouse.MIDDLE),
+        right: viewerMouseActionName(mouse.RIGHT),
+      };
+    },
+    getViewerFitState() {
+      const bounds = viewerState.bounds || (aircraft ? computeBounds(aircraft, { excludeViewerOverlays: true }) : null);
+      const cameraDistance = camera
+        ? Math.hypot(Number(camera.position?.x) || 0, Number(camera.position?.y) || 0, Number(camera.position?.z) || 0)
+        : null;
+      return {
+        fitDistance: Number.isFinite(Number(viewerState.fitDistance)) ? Number(viewerState.fitDistance) : null,
+        orthoFrustumHeight: Number.isFinite(Number(viewerState.orthoFrustumHeight)) ? Number(viewerState.orthoFrustumHeight) : null,
+        cameraDistance: Number.isFinite(Number(cameraDistance)) ? Number(cameraDistance) : null,
+        boundsMaxDim: Number.isFinite(Number(bounds?.maxDim)) ? Number(bounds.maxDim) : null,
       };
     },
     getTemplateParams() {
@@ -6810,6 +7934,26 @@ if (typeof window !== 'undefined') {
         z: Number(marker.position?.z) || 0,
       };
     },
+    getReferenceMarkerVisualState() {
+      if (!aircraft) return null;
+      const marker = aircraft.getObjectByName?.('reference-marker');
+      if (!marker) return null;
+      marker.updateMatrixWorld?.(true);
+      const pos = marker.getWorldPosition
+        ? marker.getWorldPosition(new THREE.Vector3())
+        : { x: Number(marker.position?.x) || 0, y: Number(marker.position?.y) || 0, z: Number(marker.position?.z) || 0 };
+      const radius = Number(marker.userData?.radius);
+      const referenceSize = Number(marker.userData?.referenceSize);
+      const bounds = viewerState.bounds || computeBounds(aircraft);
+      return {
+        x: Number(pos.x) || 0,
+        y: Number(pos.y) || 0,
+        z: Number(pos.z) || 0,
+        radius: Number.isFinite(radius) ? radius : null,
+        referenceSize: Number.isFinite(referenceSize) ? referenceSize : null,
+        boundsMaxDim: Number.isFinite(Number(bounds?.maxDim)) ? Number(bounds.maxDim) : null,
+      };
+    },
     sampleInducedAtWorld(x = 0, y = 0, z = 0) {
       const px = Number(x);
       const py = Number(y);
@@ -6846,16 +7990,233 @@ if (typeof window !== 'undefined') {
 
 function computeEigenModesFromExec(result) {
   if (result?.EIGEN?.modes?.length) {
-    return result.EIGEN.modes.map((m) => ({
-      name: m.name || 'Mode',
-      re: Number(m.re) || 0,
-      im: Number(m.im) || 0,
-      vec: m.vec || { rx: 0, ry: 0, rz: 0, tx: 0, ty: 0, tz: 0 },
-      eigenvector: m.eigenvector || null,
-      stateOrder: m.stateOrder || null,
-    }));
+    return result.EIGEN.modes.map((m) => {
+      return {
+        name: m.name || 'Mode',
+        re: Number(m.re) || 0,
+        im: Number(m.im) || 0,
+        vec: m.vec || { rx: 0, ry: 0, rz: 0, tx: 0, ty: 0, tz: 0 },
+        eigenvector: m.eigenvector || null,
+        stateOrder: m.stateOrder || null,
+      };
+    });
   }
   return [];
+}
+
+function eigenStatusMessageFromExec(result, modes = []) {
+  if (Array.isArray(modes) && modes.length) return '';
+  const raw = String(result?.EIGEN?.message || '').trim();
+  return raw || '';
+}
+
+function setEigenStatusMessage(message = '') {
+  const text = String(message || '').trim();
+  uiState.eigenStatusMessage = text;
+  if (els.eigenStatus) {
+    els.eigenStatus.textContent = text;
+    els.eigenStatus.hidden = !text;
+  }
+  if (els.eigenPlot) {
+    const label = text || 'Eigenmode plot';
+    els.eigenPlot.dataset.emptyMessage = text;
+    els.eigenPlot.setAttribute('aria-label', label);
+  }
+}
+
+function drawPlotMessage(ctx, text, x, y, maxWidth, lineHeight = 17) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  if (!words.length) return;
+  let line = '';
+  let lineNo = 0;
+  words.forEach((word) => {
+    const next = line ? `${line} ${word}` : word;
+    if (line && ctx.measureText(next).width > maxWidth) {
+      ctx.fillText(line, x, y + lineNo * lineHeight);
+      line = word;
+      lineNo += 1;
+    } else {
+      line = next;
+    }
+  });
+  if (line) ctx.fillText(line, x, y + lineNo * lineHeight);
+}
+
+function nicePlotTicks(min, max, maxTicks = 5) {
+  const lo = Number(min);
+  const hi = Number(max);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return [];
+  const target = Math.max(2, Number(maxTicks) || 5);
+  const rawStep = (hi - lo) / target;
+  const exp = Math.floor(Math.log10(Math.max(rawStep, 1e-12)));
+  const base = Math.pow(10, exp);
+  const step = ([1, 2, 5, 10].find((m) => rawStep <= m * base) || 10) * base;
+  const first = Math.ceil(lo / step) * step;
+  const ticks = [];
+  for (let value = first; value <= hi + step * 0.5; value += step) {
+    const rounded = Math.abs(value) < step * 1e-6 ? 0 : Number(value.toPrecision(12));
+    if (rounded >= lo - step * 1e-6 && rounded <= hi + step * 1e-6) ticks.push(rounded);
+    if (ticks.length > 24) break;
+  }
+  return ticks;
+}
+
+function eigenTickLabel(value) {
+  const v = Number(value);
+  if (!Number.isFinite(v)) return '';
+  const av = Math.abs(v);
+  if (av >= 10) return v.toFixed(0);
+  if (av >= 1) return v.toFixed(1);
+  if (av >= 0.1) return v.toFixed(2);
+  return v.toFixed(3);
+}
+
+function drawEigenGridTicksAndDamping(ctx, plot) {
+  const {
+    x0, y0, pw, ph, xFor, yFor, centerRe, centerIm, maxRe, maxIm,
+  } = plot;
+  const reMin = centerRe - maxRe;
+  const reMax = centerRe + maxRe;
+  const imMin = centerIm - maxIm;
+  const imMax = centerIm + maxIm;
+  const reTicks = nicePlotTicks(reMin, reMax, 5);
+  const imTicks = nicePlotTicks(imMin, imMax, 4);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x0, y0, pw, ph);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(148,163,184,0.11)';
+  ctx.lineWidth = 1;
+  reTicks.forEach((tick) => {
+    const x = xFor(tick);
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y0 + ph);
+    ctx.stroke();
+  });
+  imTicks.forEach((tick) => {
+    const y = yFor(tick);
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x0 + pw, y);
+    ctx.stroke();
+  });
+  const dampingRatio = 0.707;
+  const dampingSlope = Math.sqrt(Math.max(0, 1 - dampingRatio * dampingRatio)) / dampingRatio;
+  const dampingSegments = [];
+  [-1, 1].forEach((sign) => {
+    let tMin = Math.max(0, -reMax);
+    let tMax = Math.max(0, -reMin);
+    if (sign > 0) {
+      tMin = Math.max(tMin, imMin / dampingSlope);
+      tMax = Math.min(tMax, imMax / dampingSlope);
+    } else {
+      tMin = Math.max(tMin, -imMax / dampingSlope);
+      tMax = Math.min(tMax, -imMin / dampingSlope);
+    }
+    if (tMax <= tMin + 1e-12) return;
+    const a = { re: -tMin, im: sign * dampingSlope * tMin };
+    const b = { re: -tMax, im: sign * dampingSlope * tMax };
+    dampingSegments.push({ sign, a, b });
+    ctx.strokeStyle = 'rgba(148,163,184,0.55)';
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(xFor(a.re), yFor(a.im));
+    ctx.lineTo(xFor(b.re), yFor(b.im));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+  const labelSegment = dampingSegments.find((seg) => seg.sign > 0) || dampingSegments[0];
+  if (labelSegment) {
+    const tLabel = 0.62;
+    const re = labelSegment.a.re + (labelSegment.b.re - labelSegment.a.re) * tLabel;
+    const im = labelSegment.a.im + (labelSegment.b.im - labelSegment.a.im) * tLabel;
+    ctx.fillStyle = 'rgba(203,213,225,0.78)';
+    ctx.font = '10px Consolas, "Courier New", monospace';
+    ctx.fillText('ζ=0.707', xFor(re) + 6, yFor(im) - 6);
+  }
+  ctx.restore();
+
+  ctx.fillStyle = '#718096';
+  ctx.font = '10px Consolas, "Courier New", monospace';
+  reTicks.forEach((tick) => {
+    const x = xFor(tick);
+    if (x < x0 - 1 || x > x0 + pw + 1) return;
+    ctx.fillText(eigenTickLabel(tick), x - 12, y0 + ph + 16);
+  });
+  imTicks.forEach((tick) => {
+    const y = yFor(tick);
+    if (y < y0 - 1 || y > y0 + ph + 1) return;
+    ctx.fillText(eigenTickLabel(tick), 5, y + 3);
+  });
+  return {
+    reTicks,
+    imTicks,
+    dampingRatio,
+    dampingSegments: dampingSegments.length,
+    dampingLabel: 'ζ=0.707',
+  };
+}
+
+function eigenBoxZoomRect(vp = uiState.eigenViewport) {
+  if (!eigenPointerBox.active || !vp) return null;
+  const x1 = clampNumber(Number(eigenPointerBox.startX), vp.x0, vp.x0 + vp.pw);
+  const y1 = clampNumber(Number(eigenPointerBox.startY), vp.y0, vp.y0 + vp.ph);
+  let x2 = clampNumber(Number(eigenPointerBox.currentX), vp.x0, vp.x0 + vp.pw);
+  let y2 = clampNumber(Number(eigenPointerBox.currentY), vp.y0, vp.y0 + vp.ph);
+  const rawWidth = Math.abs(x2 - x1);
+  const rawHeight = Math.abs(y2 - y1);
+  const scaleLocked = Boolean(uiState.eigenScaleLocked);
+  const aspect = (Number(vp.pw) > 1e-9 && Number(vp.ph) > 1e-9) ? (Number(vp.pw) / Number(vp.ph)) : 1;
+  if (scaleLocked && rawWidth > 1e-9 && rawHeight > 1e-9 && Number.isFinite(aspect) && aspect > 1e-9) {
+    const sx = x2 >= x1 ? 1 : -1;
+    const sy = y2 >= y1 ? 1 : -1;
+    let width = rawWidth;
+    let height = rawHeight;
+    if ((width / height) > aspect) width = height * aspect;
+    else height = width / aspect;
+    x2 = x1 + sx * width;
+    y2 = y1 + sy * height;
+  }
+  const left = Math.min(x1, x2);
+  const right = Math.max(x1, x2);
+  const top = Math.min(y1, y2);
+  const bottom = Math.max(y1, y2);
+  return {
+    x1,
+    y1,
+    x2,
+    y2,
+    left,
+    right,
+    top,
+    bottom,
+    width: right - left,
+    height: bottom - top,
+    rawWidth,
+    rawHeight,
+    aspect,
+    scaleLocked,
+  };
+}
+
+function drawEigenBoxZoomOverlay(ctx) {
+  if (!eigenPointerBox.active || !uiState.eigenViewport) return;
+  const rect = eigenBoxZoomRect(uiState.eigenViewport);
+  if (!rect) return;
+  const left = rect.left;
+  const top = rect.top;
+  const boxW = rect.width;
+  const boxH = rect.height;
+  if (boxW < 2 || boxH < 2) return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(125,211,252,0.10)';
+  ctx.strokeStyle = 'rgba(125,211,252,0.85)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  ctx.fillRect(left, top, boxW, boxH);
+  ctx.strokeRect(left, top, boxW, boxH);
+  ctx.restore();
 }
 
 function drawEigenPlot() {
@@ -6878,7 +8239,7 @@ function drawEigenPlot() {
   ctx.fillStyle = getCssVarColor('--panel', '#0f1115');
   ctx.fillRect(0, 0, width, height);
 
-  const pad = { l: 44, r: 18, t: 20, b: 30 };
+  const pad = { l: 44, r: 72, t: 20, b: 30 };
   const x0 = pad.l;
   const y0 = pad.t;
   const pw = Math.max(1, width - pad.l - pad.r);
@@ -6888,11 +8249,17 @@ function drawEigenPlot() {
   if (!modes.length) {
     uiState.eigenPoints = [];
     uiState.eigenViewport = null;
-    ctx.fillStyle = '#8ea2b8';
-    ctx.font = '12px Consolas, "Courier New", monospace';
-    ctx.fillText('No eigenmodes available yet. Run trim/EXEC first.', x0 + 8, y0 + 18);
+    uiState.eigenPlotRenderState = null;
+    const message = uiState.eigenStatusMessage || 'No eigenmodes available yet. Run trim/EXEC first.';
+    setEigenStatusMessage(message);
+    if (!els.eigenStatus) {
+      ctx.fillStyle = '#8ea2b8';
+      ctx.font = '12px Consolas, "Courier New", monospace';
+      drawPlotMessage(ctx, message, x0 + 8, y0 + 18, Math.max(120, pw - 16));
+    }
     return;
   }
+  setEigenStatusMessage('');
 
   let maxRe = 0.2;
   let maxIm = 0.2;
@@ -6900,10 +8267,16 @@ function drawEigenPlot() {
     maxRe = Math.max(maxRe, Math.abs(Number(m.re) || 0));
     maxIm = Math.max(maxIm, Math.abs(Number(m.im) || 0));
   });
-  const zoom = Math.max(0.5, Math.min(8, Number(uiState.eigenZoom) || 1));
+  const zoom = Math.max(EIGEN_PLOT_MIN_ZOOM, Math.min(EIGEN_PLOT_MAX_ZOOM, Number(uiState.eigenZoom) || 1));
   uiState.eigenZoom = zoom;
   maxRe = Math.max(0.05, (maxRe * 1.2) / zoom);
   maxIm = Math.max(0.05, (maxIm * 1.2) / zoom);
+  if (uiState.eigenScaleLocked) {
+    const rePerPx = maxRe / Math.max(1, pw);
+    const imPerPx = maxIm / Math.max(1, ph);
+    if (rePerPx > imPerPx) maxIm = Math.max(maxIm, rePerPx * ph);
+    else maxRe = Math.max(maxRe, imPerPx * pw);
+  }
   const centerRe = Number.isFinite(uiState.eigenCenterRe) ? Number(uiState.eigenCenterRe) : 0;
   const centerIm = Number.isFinite(uiState.eigenCenterIm) ? Number(uiState.eigenCenterIm) : 0;
 
@@ -6911,9 +8284,18 @@ function drawEigenPlot() {
   const yFor = (im) => y0 + (1 - ((im - centerIm + maxIm) / (2 * maxIm))) * ph;
   const yMid = yFor(0);
   const xMid = xFor(0);
+  const reUnitsPerPixel = (2 * maxRe) / Math.max(1, pw);
+  const imUnitsPerPixel = (2 * maxIm) / Math.max(1, ph);
   uiState.eigenViewport = {
     xMid, yMid, maxRe, maxIm, zoom, centerRe, centerIm, x0, y0, pw, ph,
+    scaleLocked: Boolean(uiState.eigenScaleLocked),
+    reUnitsPerPixel,
+    imUnitsPerPixel,
   };
+
+  const gridState = drawEigenGridTicksAndDamping(ctx, {
+    x0, y0, pw, ph, xFor, yFor, centerRe, centerIm, maxRe, maxIm,
+  });
 
   ctx.strokeStyle = 'rgba(255,255,255,0.13)';
   ctx.lineWidth = 1;
@@ -6924,10 +8306,18 @@ function drawEigenPlot() {
   ctx.lineTo(xMid, y0 + ph);
   ctx.stroke();
 
+  const axisLabels = {
+    real: 'ℜ',
+    imag: 'ℑ',
+  };
+  const axisLabelPositions = {
+    real: { x: x0 + pw - 22, y: Math.max(y0 + 16, Math.min(y0 + ph - 6, yMid - 8)) },
+    imag: { x: Math.max(x0 + 6, Math.min(x0 + pw - 28, xMid + 8)), y: y0 + 16 },
+  };
   ctx.fillStyle = '#8ea2b8';
-  ctx.font = '11px Consolas, "Courier New", monospace';
-  ctx.fillText('Re', x0 + pw - 18, yMid - 6);
-  ctx.fillText('Im', xMid + 6, y0 + 12);
+  ctx.font = '16px Georgia, "Times New Roman", serif';
+  ctx.fillText(axisLabels.real, axisLabelPositions.real.x, axisLabelPositions.real.y);
+  ctx.fillText(axisLabels.imag, axisLabelPositions.imag.x, axisLabelPositions.imag.y);
 
   const runColor = activeRunCaseColor();
   const activeCaseIdx = activeRunCaseIndex();
@@ -6939,6 +8329,9 @@ function drawEigenPlot() {
     uiState.selectedEigenMode = -1;
     stopModeAnimation();
   }
+  const eigenSummary = summarizeDesignEigenModes(modes);
+  const classByIndex = new Map(eigenSummary.modes.map((mode) => [Number(mode.index), mode]));
+  const groupById = new Map((eigenSummary.groups || []).map((group) => [Number(group.id), group]));
   uiState.eigenPoints = [];
   modes.forEach((m, idx) => {
     const re = Number(m.re) || 0;
@@ -6973,7 +8366,15 @@ function drawEigenPlot() {
     ctx.arc(px, py, isSelected ? 5 : 4, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    if (Math.abs(im) > 1e-8) {
+    const modeClass = classByIndex.get(idx) || {
+      classKey: 'unknown',
+      classLabel: 'Unclassified',
+      labelVisible: false,
+      groupId: -1,
+    };
+    const group = groupById.get(Number(modeClass.groupId));
+    const hasExplicitConjugate = Boolean(group && Array.isArray(group.indices) && group.indices.length > 1);
+    if (Math.abs(im) > 1e-8 && !hasExplicitConjugate) {
       const py2 = yFor(-im);
       ctx.beginPath();
       ctx.arc(px, py2, isSelected ? 5 : 4, 0, Math.PI * 2);
@@ -6982,7 +8383,17 @@ function drawEigenPlot() {
     }
     ctx.fillStyle = modeSelectable ? '#c7d2fe' : '#6b7b95';
     ctx.font = '10px Consolas, "Courier New", monospace';
-    ctx.fillText(m.name, px + 8, py - 6);
+    const modeLabel = modeClass?.classKey && modeClass.classKey !== 'unknown'
+      ? modeClass.classLabel
+      : (m.name || `Mode ${idx + 1}`);
+    const shouldDrawLabel = Boolean(modeClass?.labelVisible || isSelected);
+    const labelOffsetY = im < 0 ? 14 : -6;
+    if (shouldDrawLabel) ctx.fillText(modeLabel, px + 8, py + labelOffsetY);
+    if (shouldDrawLabel && Math.abs(im) > 1e-8 && !hasExplicitConjugate) {
+      const py2 = yFor(-im);
+      const ghostOffsetY = (-im) < 0 ? 14 : -6;
+      ctx.fillText(modeLabel, px + 8, py2 + ghostOffsetY);
+    }
     if (isSelected) {
       const reTxt = (Number(m.re) || 0).toFixed(3);
       const imVal = Number(m.im) || 0;
@@ -7001,15 +8412,56 @@ function drawEigenPlot() {
       selectable: modeSelectable,
       runCaseIndex: modeRunCaseIdx,
       dimmed: !modeSelectable,
+      classKey: modeClass?.classKey || 'unknown',
+      classLabel: modeClass?.classLabel || 'Unclassified',
+      displayLabel: shouldDrawLabel ? modeLabel : '',
+      labelVisible: Boolean(modeClass?.labelVisible),
+      groupId: Number.isFinite(Number(modeClass?.groupId)) ? Number(modeClass.groupId) : -1,
+      representativeIndex: Number.isFinite(Number(modeClass?.representativeIndex)) ? Number(modeClass.representativeIndex) : idx,
     });
   });
+  drawEigenBoxZoomOverlay(ctx);
+  uiState.eigenPlotRenderState = {
+    ...gridState,
+    labels: uiState.eigenPoints.map((point) => ({
+      idx: point.idx,
+      classKey: point.classKey,
+      classLabel: point.classLabel,
+      displayLabel: point.displayLabel,
+      visible: Boolean(point.displayLabel),
+      groupId: point.groupId,
+    })),
+    axisLabels,
+    axisLabelPositions,
+    viewport: { ...uiState.eigenViewport },
+    scaleLocked: Boolean(uiState.eigenScaleLocked),
+    reUnitsPerPixel,
+    imUnitsPerPixel,
+    boxZoomActive: Boolean(eigenPointerBox.active),
+    boxZoomRect: eigenBoxZoomRect(uiState.eigenViewport),
+  };
 }
 
 function updateEigenButtons() {
   if (els.eigenPan) {
     els.eigenPan.classList.toggle('active', Boolean(uiState.eigenPanMode));
-    els.eigenPan.title = uiState.eigenPanMode ? 'Pan eigenmode plot on' : 'Pan eigenmode plot';
+    setViewerButtonTooltip(els.eigenPan, uiState.eigenPanMode ? 'Pan eigenmode plot on' : 'Pan eigenmode plot');
     els.eigenPan.setAttribute('aria-pressed', uiState.eigenPanMode ? 'true' : 'false');
+  }
+  if (els.eigenScaleLock) {
+    els.eigenScaleLock.classList.toggle('active', Boolean(uiState.eigenScaleLocked));
+    setViewerButtonTooltip(els.eigenScaleLock, uiState.eigenScaleLocked
+      ? 'Eigenmode axes locked to equal scale'
+      : 'Keep real and imaginary axes to the same scale');
+    els.eigenScaleLock.setAttribute('aria-pressed', uiState.eigenScaleLocked ? 'true' : 'false');
+  }
+  if (els.eigenDivergence) {
+    els.eigenDivergence.classList.toggle('active', Boolean(uiState.eigenShowDivergence));
+    setViewerButtonTooltip(
+      els.eigenDivergence,
+      uiState.eigenShowDivergence ? 'Unstable mode growth on' : 'Unstable mode growth off',
+    );
+    els.eigenDivergence.setAttribute('aria-pressed', uiState.eigenShowDivergence ? 'true' : 'false');
   }
 }
 
@@ -7021,8 +8473,8 @@ function resetEigenViewport() {
 }
 
 function zoomEigenByFactor(factor) {
-  const current = Math.max(0.5, Math.min(8, Number(uiState.eigenZoom) || 1));
-  const next = Math.max(0.5, Math.min(8, current * factor));
+  const current = Math.max(EIGEN_PLOT_MIN_ZOOM, Math.min(EIGEN_PLOT_MAX_ZOOM, Number(uiState.eigenZoom) || 1));
+  const next = Math.max(EIGEN_PLOT_MIN_ZOOM, Math.min(EIGEN_PLOT_MAX_ZOOM, current * factor));
   if (Math.abs(next - current) < 1e-4) return;
   const rect = els.eigenPlot?.getBoundingClientRect?.();
   const cx = rect ? (rect.left + (rect.width * 0.5)) : Number.NaN;
@@ -7040,6 +8492,44 @@ function setEigenPanMode(enabled) {
   drawEigenPlot();
 }
 
+function setEigenScaleLocked(enabled) {
+  uiState.eigenScaleLocked = Boolean(enabled);
+  updateEigenButtons();
+  drawEigenPlot();
+}
+
+function setEigenDivergenceMode(enabled) {
+  uiState.eigenShowDivergence = Boolean(enabled);
+  updateEigenButtons();
+  if (uiState.selectedEigenMode >= 0) startModeAnimation(uiState.selectedEigenMode);
+  else drawEigenPlot();
+}
+
+function eigenPlotRelativePoint(evt) {
+  const canvas = els.eigenPlot;
+  const rect = canvas?.getBoundingClientRect?.();
+  if (!rect) return null;
+  return {
+    x: (Number(evt?.clientX) || 0) - rect.left,
+    y: (Number(evt?.clientY) || 0) - rect.top,
+  };
+}
+
+function eigenPointInsidePlot(point, vp = uiState.eigenViewport) {
+  if (!point || !vp) return false;
+  return point.x >= vp.x0 && point.x <= vp.x0 + vp.pw && point.y >= vp.y0 && point.y <= vp.y0 + vp.ph;
+}
+
+function releaseEigenPointerCapture(pointerId) {
+  if (els.eigenPlot && typeof els.eigenPlot.releasePointerCapture === 'function' && pointerId != null) {
+    try {
+      els.eigenPlot.releasePointerCapture(pointerId);
+    } catch (_) {
+      // Ignore release errors for non-captured pointers.
+    }
+  }
+}
+
 function stopModeAnimation() {
   if (!modeAnimation) return;
   const basePos = modeAnimation.basePos?.clone?.();
@@ -7048,6 +8538,29 @@ function stopModeAnimation() {
   if (!aircraft) return;
   if (basePos) aircraft.position.copy(basePos);
   if (baseRot) aircraft.rotation.set(baseRot.x, baseRot.y, baseRot.z);
+}
+
+function eigenAnimationSigmaForMode(mode) {
+  const real = Number(mode?.re) || 0;
+  if (uiState.eigenShowDivergence) return real * EIGEN_MODE_ANIMATION_REAL_SCALE;
+  return -Math.max(0.01, Math.abs(real)) * EIGEN_MODE_ANIMATION_REAL_SCALE;
+}
+
+function eigenAnimationReferenceSpan() {
+  const bounds = aircraft ? computeBounds(aircraft) : null;
+  const ySpan = Number(bounds?.size?.y);
+  if (Number.isFinite(ySpan) && ySpan > 1e-6) return ySpan;
+  const maxDim = Number(bounds?.maxDim);
+  if (Number.isFinite(maxDim) && maxDim > 1e-6) return maxDim;
+  const designSpan = Number(readDesignAssistantSettings?.().span);
+  if (Number.isFinite(designSpan) && designSpan > 1e-6) return designSpan;
+  return 1;
+}
+
+function eigenAnimationPositionError(animation, scale) {
+  const v = animation?.vec || {};
+  const s = Number(scale) || 0;
+  return Math.hypot((Number(v.tx) || 0) * s, (Number(v.ty) || 0) * s, (Number(v.tz) || 0) * s);
 }
 
 function startModeAnimation(modeIndex) {
@@ -7060,7 +8573,7 @@ function startModeAnimation(modeIndex) {
     return;
   }
   const freq = Math.max(0.2, Math.abs(Number(mode.im) || 0));
-  const damp = Math.max(0.01, Math.abs(Number(mode.re) || 0));
+  const sigma = eigenAnimationSigmaForMode(mode);
   const raw = mode.vec || { rx: 0, ry: 0, rz: 0, tx: 0, ty: 0, tz: 0 };
   const rotMag = Math.max(Math.abs(raw.rx || 0), Math.abs(raw.ry || 0), Math.abs(raw.rz || 0), 1e-8);
   const posMag = Math.max(Math.abs(raw.tx || 0), Math.abs(raw.ty || 0), Math.abs(raw.tz || 0), 1e-8);
@@ -7072,19 +8585,37 @@ function startModeAnimation(modeIndex) {
     ty: (raw.ty || 0) * (0.25 / posMag),
     tz: (raw.tz || 0) * (0.25 / posMag),
   };
+  const showDivergence = Boolean(uiState.eigenShowDivergence);
+  const initialAmplitude = sigma > 0 && showDivergence
+    ? EIGEN_MODE_ANIMATION_DIVERGENCE_INITIAL_AMPLITUDE
+    : 1;
+  const referenceSpan = eigenAnimationReferenceSpan();
   modeAnimation = {
     started: performance.now(),
     basePos: aircraft.position.clone(),
     baseRot: aircraft.rotation.clone(),
     vec,
     w: 2 * Math.PI * freq,
-    sigma: damp * 0.25,
+    sigma,
+    rawReal: Number(mode.re) || 0,
+    showDivergence,
+    initialAmplitude,
+    amplitudeCap: sigma > 0 ? EIGEN_MODE_ANIMATION_DIVERGENCE_SAFETY_CAP : 1,
+    referenceSpan,
+    resetPositionError: Math.max(1e-6, referenceSpan * EIGEN_MODE_ANIMATION_DIVERGENCE_RESET_SPANS),
+    positionError: 0,
+    loopCount: 0,
+    elapsed: 0,
+    lastAmplitude: initialAmplitude,
+    lastRawAmplitude: 1,
   };
   drawEigenPlot();
 }
 
 function handleEigenCanvasClick(evt) {
   if (!els.eigenPlot) return;
+  if (performance.now() < eigenSuppressClickUntil) return;
+  if (Number(evt?.detail) > 1) return;
   if (uiState.eigenPanMode) return;
   const pts = (uiState.eigenPoints || []).filter((pt) => pt?.selectable !== false);
   if (!pts.length) return;
@@ -7108,18 +8639,45 @@ function handleEigenCanvasClick(evt) {
   startModeAnimation(best.idx);
 }
 
+function handleEigenCanvasDoubleClick(evt) {
+  if (!els.eigenPlot) return;
+  evt.preventDefault();
+  eigenSuppressClickUntil = performance.now() + 250;
+  eigenPointerBox.active = false;
+  eigenPointerPan.active = false;
+  resetEigenViewport();
+}
+
 function handleEigenPointerDown(evt) {
-  if (!els.eigenPlot || !uiState.eigenPanMode) return;
+  if (!els.eigenPlot) return;
   const vp = uiState.eigenViewport;
   if (!vp) return;
+  const point = eigenPlotRelativePoint(evt);
+  if (!eigenPointInsidePlot(point, vp)) return;
   evt.preventDefault();
-  eigenPointerPan = {
+  if (uiState.eigenPanMode) {
+    eigenPointerPan = {
+      active: true,
+      pointerId: evt.pointerId,
+      startX: Number(evt.clientX) || 0,
+      startY: Number(evt.clientY) || 0,
+      startCenterRe: Number.isFinite(uiState.eigenCenterRe) ? Number(uiState.eigenCenterRe) : 0,
+      startCenterIm: Number.isFinite(uiState.eigenCenterIm) ? Number(uiState.eigenCenterIm) : 0,
+    };
+    if (typeof els.eigenPlot.setPointerCapture === 'function' && evt.pointerId != null) {
+      els.eigenPlot.setPointerCapture(evt.pointerId);
+    }
+    drawEigenPlot();
+    return;
+  }
+  if (evt.button != null && evt.button !== 0) return;
+  eigenPointerBox = {
     active: true,
     pointerId: evt.pointerId,
-    startX: Number(evt.clientX) || 0,
-    startY: Number(evt.clientY) || 0,
-    startCenterRe: Number.isFinite(uiState.eigenCenterRe) ? Number(uiState.eigenCenterRe) : 0,
-    startCenterIm: Number.isFinite(uiState.eigenCenterIm) ? Number(uiState.eigenCenterIm) : 0,
+    startX: point.x,
+    startY: point.y,
+    currentX: point.x,
+    currentY: point.y,
   };
   if (typeof els.eigenPlot.setPointerCapture === 'function' && evt.pointerId != null) {
     els.eigenPlot.setPointerCapture(evt.pointerId);
@@ -7128,9 +8686,18 @@ function handleEigenPointerDown(evt) {
 }
 
 function handleEigenPointerMove(evt) {
-  if (!eigenPointerPan.active || !uiState.eigenPanMode) return;
   const vp = uiState.eigenViewport;
   if (!vp) return;
+  if (eigenPointerBox.active && !uiState.eigenPanMode) {
+    const point = eigenPlotRelativePoint(evt);
+    if (!point) return;
+    evt.preventDefault();
+    eigenPointerBox.currentX = clampNumber(point.x, vp.x0, vp.x0 + vp.pw);
+    eigenPointerBox.currentY = clampNumber(point.y, vp.y0, vp.y0 + vp.ph);
+    drawEigenPlot();
+    return;
+  }
+  if (!eigenPointerPan.active || !uiState.eigenPanMode) return;
   evt.preventDefault();
   const dx = (Number(evt.clientX) || 0) - eigenPointerPan.startX;
   const dy = (Number(evt.clientY) || 0) - eigenPointerPan.startY;
@@ -7142,35 +8709,62 @@ function handleEigenPointerMove(evt) {
 }
 
 function handleEigenPointerUp(evt) {
+  if (eigenPointerBox.active) {
+    if (evt?.pointerId != null && eigenPointerBox.pointerId != null && evt.pointerId !== eigenPointerBox.pointerId) return;
+    const vp = uiState.eigenViewport;
+    const point = eigenPlotRelativePoint(evt) || { x: eigenPointerBox.currentX, y: eigenPointerBox.currentY };
+    eigenPointerBox.currentX = vp ? clampNumber(point.x, vp.x0, vp.x0 + vp.pw) : point.x;
+    eigenPointerBox.currentY = vp ? clampNumber(point.y, vp.y0, vp.y0 + vp.ph) : point.y;
+    releaseEigenPointerCapture(evt?.pointerId);
+    const rect = eigenBoxZoomRect(vp);
+    const boxW = Number(rect?.width) || 0;
+    const boxH = Number(rect?.height) || 0;
+    const wasBoxZoom = vp && boxW >= EIGEN_PLOT_BOX_MIN_PX && boxH >= EIGEN_PLOT_BOX_MIN_PX;
+    eigenPointerBox.active = false;
+    eigenPointerBox.pointerId = null;
+    if (wasBoxZoom) {
+      const left = rect.left;
+      const right = rect.right;
+      const top = rect.top;
+      const bottom = rect.bottom;
+      const reForX = (x) => Number(vp.centerRe) - Number(vp.maxRe) + ((x - Number(vp.x0)) / Math.max(1, Number(vp.pw))) * 2 * Number(vp.maxRe);
+      const imForY = (y) => Number(vp.centerIm) + Number(vp.maxIm) - ((y - Number(vp.y0)) / Math.max(1, Number(vp.ph))) * 2 * Number(vp.maxIm);
+      const reA = reForX(left);
+      const reB = reForX(right);
+      const imA = imForY(bottom);
+      const imB = imForY(top);
+      const nextCenterRe = (reA + reB) * 0.5;
+      const nextCenterIm = (imA + imB) * 0.5;
+      const nextMaxRe = Math.max(1e-6, Math.abs(reB - reA) * 0.5);
+      const nextMaxIm = Math.max(1e-6, Math.abs(imB - imA) * 0.5);
+      const baseRe = Math.max(1e-6, Number(vp.maxRe) * Math.max(EIGEN_PLOT_MIN_ZOOM, Number(vp.zoom) || 1));
+      const baseIm = Math.max(1e-6, Number(vp.maxIm) * Math.max(EIGEN_PLOT_MIN_ZOOM, Number(vp.zoom) || 1));
+      uiState.eigenCenterRe = nextCenterRe;
+      uiState.eigenCenterIm = nextCenterIm;
+      uiState.eigenZoom = Math.max(EIGEN_PLOT_MIN_ZOOM, Math.min(EIGEN_PLOT_MAX_ZOOM, Math.min(baseRe / nextMaxRe, baseIm / nextMaxIm)));
+      eigenSuppressClickUntil = performance.now() + 250;
+    }
+    drawEigenPlot();
+    return;
+  }
   if (!eigenPointerPan.active) return;
   if (evt?.pointerId != null && eigenPointerPan.pointerId != null && evt.pointerId !== eigenPointerPan.pointerId) return;
-  if (els.eigenPlot && typeof els.eigenPlot.releasePointerCapture === 'function' && evt?.pointerId != null) {
-    try {
-      els.eigenPlot.releasePointerCapture(evt.pointerId);
-    } catch (_) {
-      // Ignore release errors for non-captured pointers.
-    }
-  }
+  releaseEigenPointerCapture(evt?.pointerId);
   eigenPointerPan.active = false;
   eigenPointerPan.pointerId = null;
   drawEigenPlot();
 }
 
 function handleEigenCanvasWheel(evt) {
-  if (!els.eigenPlot) return;
-  evt.preventDefault();
-  const current = Math.max(0.5, Math.min(8, Number(uiState.eigenZoom) || 1));
-  const factor = evt.deltaY < 0 ? 1.12 : (1 / 1.12);
-  const next = Math.max(0.5, Math.min(8, current * factor));
-  if (Math.abs(next - current) < 1e-4) return;
-  zoomEigenAtClient(next, evt.clientX, evt.clientY);
+  if (!els.eigenPlot || !evt) return;
+  // Wheel zoom is intentionally disabled so the page can scroll normally over the plot.
 }
 
 function zoomEigenAtClient(nextZoom, clientX, clientY) {
   const vp = uiState.eigenViewport;
   const canvas = els.eigenPlot;
   if (!vp || !canvas) {
-    uiState.eigenZoom = nextZoom;
+    uiState.eigenZoom = Math.max(EIGEN_PLOT_MIN_ZOOM, Math.min(EIGEN_PLOT_MAX_ZOOM, Number(nextZoom) || 1));
     drawEigenPlot();
     return;
   }
@@ -7181,7 +8775,7 @@ function zoomEigenAtClient(nextZoom, clientX, clientY) {
   const y = Math.max(vp.y0, Math.min(vp.y0 + vp.ph, relY));
   const nx = ((x - vp.x0) / Math.max(1, vp.pw)) * 2 - 1;
   const ny = (y - vp.y0) / Math.max(1, vp.ph);
-  const oldZoom = Math.max(0.5, Math.min(8, Number(vp.zoom) || Number(uiState.eigenZoom) || 1));
+  const oldZoom = Math.max(EIGEN_PLOT_MIN_ZOOM, Math.min(EIGEN_PLOT_MAX_ZOOM, Number(vp.zoom) || Number(uiState.eigenZoom) || 1));
   const oldMaxRe = Number(vp.maxRe) || 0.1;
   const oldMaxIm = Number(vp.maxIm) || 0.1;
   const centerRe = Number(vp.centerRe) || 0;
@@ -7194,7 +8788,7 @@ function zoomEigenAtClient(nextZoom, clientX, clientY) {
   const newMaxIm = Math.max(0.05, baseIm / nextZoom);
   uiState.eigenCenterRe = reAt - nx * newMaxRe;
   uiState.eigenCenterIm = imAt - (1 - 2 * ny) * newMaxIm;
-  uiState.eigenZoom = nextZoom;
+  uiState.eigenZoom = Math.max(EIGEN_PLOT_MIN_ZOOM, Math.min(EIGEN_PLOT_MAX_ZOOM, Number(nextZoom) || 1));
   drawEigenPlot();
 }
 
@@ -7222,8 +8816,8 @@ function handleEigenTouchMove(evt) {
   if (!Number.isFinite(dist) || dist <= 0 || !Number.isFinite(eigenTouchZoom.lastDist) || eigenTouchZoom.lastDist <= 0) return;
   const scale = dist / eigenTouchZoom.lastDist;
   if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.01) return;
-  const current = Math.max(0.5, Math.min(8, Number(uiState.eigenZoom) || 1));
-  const next = Math.max(0.5, Math.min(8, current * scale));
+  const current = Math.max(EIGEN_PLOT_MIN_ZOOM, Math.min(EIGEN_PLOT_MAX_ZOOM, Number(uiState.eigenZoom) || 1));
+  const next = Math.max(EIGEN_PLOT_MIN_ZOOM, Math.min(EIGEN_PLOT_MAX_ZOOM, current * scale));
   eigenTouchZoom.lastDist = dist;
   if (Math.abs(next - current) < 1e-4) return;
   const t0 = evt.touches[0];
@@ -7243,12 +8837,16 @@ function handleEigenTouchEnd(evt) {
 }
 
 function buildEigenmodeRows() {
-  const rows = [['run case', 'real eigenvalue', 'imag eigenvalue']];
+  const rows = [['run case', 'mode class', 'real eigenvalue', 'imag eigenvalue']];
   const modes = Array.isArray(uiState.eigenModes) ? uiState.eigenModes : [];
-  modes.forEach((mode) => {
+  const summary = summarizeDesignEigenModes(modes);
+  const classByIndex = new Map(summary.modes.map((mode) => [Number(mode.index), mode]));
+  modes.forEach((mode, index) => {
     const runCaseIdx = Number.isInteger(mode?.runCaseIndex) ? Number(mode.runCaseIndex) : -1;
+    const cls = classByIndex.get(index);
     rows.push([
       String(runCaseIdx >= 0 ? (runCaseIdx + 1) : runCaseIdx),
+      cls?.classLabel || 'Unclassified',
       fmt(Number(mode?.re) || 0, 6),
       fmt(Number(mode?.im) || 0, 6),
     ]);
@@ -7258,10 +8856,38 @@ function buildEigenmodeRows() {
 
 function updateModeAnimation() {
   if (!modeAnimation || !aircraft) return;
-  const t = (performance.now() - modeAnimation.started) / 1000;
-  const amp = Math.exp(-modeAnimation.sigma * t);
-  const osc = Math.sin(modeAnimation.w * t);
-  const s = amp * osc;
+  const now = performance.now();
+  let t = (now - modeAnimation.started) / 1000;
+  let rawAmp = Math.exp(modeAnimation.sigma * t);
+  let amp = modeAnimation.sigma > 0
+    ? Math.min(Number(modeAnimation.amplitudeCap) || EIGEN_MODE_ANIMATION_DIVERGENCE_SAFETY_CAP, (Number(modeAnimation.initialAmplitude) || EIGEN_MODE_ANIMATION_DIVERGENCE_INITIAL_AMPLITUDE) * rawAmp)
+    : rawAmp;
+  let osc = Math.sin(modeAnimation.w * t);
+  let s = amp * osc;
+  let positionError = eigenAnimationPositionError(modeAnimation, s);
+  const resetLimit = Number(modeAnimation.resetPositionError);
+  if (
+    modeAnimation.sigma > 0
+    && modeAnimation.showDivergence
+    && (
+      !Number.isFinite(rawAmp)
+      || !Number.isFinite(amp)
+      || (Number.isFinite(resetLimit) && resetLimit > 0 && positionError >= resetLimit)
+    )
+  ) {
+    modeAnimation.started = now;
+    modeAnimation.loopCount = Math.max(0, Math.floor(Number(modeAnimation.loopCount) || 0)) + 1;
+    t = 0;
+    rawAmp = 1;
+    amp = Number(modeAnimation.initialAmplitude) || EIGEN_MODE_ANIMATION_DIVERGENCE_INITIAL_AMPLITUDE;
+    osc = 0;
+    s = 0;
+    positionError = 0;
+  }
+  modeAnimation.elapsed = t;
+  modeAnimation.lastRawAmplitude = rawAmp;
+  modeAnimation.lastAmplitude = amp;
+  modeAnimation.positionError = positionError;
   const v = modeAnimation.vec;
   aircraft.position.set(
     modeAnimation.basePos.x + (v.tx || 0) * s,
@@ -7273,7 +8899,7 @@ function updateModeAnimation() {
     modeAnimation.baseRot.y + (v.ry || 0) * s,
     modeAnimation.baseRot.z + (v.rz || 0) * s,
   );
-  if (amp < 0.02) {
+  if (modeAnimation.sigma < 0 && amp < 0.02) {
     stopModeAnimation();
   }
 }
@@ -8076,16 +9702,24 @@ function queryPressureAtPoint(field, x, y, z) {
   return best;
 }
 
+function setViewerSkinMaterialColor(material, color, fillIntensity = VIEWER_SKIN_FILL_EMISSIVE_INTENSITY) {
+  if (!material || !color) return;
+  const col = color instanceof THREE.Color ? color : new THREE.Color(color);
+  if (material.color) material.color.copy(col);
+  if (material.emissive) {
+    material.emissive.copy(col);
+    material.emissiveIntensity = fillIntensity;
+  }
+  material.needsUpdate = true;
+}
+
 function updatePressureSurfaceColors() {
   if (!Array.isArray(surfaceSkinMeshes) || !surfaceSkinMeshes.length) return;
   const field = uiState.showPressure ? uiState.pressureField : null;
   surfaceSkinMeshes.forEach((mesh) => {
     const base = mesh.userData?.baseColor instanceof THREE.Color ? mesh.userData.baseColor : new THREE.Color(mesh.userData?.baseColor ?? 0x7dd3fc);
     const pressureBase = mesh.userData?.pressureBaseColor instanceof THREE.Color ? mesh.userData.pressureBaseColor : new THREE.Color(0xd8dce3);
-    if (mesh.material?.color) {
-      mesh.material.color.copy(field ? pressureBase : base);
-      mesh.material.needsUpdate = true;
-    }
+    setViewerSkinMaterialColor(mesh.material, field ? pressureBase : base);
   });
 
   if (!Array.isArray(surfacePressureMeshes) || !surfacePressureMeshes.length) return;
@@ -9169,7 +10803,7 @@ function rebuildAuxOverlays(bounds = null) {
   const vortexData = buildVortexData(uiState.displayModel);
   latestVortexData = vortexData;
   vortexGroup = buildVortexGroup(vortexData);
-  const effectiveBounds = bounds || computeBounds(aircraft);
+  const effectiveBounds = bounds || computeBounds(aircraft, { excludeViewerOverlays: true });
   const flowOffset = {
     x: Number(aircraft.position?.x) || 0,
     y: Number(aircraft.position?.y) || 0,
@@ -9183,6 +10817,57 @@ function rebuildAuxOverlays(bounds = null) {
   if (flowFieldGroup) resetFlowTracerPosition(flowFieldGroup);
   flowFieldAnimLastMs = 0;
   applyAuxOverlayVisibility();
+}
+
+function getOverlayReferenceSize(maxDim = null, fallback = 1) {
+  const explicit = Number(maxDim);
+  if (Number.isFinite(explicit) && explicit > 1e-9) return explicit;
+  const bref = Number(uiState.modelHeader?.bref ?? uiState.modelCache?.header?.bref);
+  if (Number.isFinite(bref) && Math.abs(bref) > 1e-9) return Math.abs(bref);
+  const cref = Number(uiState.modelHeader?.cref ?? uiState.modelCache?.header?.cref);
+  if (Number.isFinite(cref) && Math.abs(cref) > 1e-9) return Math.abs(cref) * 6;
+  const fb = Number(fallback);
+  return Number.isFinite(fb) && fb > 1e-9 ? fb : 1;
+}
+
+function applySurfaceLabelSpriteScale(sprite, maxDim = null) {
+  if (!sprite?.userData?.surfaceLabel) return;
+  const refSize = getOverlayReferenceSize(maxDim, sprite.userData.labelSurfaceScaleHint);
+  const image = sprite.material?.map?.image;
+  const canvasWidth = Number(image?.width ?? sprite.userData.labelCanvasWidthPx);
+  const canvasHeight = Number(image?.height ?? sprite.userData.labelCanvasHeightPx);
+  const aspect = Number.isFinite(canvasWidth) && Number.isFinite(canvasHeight) && canvasWidth > 0 && canvasHeight > 0
+    ? canvasWidth / canvasHeight
+    : 3;
+  let labelHeight = clampNumber(refSize * 0.045, 0.012, 0.18);
+  let labelWidth = labelHeight * aspect;
+  const maxLabelWidth = Math.max(labelHeight * 3, refSize * 0.6);
+  if (Number.isFinite(maxLabelWidth) && maxLabelWidth > 0 && labelWidth > maxLabelWidth) {
+    labelWidth = maxLabelWidth;
+    labelHeight = labelWidth / Math.max(1e-6, aspect);
+  }
+  const base = sprite.userData.labelBasePosition || {};
+  const x = Number(base.x);
+  const y = Number(base.y);
+  const z = Number(base.z);
+  const offset = clampNumber(refSize * 0.045, labelHeight * 1.25, 0.25);
+  if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+    sprite.position.set(x, y, z + offset);
+  }
+  sprite.scale.set(labelWidth, labelHeight, 1);
+  sprite.userData.labelReferenceSize = refSize;
+  sprite.userData.labelWorldWidth = labelWidth;
+  sprite.userData.labelWorldHeight = labelHeight;
+  sprite.userData.labelWorldOffset = offset;
+}
+
+function applySurfaceLabelScales(target, maxDim = null) {
+  if (!target) return;
+  target.traverse((obj) => {
+    if (obj?.isSprite && obj?.userData?.surfaceLabel) {
+      applySurfaceLabelSpriteScale(obj, maxDim);
+    }
+  });
 }
 
 function buildSurfaceMesh(surface, color) {
@@ -9535,6 +11220,8 @@ function buildSurfaceMesh(surface, color) {
     const pressureBaseCol = new THREE.Color(0xd8dce3);
     const skinMat = new THREE.MeshStandardMaterial({
       color: baseCol,
+      emissive: baseCol.clone(),
+      emissiveIntensity: VIEWER_SKIN_FILL_EMISSIVE_INTENSITY,
       side: THREE.DoubleSide,
       metalness: 0.12,
       roughness: 0.5,
@@ -9555,6 +11242,8 @@ function buildSurfaceMesh(surface, color) {
     overlayGeom.setAttribute('alpha', new THREE.BufferAttribute(overlayAlpha, 1));
     const overlayMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
+      emissive: 0xffffff,
+      emissiveIntensity: VIEWER_PRESSURE_OVERLAY_FILL_EMISSIVE_INTENSITY,
       vertexColors: true,
       side: THREE.DoubleSide,
       metalness: 0.0,
@@ -9622,30 +11311,52 @@ function buildSurfaceMesh(surface, color) {
   const ty = Number(surface.translate?.[1] ?? 0);
   const tz = Number(surface.translate?.[2] ?? 0);
   const labelPos = [sx * cx + tx, sy * cy + ty, sz * cz + tz];
-  const xVals = surface.sections.map((s) => Number(s?.xle ?? 0));
-  const yVals = surface.sections.map((s) => Number(s?.yle ?? 0));
-  const zVals = surface.sections.map((s) => Number(s?.zle ?? 0));
+  const sectionExtentPoints = [];
+  surface.sections.forEach((section) => {
+    const xle = Number(section?.xle);
+    const yle = Number(section?.yle);
+    const zle = Number(section?.zle);
+    const chord = Number(section?.chord);
+    if (Number.isFinite(xle) && Number.isFinite(yle) && Number.isFinite(zle)) {
+      sectionExtentPoints.push([sx * xle + tx, sy * yle + ty, sz * zle + tz]);
+      if (Number.isFinite(chord) && chord > 0) {
+        sectionExtentPoints.push([sx * (xle + chord) + tx, sy * yle + ty, sz * zle + tz]);
+      }
+    }
+  });
+  if (typeof surface.yduplicate === 'number') {
+    const ydup = Number(surface.yduplicate);
+    if (Number.isFinite(ydup)) {
+      sectionExtentPoints.slice().forEach((p) => {
+        sectionExtentPoints.push([p[0], 2 * ydup - p[1], p[2]]);
+      });
+    }
+  }
+  const xVals = sectionExtentPoints.map((p) => Number(p?.[0] ?? 0));
+  const yVals = sectionExtentPoints.map((p) => Number(p?.[1] ?? 0));
+  const zVals = sectionExtentPoints.map((p) => Number(p?.[2] ?? 0));
   const chords = surface.sections.map((s) => Number(s?.chord ?? 0)).filter((v) => Number.isFinite(v) && v > 0);
   const xr = (xVals.length ? (Math.max(...xVals) - Math.min(...xVals)) : 0);
   const yr = (yVals.length ? (Math.max(...yVals) - Math.min(...yVals)) : 0);
   const zr = (zVals.length ? (Math.max(...zVals) - Math.min(...zVals)) : 0);
   const avgChord = chords.length ? (chords.reduce((a, b) => a + b, 0) / chords.length) : 0;
   const crefRaw = Number(uiState.modelHeader?.cref);
-  const chordWorld = Math.max(0.25, Number.isFinite(crefRaw) && crefRaw > 0 ? crefRaw : (avgChord * sx));
-  const sampleWidthPx = Math.max(1, Number(ctx?.measureText('XXXXXXXXXX').width) || 1);
-  const labelWidthPx = Math.max(sampleWidthPx, textWidthPx + (paddingXPx * 2));
-  const labelWidth = chordWorld * (labelWidthPx / sampleWidthPx);
-  sprite.position.set(labelPos[0], labelPos[1], labelPos[2] + 0.2);
-  sprite.scale.set(labelWidth, labelWidth * (labelCanvas.height / labelCanvas.width), 1);
+  const avgChordWorld = avgChord * Math.max(Math.abs(sx), 1e-6);
+  const chordWorld = Math.max(1e-6, Number.isFinite(crefRaw) && crefRaw > 0 ? crefRaw : avgChordWorld);
+  const surfaceScaleHint = Math.max(xr, yr, zr, avgChordWorld, chordWorld, 1e-6);
+  sprite.position.set(labelPos[0], labelPos[1], labelPos[2]);
   sprite.userData.surfaceLabel = true;
   sprite.userData.labelText = surfaceLabel;
-  sprite.userData.labelWidth = labelWidth;
   sprite.userData.chordWorld = chordWorld;
   sprite.userData.labelTextWidthPx = textWidthPx;
   sprite.userData.labelCanvasWidthPx = labelCanvas.width;
+  sprite.userData.labelCanvasHeightPx = labelCanvas.height;
   sprite.userData.labelPaddingXPx = paddingXPx;
   sprite.userData.labelFits = textWidthPx <= (labelCanvas.width - (paddingXPx * 2) + 0.5);
+  sprite.userData.labelBasePosition = { x: labelPos[0], y: labelPos[1], z: labelPos[2] };
+  sprite.userData.labelSurfaceScaleHint = surfaceScaleHint;
   sprite.userData.renderKind = 'wire';
+  applySurfaceLabelSpriteScale(sprite, surfaceScaleHint);
   group.add(sprite);
 
   return group;
@@ -9864,8 +11575,8 @@ function addReferenceMarker(target, header, maxDim) {
   const yref = Number(header.yref);
   const zref = Number(header.zref);
   if (!Number.isFinite(xref) || !Number.isFinite(yref) || !Number.isFinite(zref)) return;
-  const size = Number.isFinite(maxDim) && maxDim > 0 ? maxDim : 1.0;
-  const radius = Math.max(0.03, Math.min(0.22, size * 0.012));
+  const size = getOverlayReferenceSize(maxDim);
+  const radius = clampNumber(size * 0.018, 0.006, 0.16);
 
   const geom = new THREE.SphereGeometry(radius, 20, 14);
   const mat = new THREE.MeshStandardMaterial({
@@ -9878,6 +11589,9 @@ function addReferenceMarker(target, header, maxDim) {
   const marker = new THREE.Mesh(geom, mat);
   marker.name = 'reference-marker';
   marker.renderOrder = 4;
+  marker.userData.referenceMarker = true;
+  marker.userData.radius = radius;
+  marker.userData.referenceSize = size;
   // Marker is attached to aircraft local space; aircraft translation already recenters the model.
   marker.position.set(xref, yref, zref);
   target.add(marker);
@@ -9899,11 +11613,14 @@ function rebuildAircraftVisual(shouldFit = false) {
     if (obj?.userData?.renderKind === 'wire' && !obj?.userData?.surfaceLabel) surfaceWireObjects.push(obj);
   });
   updateBank(Number(els.bank.value));
-  const bounds = computeBounds(aircraft);
+  const bounds = computeBounds(aircraft, { excludeViewerOverlays: true });
   if (bounds) {
     aircraft.position.sub(bounds.center);
     viewerState.bounds = bounds;
-    viewerState.fitDistance = bounds.maxDim * 1.6 + 4.0;
+    viewerState.fitDistance = fitDistanceForBounds(bounds);
+    viewerState.orthoFrustumHeight = orthographicHeightForBounds(bounds);
+    updateOrthographicFrustum();
+    applySurfaceLabelScales(aircraft, bounds.maxDim);
     addReferenceMarker(aircraft, uiState.modelHeader, bounds.maxDim);
     if (shouldFit) {
       rebuildGrid(bounds.maxDim);
@@ -9911,6 +11628,7 @@ function rebuildAircraftVisual(shouldFit = false) {
       updateAxesOriginAnchor();
     }
   } else {
+    applySurfaceLabelScales(aircraft, null);
     addReferenceMarker(aircraft, uiState.modelHeader, null);
   }
   updateAxesOriginAnchor();
@@ -9923,9 +11641,15 @@ function rebuildAircraftVisual(shouldFit = false) {
 
 let scene;
 let camera;
+let perspectiveCamera;
+let orthographicCamera;
+let quadPerspectiveCameras = null;
+let quadOrthographicCameras = null;
 let renderer;
 let controls;
 let aircraft;
+let viewerMiddleZDrag = null;
+let viewerQuadPaneDrag = null;
 let gridHelper;
 let axesHelper;
 let surfaceSkinMeshes = [];
@@ -9946,6 +11670,15 @@ let eigenPointerPan = {
   startCenterRe: 0,
   startCenterIm: 0,
 };
+let eigenPointerBox = {
+  active: false,
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  currentX: 0,
+  currentY: 0,
+};
+let eigenSuppressClickUntil = 0;
 let flowProjectTmp = null;
 let flowPointSpriteTexture = null;
 let massPointGroup = null;
@@ -10054,9 +11787,32 @@ function updateMassPointHover(clientX, clientY) {
     clearMassPointHover();
     return;
   }
-  massPointPointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-  massPointPointer.y = -(((clientY - rect.top) / rect.height) * 2 - 1);
-  massPointRaycaster.setFromCamera(massPointPointer, camera);
+  let hoverCamera = camera;
+  let paneRect = { x: 0, cssY: 0, width: rect.width, height: rect.height };
+  if (isViewerQuadMode()) {
+    const panes = viewerQuadPaneRects(rect.width, rect.height);
+    const localX = Number(clientX) - rect.left;
+    const localY = Number(clientY) - rect.top;
+    const pane = panes.find((candidate) => (
+      localX >= candidate.x
+      && localX <= candidate.x + candidate.width
+      && localY >= candidate.cssY
+      && localY <= candidate.cssY + candidate.height
+    )) || null;
+    if (!pane) {
+      clearMassPointHover();
+      return;
+    }
+    hoverCamera = configureViewerQuadCamera(pane, pane.width / Math.max(1, pane.height), panes);
+    paneRect = pane;
+  }
+  if (!hoverCamera) {
+    clearMassPointHover();
+    return;
+  }
+  massPointPointer.x = (((clientX - rect.left) - paneRect.x) / paneRect.width) * 2 - 1;
+  massPointPointer.y = -((((clientY - rect.top) - paneRect.cssY) / paneRect.height) * 2 - 1);
+  massPointRaycaster.setFromCamera(massPointPointer, hoverCamera);
   const hits = massPointRaycaster.intersectObjects(massPointMeshes, false);
   const hit = hits.length ? hits[0].object : null;
   if (!hit) {
@@ -10117,7 +11873,7 @@ function rebuildMassPointOverlay(bounds = null) {
 
   const maxDim = Number(bounds?.maxDim);
   const radius = Number.isFinite(maxDim) && maxDim > 0
-    ? Math.max(0.03, Math.min(0.3, maxDim * 0.003))
+    ? clampNumber(maxDim * 0.006, 0.006, 0.16)
     : 0.06;
   const group = new THREE.Group();
   group.name = 'mass-points';
@@ -10134,6 +11890,7 @@ function rebuildMassPointOverlay(bounds = null) {
     const marker = new THREE.Mesh(geom, mat);
     marker.name = 'mass-point';
     marker.position.set(x, y, z);
+    marker.userData.radius = radius;
     marker.userData.massPoint = {
       name: String(item?.name || ''),
       mass: Number(item?.mass),
@@ -10168,43 +11925,862 @@ function applyMassPointVisibility() {
   if (!showPoints) clearMassPointHover();
 }
 
+function setViewerButtonTooltip(button, text) {
+  if (!button) return;
+  const label = String(text || '').trim();
+  if (!label) return;
+  button.removeAttribute('title');
+  button.dataset.tooltip = label;
+  button.setAttribute('aria-label', label);
+}
+
+function viewerAspectRatio() {
+  const width = Number(els.viewer?.clientWidth) || 1;
+  const height = Number(els.viewer?.clientHeight) || 1;
+  return Math.max(0.1, width / Math.max(1, height));
+}
+
+function orthographicHeightForBounds(bounds = null) {
+  const maxDim = Number(bounds?.maxDim);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return Math.max(1, Number(viewerState.fitDistance) || 12);
+  return Math.max(maxDim * 1.85, 0.5);
+}
+
+function updateOrthographicFrustum({ resetZoom = false } = {}) {
+  if (!orthographicCamera) return;
+  const aspect = viewerAspectRatio();
+  const height = Math.max(0.2, Number(viewerState.orthoFrustumHeight) || orthographicHeightForBounds(viewerState.bounds));
+  orthographicCamera.left = (-height * aspect) / 2;
+  orthographicCamera.right = (height * aspect) / 2;
+  orthographicCamera.top = height / 2;
+  orthographicCamera.bottom = -height / 2;
+  if (resetZoom) orthographicCamera.zoom = 1;
+  orthographicCamera.updateProjectionMatrix();
+}
+
+function setOrthographicFrustumForAspect(cam, aspect, { resetZoom = false, height: explicitHeight = null } = {}) {
+  if (!cam) return;
+  const safeAspect = Math.max(0.1, Number(aspect) || 1);
+  const requestedHeight = Number(explicitHeight);
+  const height = Math.max(
+    0.2,
+    Number.isFinite(requestedHeight) && requestedHeight > 0
+      ? requestedHeight
+      : (Number(viewerState.orthoFrustumHeight) || orthographicHeightForBounds(viewerState.bounds)),
+  );
+  cam.left = (-height * safeAspect) / 2;
+  cam.right = (height * safeAspect) / 2;
+  cam.top = height / 2;
+  cam.bottom = -height / 2;
+  if (resetZoom) cam.zoom = 1;
+  cam.updateProjectionMatrix();
+}
+
+function normalizeViewerLayoutMode(mode) {
+  if (mode === true || mode === 'quad') return 'quad-fit';
+  if (mode === false) return 'single';
+  return VIEWER_QUAD_LAYOUT_MODES.includes(mode) ? mode : 'single';
+}
+
+function isViewerQuadMode() {
+  return normalizeViewerLayoutMode(viewerState.layoutMode) !== 'single';
+}
+
+function activeViewerQuadLayoutMode() {
+  return normalizeViewerLayoutMode(viewerState.layoutMode);
+}
+
+function syncViewerQuadModeClass() {
+  const layout = activeViewerQuadLayoutMode();
+  const enabled = layout !== 'single';
+  els.viewer?.classList.toggle('quad-view', enabled);
+  els.viewer?.classList.toggle('quad-view-fit', layout === 'quad-fit');
+  els.viewer?.classList.toggle('quad-view-scale', layout === 'quad-scale');
+  if (els.viewerQuadOverlay) {
+    els.viewerQuadOverlay.hidden = !enabled;
+    els.viewerQuadOverlay.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    els.viewerQuadOverlay.dataset.layout = layout;
+  }
+}
+
+function setViewerQuadMode(layoutMode) {
+  viewerState.layoutMode = normalizeViewerLayoutMode(layoutMode);
+  syncViewerQuadModeClass();
+  clearMassPointHover();
+  handleResize();
+  updateViewerButtons();
+}
+
+function toggleViewerQuadMode() {
+  const layout = activeViewerQuadLayoutMode();
+  const nextLayout = layout === 'single'
+    ? 'quad-scale'
+    : (layout === 'quad-scale' ? 'quad-fit' : 'single');
+  setViewerQuadMode(nextLayout);
+  if (nextLayout === 'single') {
+    viewerState.viewIndex = viewerState.viewModes.indexOf('iso');
+    applyViewPreset('iso');
+    updateViewerButtons();
+  }
+}
+
+function fitDistanceForBoundsAtAspect(bounds = null, aspect = 1) {
+  const maxDim = Number(bounds?.maxDim);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return Number(viewerState.fitDistance) || 10;
+  const fovRad = ((Number(perspectiveCamera?.fov) || 45) * Math.PI) / 180;
+  const safeAspect = Math.max(0.2, Number(aspect) || 1);
+  const fitHeightDistance = maxDim / (2 * Math.tan(fovRad / 2));
+  const fitWidthDistance = fitHeightDistance / safeAspect;
+  return Math.max(fitHeightDistance, fitWidthDistance) * 1.75;
+}
+
+function ensureViewerQuadCameras() {
+  if (!THREE) return;
+  if (!quadPerspectiveCameras) {
+    quadPerspectiveCameras = {};
+    VIEWER_QUAD_PANES.forEach((pane) => {
+      quadPerspectiveCameras[pane.id] = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+    });
+  }
+  if (!quadOrthographicCameras) {
+    quadOrthographicCameras = {};
+    VIEWER_QUAD_PANES.forEach((pane) => {
+      quadOrthographicCameras[pane.id] = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 2000);
+    });
+  }
+}
+
+function viewerTargetVector() {
+  if (!THREE) return null;
+  return controls?.target?.clone?.() || new THREE.Vector3(0, 0, 0);
+}
+
+function viewerQuadTargetVector() {
+  if (!THREE) return null;
+  if (viewerState.bounds?.center?.isVector3) return viewerState.bounds.center.clone();
+  return viewerTargetVector();
+}
+
+function viewerDirectionForPane(mode, target = null) {
+  if (!THREE) return null;
+  if (mode === 'top') return new THREE.Vector3(0, 0, 1);
+  if (mode === 'side') return new THREE.Vector3(0, 1, 0);
+  if (mode === 'side-left') return new THREE.Vector3(0, -1, 0);
+  if (mode === 'front') return new THREE.Vector3(-1, 0, 0);
+  if (mode === 'forward') return new THREE.Vector3(1, 0, 0);
+  const activeTarget = target?.isVector3 ? target : (viewerTargetVector() || new THREE.Vector3(0, 0, 0));
+  if (camera) {
+    const dir = camera.position.clone().sub(activeTarget);
+    if (dir.lengthSq() > 1e-10) return dir.normalize();
+  }
+  return new THREE.Vector3(0.62, -0.45, 0.48).normalize();
+}
+
+function viewerUpForPane(mode) {
+  if (!THREE) return null;
+  if (mode === 'top') return new THREE.Vector3(0, 1, 0);
+  if (mode === 'iso' && camera?.up) return camera.up.clone();
+  return new THREE.Vector3(0, 0, 1);
+}
+
+function viewerProjectionForPane(pane) {
+  if (!pane || pane.id === 'iso') return activeProjectionMode();
+  return 'orthographic';
+}
+
+function viewerQuadPaneViewState(paneId) {
+  if (!VIEWER_QUAD_INTERACTIVE_PANES.has(String(paneId))) return null;
+  if (!viewerState.quadPaneViews || typeof viewerState.quadPaneViews !== 'object') viewerState.quadPaneViews = {};
+  if (!viewerState.quadPaneViews[paneId]) {
+    viewerState.quadPaneViews[paneId] = { offsetX: 0, offsetY: 0, zoom: 1 };
+  }
+  const view = viewerState.quadPaneViews[paneId];
+  view.offsetX = Number.isFinite(Number(view.offsetX)) ? Number(view.offsetX) : 0;
+  view.offsetY = Number.isFinite(Number(view.offsetY)) ? Number(view.offsetY) : 0;
+  view.zoom = clampNumber(Number(view.zoom) || 1, 0.08, 40);
+  return view;
+}
+
+function viewerQuadThreeViewState() {
+  if (!viewerState.quadThreeView || typeof viewerState.quadThreeView !== 'object') {
+    viewerState.quadThreeView = { zoom: 1 };
+  }
+  const view = viewerState.quadThreeView;
+  view.zoom = clampNumber(Number(view.zoom) || 1, 0.08, 40);
+  return view;
+}
+
+function resetViewerQuadPaneViews() {
+  VIEWER_QUAD_INTERACTIVE_PANES.forEach((paneId) => {
+    const view = viewerQuadPaneViewState(paneId);
+    if (!view) return;
+    view.offsetX = 0;
+    view.offsetY = 0;
+    view.zoom = 1;
+  });
+  viewerQuadThreeViewState().zoom = 1;
+}
+
+function isViewerQuadFitInteractivePane(pane) {
+  return activeViewerQuadLayoutMode() === 'quad-fit'
+    && pane
+    && VIEWER_QUAD_INTERACTIVE_PANES.has(String(pane.id));
+}
+
+function isViewerQuadScaleThreeViewPane(pane) {
+  return activeViewerQuadLayoutMode() === 'quad-scale'
+    && pane
+    && VIEWER_QUAD_INTERACTIVE_PANES.has(String(pane.id));
+}
+
+function viewerPaneAxesForMode(mode) {
+  if (!THREE) return null;
+  if (mode === 'top') {
+    return {
+      right: new THREE.Vector3(1, 0, 0),
+      up: new THREE.Vector3(0, 1, 0),
+    };
+  }
+  if (mode === 'side') {
+    return {
+      right: new THREE.Vector3(-1, 0, 0),
+      up: new THREE.Vector3(0, 0, 1),
+    };
+  }
+  if (mode === 'side-left') {
+    return {
+      right: new THREE.Vector3(1, 0, 0),
+      up: new THREE.Vector3(0, 0, 1),
+    };
+  }
+  if (mode === 'forward') {
+    return {
+      right: new THREE.Vector3(0, 1, 0),
+      up: new THREE.Vector3(0, 0, 1),
+    };
+  }
+  if (mode === 'front') {
+    return {
+      right: new THREE.Vector3(0, -1, 0),
+      up: new THREE.Vector3(0, 0, 1),
+    };
+  }
+  return null;
+}
+
+function viewerPlanarSizeForPane(mode, bounds = viewerState.bounds) {
+  const size = bounds?.size;
+  if (!size) return { width: 1, height: 1 };
+  const sx = Math.max(0.001, Number(size.x) || 0);
+  const sy = Math.max(0.001, Number(size.y) || 0);
+  const sz = Math.max(0.001, Number(size.z) || 0);
+  if (mode === 'top') return { width: sx, height: sy };
+  if (mode === 'side' || mode === 'side-left') return { width: sx, height: sz };
+  if (mode === 'forward' || mode === 'front') return { width: sy, height: sz };
+  const maxDim = Math.max(sx, sy, sz);
+  return { width: maxDim, height: maxDim };
+}
+
+function quadPaneFitHeightForAspect(pane, aspect = 1) {
+  const safeAspect = Math.max(0.1, Number(aspect) || 1);
+  const dims = pane?.id === 'iso'
+    ? { width: Number(viewerState.bounds?.maxDim) || 1, height: Number(viewerState.bounds?.maxDim) || 1 }
+    : viewerPlanarSizeForPane(pane?.mode);
+  const padding = pane?.id === 'iso' ? 1.7 : 1.18;
+  return Math.max(0.2, Math.max(dims.height, dims.width / safeAspect) * padding);
+}
+
+function sharedThreeViewWorldUnitsPerPixel(panes = []) {
+  const threeViewPanes = panes.filter((pane) => pane.id !== 'iso');
+  let unitsPerPixel = 0;
+  threeViewPanes.forEach((pane) => {
+    const dims = viewerPlanarSizeForPane(pane.mode);
+    const widthPx = Math.max(1, Number(pane.width) || 1);
+    const heightPx = Math.max(1, Number(pane.height) || 1);
+    unitsPerPixel = Math.max(
+      unitsPerPixel,
+      dims.width / widthPx,
+      dims.height / heightPx,
+    );
+  });
+  return Math.max(0.001, unitsPerPixel * 1.18);
+}
+
+function quadOrthographicHeightForPane(pane, aspect = 1, panes = []) {
+  if (!pane) return orthographicHeightForBounds(viewerState.bounds);
+  if (pane.id !== 'iso' && activeViewerQuadLayoutMode() === 'quad-scale') {
+    const shared = viewerQuadThreeViewState();
+    const zoom = Math.max(0.08, Number(shared?.zoom) || 1);
+    return (sharedThreeViewWorldUnitsPerPixel(panes) / zoom) * Math.max(1, Number(pane.height) || 1);
+  }
+  const fitHeight = quadPaneFitHeightForAspect(pane, aspect);
+  if (isViewerQuadFitInteractivePane(pane)) {
+    const view = viewerQuadPaneViewState(pane.id);
+    return fitHeight / Math.max(0.08, Number(view?.zoom) || 1);
+  }
+  return fitHeight;
+}
+
+function configureViewerQuadCamera(pane, aspect = 1, panes = []) {
+  if (!THREE || !pane) return null;
+  ensureViewerQuadCameras();
+  const projection = viewerProjectionForPane(pane);
+  const cam = projection === 'orthographic'
+    ? quadOrthographicCameras?.[pane.id]
+    : quadPerspectiveCameras?.[pane.id];
+  if (!cam) return null;
+
+  const safeAspect = Math.max(0.1, Number(aspect) || 1);
+  if (pane.id === 'iso') {
+    const source = camera || cam;
+    const activeTarget = controls?.target?.clone?.() || viewerQuadTargetVector() || new THREE.Vector3(0, 0, 0);
+    cam.near = Number(source?.near) || 0.001;
+    cam.far = Number(source?.far) || 2000;
+    cam.position.copy(source.position);
+    cam.up.copy(source.up);
+    if (source.quaternion && cam.quaternion) cam.quaternion.copy(source.quaternion);
+    if (cam.isPerspectiveCamera) {
+      cam.fov = Number(source?.fov) || Number(perspectiveCamera?.fov) || 45;
+      cam.aspect = safeAspect;
+      cam.zoom = Number(source?.zoom) || 1;
+      cam.updateProjectionMatrix();
+      cam.userData.quadProjection = 'perspective';
+      cam.userData.quadScaleMode = 'active-view';
+      cam.userData.quadVisibleHeight = null;
+      cam.userData.quadWorldUnitsPerPixel = null;
+    } else {
+      const sourceHeight = source?.isOrthographicCamera
+        ? Math.abs((Number(source.top) || 0) - (Number(source.bottom) || 0))
+        : 0;
+      const height = Math.max(
+        0.2,
+        Number.isFinite(sourceHeight) && sourceHeight > 0
+          ? sourceHeight
+          : (Number(viewerState.orthoFrustumHeight) || orthographicHeightForBounds(viewerState.bounds)),
+      );
+      cam.left = (-height * safeAspect) / 2;
+      cam.right = (height * safeAspect) / 2;
+      cam.top = height / 2;
+      cam.bottom = -height / 2;
+      cam.zoom = Number(source?.zoom) || 1;
+      cam.updateProjectionMatrix();
+      cam.userData.quadProjection = 'orthographic';
+      cam.userData.quadScaleMode = 'active-view';
+      cam.userData.quadVisibleHeight = height / Math.max(0.001, Number(cam.zoom) || 1);
+      cam.userData.quadWorldUnitsPerPixel = cam.userData.quadVisibleHeight / Math.max(1, Number(pane.height) || 1);
+    }
+    cam.userData.quadPaneZoom = null;
+    cam.userData.quadPaneOffsetX = null;
+    cam.userData.quadPaneOffsetY = null;
+    cam.userData.quadTargetX = Number(activeTarget.x) || 0;
+    cam.userData.quadTargetY = Number(activeTarget.y) || 0;
+    cam.userData.quadTargetZ = Number(activeTarget.z) || 0;
+    return cam;
+  }
+
+  const target = viewerQuadTargetVector() || new THREE.Vector3(0, 0, 0);
+  if (isViewerQuadFitInteractivePane(pane)) {
+    const axes = viewerPaneAxesForMode(pane.mode);
+    const view = viewerQuadPaneViewState(pane.id);
+    if (axes && view) {
+      target
+        .add(axes.right.multiplyScalar(Number(view.offsetX) || 0))
+        .add(axes.up.multiplyScalar(Number(view.offsetY) || 0));
+    }
+  }
+  const fitDist = fitDistanceForBoundsAtAspect(viewerState.bounds, safeAspect);
+  const dist = fitDist;
+  const near = Math.max(0.001, Math.min(fitDist, dist) / 1000);
+  const far = Math.max(2000, Math.max(fitDist, dist) * 20);
+  const dir = viewerDirectionForPane(pane.mode, target) || new THREE.Vector3(0.62, -0.45, 0.48).normalize();
+  const up = viewerUpForPane(pane.mode) || new THREE.Vector3(0, 0, 1);
+
+  cam.near = near;
+  cam.far = far;
+  cam.position.copy(target).add(dir.multiplyScalar(Math.max(0.01, dist)));
+  cam.up.copy(up);
+  if (cam.isPerspectiveCamera) {
+    cam.fov = Number(perspectiveCamera?.fov) || 45;
+    cam.aspect = safeAspect;
+    cam.updateProjectionMatrix();
+    cam.userData.quadProjection = 'perspective';
+    cam.userData.quadScaleMode = 'perspective-fit';
+    cam.userData.quadVisibleHeight = null;
+    cam.userData.quadWorldUnitsPerPixel = null;
+  } else {
+    const orthoHeight = quadOrthographicHeightForPane(pane, safeAspect, panes);
+    cam.zoom = 1;
+    setOrthographicFrustumForAspect(cam, safeAspect, { height: orthoHeight });
+    cam.userData.quadProjection = 'orthographic';
+    cam.userData.quadScaleMode = pane.id !== 'iso' && activeViewerQuadLayoutMode() === 'quad-scale'
+      ? 'shared-scale'
+      : 'pane-fit';
+    cam.userData.quadVisibleHeight = orthoHeight;
+    cam.userData.quadWorldUnitsPerPixel = orthoHeight / Math.max(1, Number(pane.height) || 1);
+    if (isViewerQuadFitInteractivePane(pane)) {
+      const view = viewerQuadPaneViewState(pane.id);
+      cam.userData.quadPaneZoom = Number(view?.zoom) || 1;
+      cam.userData.quadPaneOffsetX = Number(view?.offsetX) || 0;
+      cam.userData.quadPaneOffsetY = Number(view?.offsetY) || 0;
+    } else if (isViewerQuadScaleThreeViewPane(pane)) {
+      const view = viewerQuadThreeViewState();
+      cam.userData.quadPaneZoom = Number(view?.zoom) || 1;
+      cam.userData.quadPaneOffsetX = null;
+      cam.userData.quadPaneOffsetY = null;
+    } else {
+      cam.userData.quadPaneZoom = null;
+      cam.userData.quadPaneOffsetX = null;
+      cam.userData.quadPaneOffsetY = null;
+    }
+  }
+  cam.lookAt(target);
+  cam.userData.quadTargetX = Number(target.x) || 0;
+  cam.userData.quadTargetY = Number(target.y) || 0;
+  cam.userData.quadTargetZ = Number(target.z) || 0;
+  return cam;
+}
+
+function viewerQuadPaneRects(width, height) {
+  const w = Math.max(1, Math.floor(Number(width) || 1));
+  const h = Math.max(1, Math.floor(Number(height) || 1));
+  const leftW = Math.max(1, Math.floor(w / 2));
+  const rightW = Math.max(1, w - leftW);
+  const bottomH = Math.max(1, Math.floor(h / 2));
+  const topH = Math.max(1, h - bottomH);
+  return VIEWER_QUAD_PANES.map((pane) => ({
+    ...pane,
+    x: pane.col === 0 ? 0 : leftW,
+    y: pane.row === 0 ? bottomH : 0,
+    cssY: pane.row === 0 ? 0 : topH,
+    width: pane.col === 0 ? leftW : rightW,
+    height: pane.row === 0 ? topH : bottomH,
+  }));
+}
+
+function viewerQuadPaneAtClientPoint(clientX, clientY) {
+  if (!renderer?.domElement) return null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const localX = Number(clientX) - rect.left;
+  const localY = Number(clientY) - rect.top;
+  if (!Number.isFinite(localX) || !Number.isFinite(localY)) return null;
+  if (localX < 0 || localX > rect.width || localY < 0 || localY > rect.height) return null;
+  const panes = viewerQuadPaneRects(rect.width, rect.height);
+  return panes.find((pane) => (
+    localX >= pane.x
+    && localX <= pane.x + pane.width
+    && localY >= pane.cssY
+    && localY <= pane.cssY + pane.height
+  )) || null;
+}
+
+function getViewerQuadPaneStates() {
+  ensureViewerQuadCameras();
+  const width = Number(els.viewer?.clientWidth) || 1;
+  const height = Number(els.viewer?.clientHeight) || 1;
+  const panes = viewerQuadPaneRects(width, height);
+  return panes.map((pane) => {
+    const cam = configureViewerQuadCamera(pane, pane.width / Math.max(1, pane.height), panes);
+    const visibleHeight = Number(cam?.userData?.quadVisibleHeight);
+    const worldUnitsPerPixel = Number(cam?.userData?.quadWorldUnitsPerPixel);
+    const paneZoom = Number(cam?.userData?.quadPaneZoom);
+    const paneOffsetX = Number(cam?.userData?.quadPaneOffsetX);
+    const paneOffsetY = Number(cam?.userData?.quadPaneOffsetY);
+    const targetX = Number(cam?.userData?.quadTargetX);
+    const targetY = Number(cam?.userData?.quadTargetY);
+    const targetZ = Number(cam?.userData?.quadTargetZ);
+    return {
+      id: pane.id,
+      label: pane.label,
+      mode: pane.mode,
+      row: pane.row,
+      col: pane.col,
+      layoutMode: activeViewerQuadLayoutMode(),
+      projectionMode: viewerProjectionForPane(pane),
+      scaleMode: cam?.userData?.quadScaleMode || null,
+      cameraType: cam?.isOrthographicCamera ? 'OrthographicCamera' : (cam?.isPerspectiveCamera ? 'PerspectiveCamera' : null),
+      aspect: Number.isFinite(Number(cam?.aspect)) ? Number(cam.aspect) : (pane.width / Math.max(1, pane.height)),
+      visibleHeight: Number.isFinite(visibleHeight) ? visibleHeight : null,
+      worldUnitsPerPixel: Number.isFinite(worldUnitsPerPixel) ? worldUnitsPerPixel : null,
+      paneZoom: Number.isFinite(paneZoom) ? paneZoom : null,
+      paneOffsetX: Number.isFinite(paneOffsetX) ? paneOffsetX : null,
+      paneOffsetY: Number.isFinite(paneOffsetY) ? paneOffsetY : null,
+      target: Number.isFinite(targetX) && Number.isFinite(targetY) && Number.isFinite(targetZ) ? {
+        x: targetX,
+        y: targetY,
+        z: targetZ,
+      } : null,
+      cameraPosition: cam?.position ? {
+        x: Number(cam.position.x) || 0,
+        y: Number(cam.position.y) || 0,
+        z: Number(cam.position.z) || 0,
+      } : null,
+      cameraUp: cam?.up ? {
+        x: Number(cam.up.x) || 0,
+        y: Number(cam.up.y) || 0,
+        z: Number(cam.up.z) || 0,
+      } : null,
+    };
+  });
+}
+
+function configureViewerControls(target = null) {
+  if (!OrbitControls || !renderer || !camera) return;
+  const nextTarget = target?.isVector3 ? target.clone() : new THREE.Vector3(0, 0, 0);
+  if (controls) controls.dispose();
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.rotateSpeed = 0.6;
+  controls.zoomSpeed = 0.8;
+  controls.enablePan = true;
+  controls.enableZoom = true;
+  controls.enableRotate = true;
+  controls.screenSpacePanning = false;
+  controls.target.copy(nextTarget);
+  applyControlMode(viewerState.mode || 'rotate');
+}
+
+function activeProjectionMode() {
+  return camera?.isOrthographicCamera ? 'orthographic' : 'perspective';
+}
+
+function setViewerProjectionMode(mode, options = {}) {
+  if (!THREE || !perspectiveCamera || !orthographicCamera) return;
+  const nextMode = mode === 'orthographic' ? 'orthographic' : 'perspective';
+  const oldCamera = camera || perspectiveCamera;
+  const oldTarget = controls?.target?.clone?.() || new THREE.Vector3(0, 0, 0);
+  const nextCamera = nextMode === 'orthographic' ? orthographicCamera : perspectiveCamera;
+  nextCamera.position.copy(oldCamera.position);
+  nextCamera.up.copy(oldCamera.up);
+  nextCamera.near = oldCamera.near;
+  nextCamera.far = oldCamera.far;
+  if (nextMode === 'orthographic') {
+    viewerState.orthoFrustumHeight = orthographicHeightForBounds(viewerState.bounds);
+    updateOrthographicFrustum({ resetZoom: Boolean(options.resetZoom ?? true) });
+  } else {
+    nextCamera.aspect = viewerAspectRatio();
+    nextCamera.updateProjectionMatrix();
+  }
+  camera = nextCamera;
+  viewerState.projectionMode = nextMode;
+  configureViewerControls(oldTarget);
+  if (nextMode === 'orthographic' && options.applyIso !== false) {
+    viewerState.viewIndex = viewerState.viewModes.indexOf('iso');
+    applyViewPreset('iso');
+  } else {
+    controls.update();
+  }
+  updateViewerButtons();
+}
+
+function toggleViewerProjectionMode() {
+  const next = activeProjectionMode() === 'orthographic' ? 'perspective' : 'orthographic';
+  setViewerProjectionMode(next, { applyIso: next === 'orthographic', resetZoom: true });
+}
+
+function zoomViewerBy(factor) {
+  if (!controls || !camera) return;
+  const zoomFactor = Number(factor);
+  if (!Number.isFinite(zoomFactor) || zoomFactor <= 0) return;
+  if (camera.isOrthographicCamera) {
+    camera.zoom = clampNumber((Number(camera.zoom) || 1) * zoomFactor, 0.05, 80);
+    camera.updateProjectionMatrix();
+  } else if (zoomFactor > 1 && typeof controls.dollyIn === 'function') {
+    controls.dollyIn(zoomFactor);
+  } else if (zoomFactor < 1 && typeof controls.dollyOut === 'function') {
+    controls.dollyOut(1 / zoomFactor);
+  } else {
+    camera.position.multiplyScalar(1 / zoomFactor);
+  }
+  controls.update();
+}
+
+function viewerMouseActionName(value) {
+  if (!THREE) return null;
+  if (value === THREE.MOUSE.ROTATE) return 'ROTATE';
+  if (value === THREE.MOUSE.DOLLY) return 'DOLLY';
+  if (value === THREE.MOUSE.PAN) return 'PAN';
+  return null;
+}
+
+function viewerMiddleZScale() {
+  const height = Math.max(1, Number(els.viewer?.clientHeight) || 1);
+  const ref = Number(viewerState.bounds?.maxDim) || Number(viewerState.fitDistance) || 1;
+  return Math.max(ref, 0.2) * 1.35 / height;
+}
+
+function viewerMiddleHorizontalPanVector(dx) {
+  if (!THREE || !camera || !controls || !renderer?.domElement) return null;
+  const dragX = Number(dx);
+  if (!Number.isFinite(dragX) || dragX === 0) return null;
+  const dom = renderer.domElement;
+  let distance = 0;
+  if (camera.isPerspectiveCamera) {
+    const offset = new THREE.Vector3().copy(camera.position).sub(controls.target);
+    const targetDistance = offset.length() * Math.tan((Number(camera.fov) || 45) * Math.PI / 360);
+    distance = (2 * dragX * targetDistance) / Math.max(1, Number(dom.clientHeight) || 1);
+  } else if (camera.isOrthographicCamera) {
+    distance = dragX * ((Number(camera.right) || 0) - (Number(camera.left) || 0))
+      / Math.max(0.001, Number(camera.zoom) || 1)
+      / Math.max(1, Number(dom.clientWidth) || 1);
+  }
+  if (!Number.isFinite(distance) || distance === 0) return null;
+  return new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).multiplyScalar(-distance);
+}
+
+function viewerQuadInteractivePaneAtEvent(evt) {
+  if (!isViewerQuadMode()) return null;
+  const pane = viewerQuadPaneAtClientPoint(evt?.clientX, evt?.clientY);
+  return isViewerQuadFitInteractivePane(pane) || isViewerQuadScaleThreeViewPane(pane) ? pane : null;
+}
+
+function viewerQuadPaneUnitsPerPixel(pane) {
+  if (!pane) return 0;
+  const aspect = Number(pane.width) / Math.max(1, Number(pane.height) || 1);
+  const rect = renderer?.domElement?.getBoundingClientRect?.();
+  const panes = rect?.width && rect?.height ? viewerQuadPaneRects(rect.width, rect.height) : [pane];
+  const activePane = panes.find((entry) => entry.id === pane.id) || pane;
+  return quadOrthographicHeightForPane(activePane, aspect, panes) / Math.max(1, Number(activePane.height) || 1);
+}
+
+function handleViewerQuadWheel(evt) {
+  const pane = viewerQuadInteractivePaneAtEvent(evt);
+  if (!pane) return;
+  if (isViewerQuadScaleThreeViewPane(pane)) {
+    const view = viewerQuadThreeViewState();
+    const oldZoom = clampNumber(Number(view.zoom) || 1, 0.08, 40);
+    const zoomFactor = clampNumber(Math.exp((-Number(evt.deltaY) || 0) * 0.0012), 0.35, 2.85);
+    const nextZoom = clampNumber(oldZoom * zoomFactor, 0.08, 40);
+    if (!Number.isFinite(nextZoom) || Math.abs(nextZoom - oldZoom) < 1e-9) return;
+    evt.preventDefault();
+    evt.stopImmediatePropagation?.();
+    view.zoom = nextZoom;
+    renderViewerScene();
+    updateMassPointHover(evt.clientX, evt.clientY);
+    return;
+  }
+  const view = viewerQuadPaneViewState(pane.id);
+  if (!view) return;
+  evt.preventDefault();
+  evt.stopImmediatePropagation?.();
+  const oldZoom = clampNumber(Number(view.zoom) || 1, 0.08, 40);
+  const zoomFactor = clampNumber(Math.exp((-Number(evt.deltaY) || 0) * 0.0012), 0.35, 2.85);
+  const nextZoom = clampNumber(oldZoom * zoomFactor, 0.08, 40);
+  if (!Number.isFinite(nextZoom) || Math.abs(nextZoom - oldZoom) < 1e-9) return;
+  const baseHeight = quadPaneFitHeightForAspect(pane, pane.width / Math.max(1, pane.height));
+  const oldUnits = (baseHeight / oldZoom) / Math.max(1, pane.height);
+  const nextUnits = (baseHeight / nextZoom) / Math.max(1, pane.height);
+  const rect = renderer?.domElement?.getBoundingClientRect?.();
+  const localX = Number(evt.clientX) - Number(rect?.left || 0) - pane.x;
+  const localY = Number(evt.clientY) - Number(rect?.top || 0) - pane.cssY;
+  const dxFromCenter = localX - (pane.width * 0.5);
+  const dyFromCenter = localY - (pane.height * 0.5);
+  view.offsetX += dxFromCenter * (oldUnits - nextUnits);
+  view.offsetY += -dyFromCenter * (oldUnits - nextUnits);
+  view.zoom = nextZoom;
+  renderViewerScene();
+  updateMassPointHover(evt.clientX, evt.clientY);
+}
+
+function endViewerQuadPaneDrag(evt = null) {
+  if (!viewerQuadPaneDrag) return;
+  if (evt) {
+    evt.preventDefault?.();
+    evt.stopImmediatePropagation?.();
+  }
+  const drag = viewerQuadPaneDrag;
+  viewerQuadPaneDrag = null;
+  if (controls) controls.enabled = drag.controlsEnabled;
+  const dom = renderer?.domElement;
+  if (dom) {
+    dom.style.cursor = '';
+    if (Number.isFinite(Number(drag.pointerId))) {
+      try {
+        dom.releasePointerCapture?.(drag.pointerId);
+      } catch {
+        // Pointer capture may already be released by the browser.
+      }
+    }
+  }
+  window.removeEventListener('pointermove', handleViewerQuadPaneDragMove, true);
+  window.removeEventListener('pointerup', endViewerQuadPaneDrag, true);
+  window.removeEventListener('pointercancel', endViewerQuadPaneDrag, true);
+}
+
+function handleViewerQuadPaneDragMove(evt) {
+  if (!viewerQuadPaneDrag) return;
+  if (Number(evt.pointerId) !== Number(viewerQuadPaneDrag.pointerId)) return;
+  const view = viewerQuadPaneViewState(viewerQuadPaneDrag.paneId);
+  if (!view || !renderer?.domElement) return;
+  evt.preventDefault();
+  evt.stopImmediatePropagation();
+  const rect = renderer.domElement.getBoundingClientRect();
+  const pane = viewerQuadPaneRects(rect.width, rect.height).find((entry) => entry.id === viewerQuadPaneDrag.paneId);
+  if (!pane) return;
+  const nextX = Number(evt.clientX);
+  const nextY = Number(evt.clientY);
+  const dx = nextX - Number(viewerQuadPaneDrag.lastX);
+  const dy = nextY - Number(viewerQuadPaneDrag.lastY);
+  viewerQuadPaneDrag.lastX = nextX;
+  viewerQuadPaneDrag.lastY = nextY;
+  const units = viewerQuadPaneUnitsPerPixel(pane);
+  if (!Number.isFinite(units) || units <= 0) return;
+  view.offsetX -= dx * units;
+  view.offsetY += dy * units;
+  renderViewerScene();
+  updateMassPointHover(evt.clientX, evt.clientY);
+}
+
+function beginViewerQuadPaneDrag(evt) {
+  if (![0, 2].includes(Number(evt?.button))) return false;
+  const pane = viewerQuadInteractivePaneAtEvent(evt);
+  if (!pane || !isViewerQuadFitInteractivePane(pane)) return false;
+  evt.preventDefault();
+  evt.stopImmediatePropagation?.();
+  const dom = renderer?.domElement;
+  dom?.setPointerCapture?.(evt.pointerId);
+  if (dom) dom.style.cursor = 'grabbing';
+  viewerQuadPaneDrag = {
+    pointerId: evt.pointerId,
+    paneId: pane.id,
+    lastX: Number(evt.clientX),
+    lastY: Number(evt.clientY),
+    controlsEnabled: controls ? controls.enabled : true,
+  };
+  if (controls) controls.enabled = false;
+  window.addEventListener('pointermove', handleViewerQuadPaneDragMove, true);
+  window.addEventListener('pointerup', endViewerQuadPaneDrag, true);
+  window.addEventListener('pointercancel', endViewerQuadPaneDrag, true);
+  return true;
+}
+
+function endViewerMiddleZDrag(evt = null) {
+  if (!viewerMiddleZDrag) return;
+  if (evt) {
+    evt.preventDefault?.();
+    evt.stopImmediatePropagation?.();
+  }
+  const drag = viewerMiddleZDrag;
+  viewerMiddleZDrag = null;
+  if (controls) controls.enabled = drag.controlsEnabled;
+  const dom = renderer?.domElement;
+  if (dom && Number.isFinite(Number(drag.pointerId))) {
+    try {
+      dom.releasePointerCapture?.(drag.pointerId);
+    } catch {
+      // Pointer capture may already be released by the browser.
+    }
+  }
+  window.removeEventListener('pointermove', handleViewerMiddleZDragMove, true);
+  window.removeEventListener('pointerup', endViewerMiddleZDrag, true);
+  window.removeEventListener('pointercancel', endViewerMiddleZDrag, true);
+}
+
+function handleViewerMiddleZDragMove(evt) {
+  if (!viewerMiddleZDrag || !camera || !controls) return;
+  if (Number(evt.pointerId) !== Number(viewerMiddleZDrag.pointerId)) return;
+  evt.preventDefault();
+  evt.stopImmediatePropagation();
+  const nextX = Number(evt.clientX);
+  const nextY = Number(evt.clientY);
+  if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) return;
+  const dx = nextX - Number(viewerMiddleZDrag.lastX);
+  const dy = nextY - Number(viewerMiddleZDrag.lastY);
+  viewerMiddleZDrag.lastX = nextX;
+  viewerMiddleZDrag.lastY = nextY;
+  let changed = false;
+  const pan = viewerMiddleHorizontalPanVector(dx);
+  if (pan) {
+    camera.position.add(pan);
+    controls.target.add(pan);
+    changed = true;
+  }
+  const dz = dy * viewerMiddleZScale();
+  if (Number.isFinite(dz) && dz !== 0) {
+    camera.position.z += dz;
+    controls.target.z += dz;
+    changed = true;
+  }
+  if (changed) controls.update();
+}
+
+function handleViewerPointerDown(evt) {
+  if (beginViewerQuadPaneDrag(evt)) return;
+  if (evt.button !== 1 || !camera || !controls) return;
+  evt.preventDefault();
+  evt.stopImmediatePropagation();
+  const dom = renderer?.domElement;
+  dom?.setPointerCapture?.(evt.pointerId);
+  viewerMiddleZDrag = {
+    pointerId: evt.pointerId,
+    lastX: Number(evt.clientX),
+    lastY: Number(evt.clientY),
+    controlsEnabled: controls.enabled,
+  };
+  controls.enabled = false;
+  window.addEventListener('pointermove', handleViewerMiddleZDragMove, true);
+  window.addEventListener('pointerup', endViewerMiddleZDrag, true);
+  window.addEventListener('pointercancel', endViewerMiddleZDrag, true);
+}
+
 function updateViewerButtons() {
   if (!els.viewerPan || !els.viewerView || !els.viewerGrid) return;
+  syncViewerQuadModeClass();
   els.viewerPan.classList.toggle('active', viewerState.mode === 'pan');
   const viewLabel = viewerState.viewModes[viewerState.viewIndex] || 'top';
   const viewTitle = VIEW_MODE_LABELS[viewLabel] || viewLabel;
   const gridLabel = viewerState.gridModes[viewerState.gridIndex] || 'xy';
-  els.viewerView.title = `View: ${viewTitle}`;
-  els.viewerGrid.title = `Grid: ${gridLabel.toUpperCase()}`;
+  setViewerButtonTooltip(els.viewerHome, 'Fit to model');
+  setViewerButtonTooltip(els.viewerZoomIn, 'Zoom in');
+  setViewerButtonTooltip(els.viewerZoomOut, 'Zoom out');
+  setViewerButtonTooltip(els.viewerPan, viewerState.mode === 'pan' ? 'Pan mode on' : 'Pan mode');
+  if (els.viewerProjection) {
+    const isOrtho = activeProjectionMode() === 'orthographic';
+    els.viewerProjection.classList.toggle('active', isOrtho);
+    els.viewerProjection.textContent = isOrtho ? 'O' : 'P';
+    setViewerButtonTooltip(els.viewerProjection, isOrtho ? 'Projection: orthographic' : 'Projection: perspective');
+  }
+  if (els.viewerQuad) {
+    const quadLayout = activeViewerQuadLayoutMode();
+    const isQuad = quadLayout !== 'single';
+    els.viewerQuad.classList.toggle('active', isQuad);
+    if (quadLayout === 'quad-fit') setViewerButtonTooltip(els.viewerQuad, 'Quad view: fitted panes');
+    else if (quadLayout === 'quad-scale') setViewerButtonTooltip(els.viewerQuad, 'Quad view: scaled 3-view');
+    else setViewerButtonTooltip(els.viewerQuad, 'Quad view off');
+  }
+  setViewerButtonTooltip(els.viewerView, `View: ${viewTitle}`);
+  setViewerButtonTooltip(els.viewerGrid, `Grid: ${gridLabel.toUpperCase()}`);
   if (els.viewerLoad) {
     els.viewerLoad.classList.toggle('active', uiState.showLoading);
+    setViewerButtonTooltip(els.viewerLoad, uiState.showLoading ? 'Loading vectors on' : 'Loading vectors off');
   }
   if (els.viewerText) {
     els.viewerText.classList.toggle('active', uiState.showSurfaceText);
-    els.viewerText.title = uiState.showSurfaceText ? 'Surface labels on' : 'Surface labels off';
+    setViewerButtonTooltip(els.viewerText, uiState.showSurfaceText ? 'Surface labels on' : 'Surface labels off');
   }
   if (els.viewerMassPoints) {
     els.viewerMassPoints.classList.toggle('active', uiState.showMassPoints);
-    els.viewerMassPoints.title = uiState.showMassPoints ? 'Mass points on' : 'Mass points off';
+    setViewerButtonTooltip(els.viewerMassPoints, uiState.showMassPoints ? 'Mass points on' : 'Mass points off');
   }
   if (els.viewerSurface) {
     const mode = uiState.surfaceRenderMode;
     els.viewerSurface.classList.toggle('active', mode !== 'wireframe');
-    if (mode === 'wireframe') els.viewerSurface.title = 'Render: wireframe only';
-    else if (mode === 'both') els.viewerSurface.title = 'Render: surface + wireframe';
-    else els.viewerSurface.title = 'Render: surface only';
+    if (mode === 'wireframe') setViewerButtonTooltip(els.viewerSurface, 'Render: wireframe only');
+    else if (mode === 'both') setViewerButtonTooltip(els.viewerSurface, 'Render: surface + wireframe');
+    else setViewerButtonTooltip(els.viewerSurface, 'Render: surface only');
   }
   if (els.viewerPressure) {
     els.viewerPressure.classList.toggle('active', uiState.showPressure);
-    els.viewerPressure.title = uiState.showPressure ? 'Pressure shading on' : 'Pressure shading off';
+    setViewerButtonTooltip(els.viewerPressure, uiState.showPressure ? 'Pressure shading on' : 'Pressure shading off');
   }
   if (els.viewerPanelSpacing) {
     els.viewerPanelSpacing.classList.toggle('active', uiState.showPanelSpacing);
-    els.viewerPanelSpacing.title = uiState.showPanelSpacing ? 'Panel spacing on' : 'Panel spacing off';
+    setViewerButtonTooltip(els.viewerPanelSpacing, uiState.showPanelSpacing ? 'Panel spacing on' : 'Panel spacing off');
   }
   if (els.viewerVortices) {
     els.viewerVortices.classList.toggle('active', uiState.showVortices);
-    els.viewerVortices.title = uiState.showVortices ? 'Bound + leg vortices on' : 'Bound + leg vortices off';
+    setViewerButtonTooltip(els.viewerVortices, uiState.showVortices ? 'Bound + leg vortices on' : 'Bound + leg vortices off');
   }
   if (els.viewerFlow) {
     els.viewerFlow.classList.toggle('active', uiState.showFlowField);
@@ -10212,34 +12788,68 @@ function updateViewerButtons() {
     const modeLabel = mode === 'induced'
       ? 'induced only'
       : (mode === 'induced+rotation' ? 'induced + body-rotation' : 'full flow');
-    els.viewerFlow.title = uiState.showFlowField
-      ? `Flow: ${modeLabel} (tap to cycle)`
-      : `Flow off (next: ${modeLabel})`;
+    setViewerButtonTooltip(
+      els.viewerFlow,
+      uiState.showFlowField ? `Flow: ${modeLabel} (tap to cycle)` : `Flow off (next: ${modeLabel})`,
+    );
   }
 }
 
-function setControlMode(mode) {
+function applyControlMode(mode) {
   if (!controls || !THREE) return;
-  const next = viewerState.mode === mode ? 'rotate' : mode;
+  const next = mode === 'pan' ? 'pan' : 'rotate';
   viewerState.mode = next;
   controls.enableRotate = true;
   controls.enablePan = true;
   controls.enableZoom = true;
   const mouse = controls.mouseButtons;
   const touch = controls.touches;
+  mouse.LEFT = THREE.MOUSE.PAN;
+  mouse.MIDDLE = null;
+  mouse.RIGHT = THREE.MOUSE.ROTATE;
   if (next === 'pan') {
-    mouse.LEFT = THREE.MOUSE.PAN;
     touch.ONE = THREE.TOUCH.PAN ?? THREE.TOUCH.DOLLY_PAN ?? THREE.TOUCH.ROTATE;
   } else {
-    mouse.LEFT = THREE.MOUSE.ROTATE;
     touch.ONE = THREE.TOUCH.ROTATE ?? THREE.TOUCH.DOLLY_PAN;
   }
   updateViewerButtons();
 }
 
-function computeBounds(obj) {
+function setControlMode(mode) {
+  const next = viewerState.mode === mode ? 'rotate' : mode;
+  applyControlMode(next);
+}
+
+function isViewerOverlayBoundsObject(obj) {
+  if (!obj) return false;
+  if (obj.userData?.surfaceLabel || obj.userData?.massPointLabel || obj.userData?.referenceMarker) return true;
+  const name = String(obj.name || '');
+  return name === 'reference-marker'
+    || name === 'mass-point'
+    || name === 'panel-spacing'
+    || name === 'panel-spacing-lines'
+    || name === 'vortices'
+    || name === 'bound-vortices'
+    || name === 'leg-vortices';
+}
+
+function computeBounds(obj, options = {}) {
   if (!THREE || !obj) return null;
-  const box = new THREE.Box3().setFromObject(obj);
+  const excludeViewerOverlays = Boolean(options?.excludeViewerOverlays);
+  let box;
+  if (excludeViewerOverlays) {
+    box = new THREE.Box3();
+    const childBox = new THREE.Box3();
+    obj.updateWorldMatrix?.(true, true);
+    obj.traverse((child) => {
+      if (isViewerOverlayBoundsObject(child)) return;
+      if (!child?.isMesh && !child?.isLine && !child?.isLineSegments && !child?.isPoints && !child?.isSprite) return;
+      childBox.setFromObject(child);
+      if (!childBox.isEmpty()) box.union(childBox);
+    });
+  } else {
+    box = new THREE.Box3().setFromObject(obj);
+  }
   if (box.isEmpty()) return null;
   const size = new THREE.Vector3();
   const center = new THREE.Vector3();
@@ -10247,6 +12857,16 @@ function computeBounds(obj) {
   box.getCenter(center);
   const maxDim = Math.max(size.x, size.y, size.z);
   return { box, size, center, maxDim };
+}
+
+function fitDistanceForBounds(bounds = null) {
+  const maxDim = Number(bounds?.maxDim);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return 10;
+  const fovRad = ((Number(camera?.fov) || 45) * Math.PI) / 180;
+  const aspect = Math.max(0.2, Number(camera?.aspect) || 1);
+  const fitHeightDistance = maxDim / (2 * Math.tan(fovRad / 2));
+  const fitWidthDistance = fitHeightDistance / aspect;
+  return Math.max(fitHeightDistance, fitWidthDistance) * 1.75;
 }
 
 function axisSizeFromMax(maxDim) {
@@ -10309,6 +12929,13 @@ function setCameraUp(vec) {
   camera.up.set(vec.x, vec.y, vec.z);
 }
 
+function setDefaultCameraPosition(distance) {
+  if (!camera || !THREE) return;
+  const dist = Number.isFinite(Number(distance)) && Number(distance) > 0 ? Number(distance) : 10;
+  const direction = new THREE.Vector3(0.62, -0.45, 0.48).normalize().multiplyScalar(dist);
+  camera.position.copy(direction);
+}
+
 function applyViewPreset(mode) {
   if (!camera || !controls || !viewerState.bounds) return;
   const dist = viewerState.fitDistance || 10;
@@ -10321,10 +12948,14 @@ function applyViewPreset(mode) {
   } else if (mode === 'side') {
     setCameraUp(new THREE.Vector3(0, 0, 1));
     camera.position.set(0, dist, 0);
+  } else if (mode === 'iso') {
+    setCameraUp(new THREE.Vector3(0, 0, 1));
+    setDefaultCameraPosition(dist);
   } else {
     setCameraUp(new THREE.Vector3(0, 0, 1));
-    camera.position.set(dist * 0.6, -dist * 0.4, dist * 0.28);
+    setDefaultCameraPosition(dist);
   }
+  if (camera.isOrthographicCamera) updateOrthographicFrustum();
   controls.target.set(0, 0, 0);
   controls.update();
 }
@@ -10336,9 +12967,14 @@ function initScene() {
 
   const width = els.viewer.clientWidth;
   const height = els.viewer.clientHeight;
-  camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
-  camera.position.set(6, 3, 8);
-  camera.up.set(0, 0, 1);
+  perspectiveCamera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
+  perspectiveCamera.position.set(6, 3, 8);
+  perspectiveCamera.up.set(0, 0, 1);
+  orthographicCamera = new THREE.OrthographicCamera(-6, 6, 6, -6, 0.1, 2000);
+  orthographicCamera.position.copy(perspectiveCamera.position);
+  orthographicCamera.up.copy(perspectiveCamera.up);
+  updateOrthographicFrustum({ resetZoom: true });
+  camera = perspectiveCamera;
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(width, height);
@@ -10350,17 +12986,11 @@ function initScene() {
   renderer.domElement.addEventListener('pointerleave', () => {
     clearMassPointHover();
   });
+  renderer.domElement.addEventListener('pointerdown', handleViewerPointerDown, true);
+  renderer.domElement.addEventListener('wheel', handleViewerQuadWheel, { capture: true, passive: false });
+  renderer.domElement.addEventListener('contextmenu', (evt) => evt.preventDefault());
 
-  controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.rotateSpeed = 0.6;
-  controls.zoomSpeed = 0.8;
-  controls.enablePan = true;
-  controls.enableZoom = true;
-  controls.enableRotate = true;
-  controls.screenSpacePanning = false;
-  setControlMode('rotate');
+  configureViewerControls(new THREE.Vector3(0, 0, 0));
 
   const hemi = new THREE.HemisphereLight(0x9fb9ff, 0x0b0f17, 0.9);
   scene.add(hemi);
@@ -10608,11 +13238,13 @@ function buildExecState(model) {
   const hasCdcl = Array.isArray(model?.surfaces)
     && model.surfaces.some((surf) => Array.isArray(surf?.sections)
       && surf.sections.some((sec) => Array.isArray(sec?.cdcl) && sec.cdcl.length >= 6 && Number(sec.cdcl[3]) !== 0));
+  const activeMassProps = uiState.massProps || {};
   const unitlMassFile = Number(uiState.massFileProps?.lunitScale);
-  const unitlMass = Number(uiState.massProps?.lunitScale);
+  const unitlMass = Number(activeMassProps?.lunitScale);
   const unitlUse = (Number.isFinite(unitlMassFile) && unitlMassFile > 0)
     ? unitlMassFile
     : ((Number.isFinite(unitlMass) && unitlMass > 0) ? unitlMass : 1.0);
+  const hasActivePrincipalInertias = ['ixx', 'iyy', 'izz'].every((key) => Number(activeMassProps?.[key]) > 0);
   const IVALFA = 1;
   const IVBETA = 2;
   const IVROTX = 3;
@@ -10770,7 +13402,7 @@ function buildExecState(model) {
     LBFORCE: false,
     LTRFORCE: false,
     LNFLD_WV: false,
-    LMASS: Boolean(uiState.massPropsFilename),
+    LMASS: Boolean(uiState.massPropsFilename || hasActivePrincipalInertias),
     LFLOAD: new Uint8Array(NSURF + 1),
 
     ALFA: 0.0,
@@ -11030,31 +13662,32 @@ function buildExecState(model) {
   state.PARVAL[idx2(IPRHO, IR, IPTOT)] = Math.fround(Number(els.rho.value));
   state.PARVAL[idx2(IPGEE, IR, IPTOT)] = Math.fround(Number(els.gee.value));
   {
-    const massVal = Number(uiState.massProps?.mass ?? els.mass?.value ?? 0);
+    const massVal = Number(activeMassProps?.mass ?? els.mass?.value ?? 0);
     const massUse = massVal > 0 ? massVal : 1.0;
     state.PARVAL[idx2(IPMASS, IR, IPTOT)] = Math.fround(massUse);
   }
   state.PARVAL[idx2(IPCL, IR, IPTOT)] = Math.fround(Number(els.cl?.value || 0));
   state.PARVAL[idx2(IPPHI, IR, IPTOT)] = Math.fround(Number(els.bank?.value || 0));
-  const xcgInput = Number(els.xcg?.value);
-  const ycgInput = Number(els.ycg?.value);
-  const zcgInput = Number(els.zcg?.value);
+  const useCgInputs = !false;
+  const xcgInput = useCgInputs ? Number(els.xcg?.value) : Number.NaN;
+  const ycgInput = useCgInputs ? Number(els.ycg?.value) : Number.NaN;
+  const zcgInput = useCgInputs ? Number(els.zcg?.value) : Number.NaN;
   state.PARVAL[idx2(IPXCG, IR, IPTOT)] = Math.fround(Number.isFinite(xcgInput)
     ? xcgInput
-    : (Number.isFinite(uiState.massProps?.xcg) ? uiState.massProps.xcg : (Number.isFinite(model.header.xref) ? model.header.xref : 0.0)));
+    : (Number.isFinite(activeMassProps?.xcg) ? activeMassProps.xcg : (Number.isFinite(model.header.xref) ? model.header.xref : 0.0)));
   state.PARVAL[idx2(IPYCG, IR, IPTOT)] = Math.fround(Number.isFinite(ycgInput)
     ? ycgInput
-    : (Number.isFinite(uiState.massProps?.ycg) ? uiState.massProps.ycg : (Number.isFinite(model.header.yref) ? model.header.yref : 0.0)));
+    : (Number.isFinite(activeMassProps?.ycg) ? activeMassProps.ycg : (Number.isFinite(model.header.yref) ? model.header.yref : 0.0)));
   state.PARVAL[idx2(IPZCG, IR, IPTOT)] = Math.fround(Number.isFinite(zcgInput)
     ? zcgInput
-    : (Number.isFinite(uiState.massProps?.zcg) ? uiState.massProps.zcg : (Number.isFinite(model.header.zref) ? model.header.zref : 0.0)));
-  state.PARVAL[idx2(IPIXX, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ixx) ? uiState.massProps.ixx : 0.0);
-  state.PARVAL[idx2(IPIYY, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.iyy) ? uiState.massProps.iyy : 0.0);
-  state.PARVAL[idx2(IPIZZ, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.izz) ? uiState.massProps.izz : 0.0);
+    : (Number.isFinite(activeMassProps?.zcg) ? activeMassProps.zcg : (Number.isFinite(model.header.zref) ? model.header.zref : 0.0)));
+  state.PARVAL[idx2(IPIXX, IR, IPTOT)] = Math.fround(Number.isFinite(activeMassProps?.ixx) ? activeMassProps.ixx : 0.0);
+  state.PARVAL[idx2(IPIYY, IR, IPTOT)] = Math.fround(Number.isFinite(activeMassProps?.iyy) ? activeMassProps.iyy : 0.0);
+  state.PARVAL[idx2(IPIZZ, IR, IPTOT)] = Math.fround(Number.isFinite(activeMassProps?.izz) ? activeMassProps.izz : 0.0);
   // AVL stores products of inertia with opposite sign internally.
-  state.PARVAL[idx2(IPIXY, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ixy) ? -uiState.massProps.ixy : 0.0);
-  state.PARVAL[idx2(IPIZX, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.ixz) ? -uiState.massProps.ixz : 0.0);
-  state.PARVAL[idx2(IPIYZ, IR, IPTOT)] = Math.fround(Number.isFinite(uiState.massProps?.iyz) ? -uiState.massProps.iyz : 0.0);
+  state.PARVAL[idx2(IPIXY, IR, IPTOT)] = Math.fround(Number.isFinite(activeMassProps?.ixy) ? -activeMassProps.ixy : 0.0);
+  state.PARVAL[idx2(IPIZX, IR, IPTOT)] = Math.fround(Number.isFinite(activeMassProps?.ixz) ? -activeMassProps.ixz : 0.0);
+  state.PARVAL[idx2(IPIYZ, IR, IPTOT)] = Math.fround(Number.isFinite(activeMassProps?.iyz) ? -activeMassProps.iyz : 0.0);
   {
     const cd0 = Number(runInputs?.cd0);
     state.PARVAL[idx2(IPCD0, IR, IPTOT)] = Math.fround(Number.isFinite(cd0) ? cd0 : 0.0);
@@ -11574,6 +14207,7 @@ function applyExecResults(result) {
     ? (result.LNASA_SA ? -1.0 : 1.0)
     : -1.0;
   const computedEigenModes = computeEigenModesFromExec(result);
+  const eigenStatusMessage = eigenStatusMessageFromExec(result, computedEigenModes);
   const activeCaseIdx = activeRunCaseIndex();
   if (activeCaseIdx >= 0 && Array.isArray(uiState.runCases) && uiState.runCases.length) {
     if (!uiState.eigenModesByRunCase || typeof uiState.eigenModesByRunCase !== 'object') {
@@ -11591,6 +14225,7 @@ function applyExecResults(result) {
     uiState.eigenModesByRunCase = {};
     uiState.eigenModes = computedEigenModes.map((m) => ({ ...m, runCaseIndex: -1 }));
   }
+  setEigenStatusMessage(uiState.eigenModes.length ? '' : eigenStatusMessage);
   if (uiState.selectedEigenMode >= uiState.eigenModes.length) {
     uiState.selectedEigenMode = -1;
   }
@@ -11802,13 +14437,51 @@ function fitCameraToObject(obj) {
     if (!bounds) return;
     obj.position.sub(bounds.center);
     viewerState.bounds = bounds;
-    viewerState.fitDistance = bounds.maxDim * 1.6 + 4.0;
   }
+  viewerState.fitDistance = fitDistanceForBounds(bounds);
+  viewerState.orthoFrustumHeight = orthographicHeightForBounds(bounds);
+  resetViewerQuadPaneViews();
   const fitDist = viewerState.fitDistance || 10;
+  [perspectiveCamera, orthographicCamera].forEach((cam) => {
+    if (!cam) return;
+    cam.near = Math.max(0.001, fitDist / 1000);
+    cam.far = Math.max(2000, fitDist * 20);
+  });
+  updateOrthographicFrustum({ resetZoom: camera?.isOrthographicCamera });
+  camera.updateProjectionMatrix();
   camera.up.set(0, 0, 1);
-  camera.position.set(fitDist * 0.6, -fitDist * 0.4, fitDist * 0.28);
+  setDefaultCameraPosition(fitDist);
   controls.target.set(0, 0, 0);
   controls.update();
+}
+
+function renderViewerScene() {
+  if (!renderer || !scene || !camera || !THREE) return;
+  const size = new THREE.Vector2();
+  renderer.getSize(size);
+  const width = Math.max(1, Math.floor(Number(size.x) || 1));
+  const height = Math.max(1, Math.floor(Number(size.y) || 1));
+  if (!isViewerQuadMode()) {
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, width, height);
+    renderer.render(scene, camera);
+    return;
+  }
+
+  const oldAutoClear = renderer.autoClear;
+  renderer.autoClear = false;
+  renderer.setScissorTest(true);
+  const panes = viewerQuadPaneRects(width, height);
+  panes.forEach((pane) => {
+    const cam = configureViewerQuadCamera(pane, pane.width / Math.max(1, pane.height), panes);
+    if (!cam) return;
+    renderer.setViewport(pane.x, pane.y, pane.width, pane.height);
+    renderer.setScissor(pane.x, pane.y, pane.width, pane.height);
+    renderer.clear(true, true, true);
+    renderer.render(scene, cam);
+  });
+  renderer.setScissorTest(false);
+  renderer.autoClear = oldAutoClear;
 }
 
 function animate() {
@@ -11816,7 +14489,7 @@ function animate() {
   updateModeAnimation();
   updateFlowFieldAnimation();
   if (controls) controls.update();
-  if (renderer && scene && camera) renderer.render(scene, camera);
+  renderViewerScene();
 }
 
 function handleResize() {
@@ -11825,7 +14498,12 @@ function handleResize() {
   const width = els.viewer.clientWidth;
   const height = els.viewer.clientHeight;
   renderer.setSize(width, height);
-  camera.aspect = width / height;
+  if (perspectiveCamera) {
+    perspectiveCamera.aspect = width / height;
+    perspectiveCamera.updateProjectionMatrix();
+  }
+  updateOrthographicFrustum();
+  if (camera?.isPerspectiveCamera) camera.aspect = width / height;
   camera.updateProjectionMatrix();
   drawEigenPlot();
 }
@@ -11835,6 +14513,7 @@ window.addEventListener('resize', handleResize);
 async function bootApp() {
   suspendAutoTrim = true;
   initTopNav();
+  initColumnResize();
   initPanelCollapse();
   await initExampleSelect();
   renderRunCasesList();
