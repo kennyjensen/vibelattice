@@ -152,8 +152,13 @@ a:hover {
 
 .app {
   display: grid;
-  grid-template-columns: minmax(280px, 360px) 1.2fr 0.8fr;
-  gap: 20px;
+  grid-template-columns:
+    minmax(280px, var(--settings-col-width, 360px))
+    20px
+    minmax(420px, 1fr)
+    20px
+    minmax(320px, var(--outputs-col-width, 0.8fr));
+  gap: 0;
   padding: 16px 24px 28px 24px;
   min-height: calc(100vh - 96px);
 }
@@ -168,6 +173,44 @@ a:hover {
 
 .settings-col, .plots-col, .outputs-col {
   display: flex;
+}
+
+.column-resize-handle {
+  align-self: stretch;
+  background: transparent;
+  border: 0;
+  cursor: col-resize;
+  min-width: 20px;
+  padding: 0;
+  position: relative;
+  touch-action: none;
+}
+
+.column-resize-handle::before {
+  content: "";
+  display: block;
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 50%;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+  transform: translateX(-50%);
+  transition: background 120ms ease, box-shadow 120ms ease, width 120ms ease;
+}
+
+.column-resize-handle:hover::before,
+.column-resize-handle:focus-visible::before,
+.column-resize-handle.active::before {
+  width: 3px;
+  background: rgba(125, 211, 252, 0.9);
+  box-shadow: 0 0 0 4px rgba(125, 211, 252, 0.12);
+}
+
+.column-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .panel-col, .output-col {
@@ -1790,6 +1833,10 @@ textarea.code {
 
   #settingsCol {
     order: 1;
+  }
+
+  .column-resize-handle {
+    display: none;
   }
 
   #plotsCol {
