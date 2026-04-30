@@ -68,6 +68,8 @@ const els = {
   settingsCol: document.getElementById('settingsCol'),
   plotsCol: document.getElementById('plotsCol'),
   outputsCol: document.getElementById('outputsCol'),
+  resizeSettingsPlots: document.getElementById('resizeSettingsPlots'),
+  resizePlotsOutputs: document.getElementById('resizePlotsOutputs'),
   editorDesktopAnchor: document.getElementById('editorDesktopAnchor'),
   editorPanel: document.getElementById('editorPanel'),
   viewer: document.getElementById('viewer'),
@@ -364,6 +366,17 @@ const TEMPLATE_POSITIVE_FIELD_INDICES = {
   headerRef: new Set([0, 1, 2]),
   surfaceSpacing: new Set([0, 2]),
   sectionData: new Set([3, 5]),
+};
+const COLUMN_LAYOUT_STORAGE_KEY = 'vibelattice.columnLayout.v1';
+const COLUMN_LAYOUT_DEFAULTS = {
+  settings: 360,
+  outputs: 420,
+};
+const COLUMN_LAYOUT_LIMITS = {
+  settingsMin: 280,
+  settingsMax: 1320,
+  outputsMin: 320,
+  outputsMax: 780,
 };
 const EIGEN_MODE_DAMPING_TARGET = Math.SQRT1_2;
 const EIGEN_MODE_REAL_AXIS_TARGET = 1.0;
@@ -2546,6 +2559,165 @@ function initTopNav() {
     }
     updateActiveFromScroll();
   });
+}
+
+function isDesktopColumnLayout() {
+  return !(typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 900px)').matches);
+}
+
+function readColumnLayout() {
+  try {
+    const parsed = JSON.parse(window.localStorage?.getItem(COLUMN_LAYOUT_STORAGE_KEY) || '{}');
+    return {
+      settings: Number(parsed?.settings),
+      outputs: Number(parsed?.outputs),
+    };
+  } catch {
+    return { settings: Number.NaN, outputs: Number.NaN };
+  }
+}
+
+function saveColumnLayout(layout) {
+  try {
+    window.localStorage?.setItem(COLUMN_LAYOUT_STORAGE_KEY, JSON.stringify({
+      settings: Number(layout?.settings),
+      outputs: Number(layout?.outputs),
+    }));
+  } catch {
+    // Storage may be unavailable in private or file contexts; resizing still works for this session.
+  }
+}
+
+function appRootLayoutWidth() {
+  const width = Number(els.appRoot?.getBoundingClientRect?.().width);
+  if (Number.isFinite(width) && width > 0) return width;
+  return Math.max(0, (Number(window.innerWidth) || 0) - 48);
+}
+
+function maxSettingsColumnWidth() {
+  return Math.min(
+    COLUMN_LAYOUT_LIMITS.settingsMax,
+    Math.max(COLUMN_LAYOUT_LIMITS.settingsMin, appRootLayoutWidth() - 760),
+  );
+}
+
+function maxOutputsColumnWidth() {
+  return Math.min(
+    COLUMN_LAYOUT_LIMITS.outputsMax,
+    Math.max(COLUMN_LAYOUT_LIMITS.outputsMin, appRootLayoutWidth() - 820),
+  );
+}
+
+function applyColumnLayout(layout = readColumnLayout()) {
+  if (!els.appRoot) return;
+  const settings = clampNumber(
+    Number(layout?.settings),
+    COLUMN_LAYOUT_LIMITS.settingsMin,
+    maxSettingsColumnWidth(),
+  );
+  const outputs = clampNumber(
+    Number(layout?.outputs),
+    COLUMN_LAYOUT_LIMITS.outputsMin,
+    maxOutputsColumnWidth(),
+  );
+  if (Number.isFinite(settings)) els.appRoot.style.setProperty('--settings-col-width', `${settings}px`);
+  else els.appRoot.style.removeProperty('--settings-col-width');
+  if (Number.isFinite(outputs)) els.appRoot.style.setProperty('--outputs-col-width', `${outputs}px`);
+  else els.appRoot.style.removeProperty('--outputs-col-width');
+  handleResize();
+}
+
+function resetColumnLayout() {
+  if (!els.appRoot) return;
+  els.appRoot.style.removeProperty('--settings-col-width');
+  els.appRoot.style.removeProperty('--outputs-col-width');
+  try {
+    window.localStorage?.removeItem(COLUMN_LAYOUT_STORAGE_KEY);
+  } catch {
+    // Ignore storage failures; the inline style reset is enough for the current session.
+  }
+  handleResize();
+}
+
+function currentColumnLayout() {
+  const settings = Number(els.settingsCol?.getBoundingClientRect?.().width);
+  const outputs = Number(els.outputsCol?.getBoundingClientRect?.().width);
+  return {
+    settings: Number.isFinite(settings) ? settings : COLUMN_LAYOUT_DEFAULTS.settings,
+    outputs: Number.isFinite(outputs) ? outputs : COLUMN_LAYOUT_DEFAULTS.outputs,
+  };
+}
+
+function initColumnResize() {
+  if (!els.appRoot) return;
+  applyColumnLayout();
+  let activeResize = false;
+  const bindHandle = (handle, kind) => {
+    if (!handle) return;
+    handle.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      resetColumnLayout();
+    });
+    handle.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home'].includes(event.key)) return;
+      if (!isDesktopColumnLayout()) return;
+      event.preventDefault();
+      if (event.key === 'Home') {
+        resetColumnLayout();
+        return;
+      }
+      const direction = event.key === 'ArrowRight' ? 1 : -1;
+      const current = currentColumnLayout();
+      if (kind === 'settings') current.settings = clampNumber(current.settings + direction * 24, COLUMN_LAYOUT_LIMITS.settingsMin, maxSettingsColumnWidth());
+      if (kind === 'outputs') current.outputs = clampNumber(current.outputs - direction * 24, COLUMN_LAYOUT_LIMITS.outputsMin, maxOutputsColumnWidth());
+      applyColumnLayout(current);
+      saveColumnLayout(current);
+    });
+    const startDrag = (event) => {
+      if (activeResize) return;
+      if (!isDesktopColumnLayout()) return;
+      event.preventDefault();
+      activeResize = true;
+      if (event.type === 'pointerdown') handle.setPointerCapture?.(event.pointerId);
+      document.body.classList.add('column-resizing');
+      handle.classList.add('active');
+      const startX = Number(event.clientX) || 0;
+      const start = currentColumnLayout();
+      const onMove = (moveEvent) => {
+        const dx = (Number(moveEvent.clientX) || 0) - startX;
+        const next = { ...start };
+        if (kind === 'settings') {
+          next.settings = clampNumber(start.settings + dx, COLUMN_LAYOUT_LIMITS.settingsMin, maxSettingsColumnWidth());
+        } else {
+          next.outputs = clampNumber(start.outputs - dx, COLUMN_LAYOUT_LIMITS.outputsMin, maxOutputsColumnWidth());
+        }
+        applyColumnLayout(next);
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        handle.classList.remove('active');
+        document.body.classList.remove('column-resizing');
+        activeResize = false;
+        saveColumnLayout(currentColumnLayout());
+      };
+      if (event.type === 'pointerdown') {
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp, { once: true });
+        window.addEventListener('pointercancel', onUp, { once: true });
+      } else {
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp, { once: true });
+      }
+    };
+    handle.addEventListener('pointerdown', startDrag);
+    handle.addEventListener('mousedown', startDrag);
+  };
+  bindHandle(els.resizeSettingsPlots, 'settings');
+  bindHandle(els.resizePlotsOutputs, 'outputs');
 }
 
 
@@ -13345,6 +13517,7 @@ window.addEventListener('resize', handleResize);
 async function bootApp() {
   suspendAutoTrim = true;
   initTopNav();
+  initColumnResize();
   initPanelCollapse();
   await initExampleSelect();
   renderRunCasesList();
