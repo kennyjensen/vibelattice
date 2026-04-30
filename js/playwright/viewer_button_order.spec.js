@@ -34,6 +34,8 @@ test('viewer right-side button order is stable and pressure stays in bottom row'
       'viewerZoomIn',
       'viewerZoomOut',
       'viewerPan',
+      'viewerProjection',
+      'viewerQuad',
       'viewerView',
       'viewerGrid',
       'viewerText',
@@ -45,6 +47,7 @@ test('viewer right-side button order is stable and pressure stays in bottom row'
       'viewerPressure',
       'viewerLoad',
       'viewerFlow',
+      'eigenDivergence',
     ];
 
     for (const entry of entrypoints) {
@@ -63,6 +66,54 @@ test('viewer right-side button order is stable and pressure stays in bottom row'
       await expect(page.locator('.viewer-overlay #viewerPressure')).toHaveCount(0);
       await expect(page.locator('.viewer-overlay-bottom #viewerLoad')).toHaveCount(1);
       await expect(page.locator('.viewer-overlay #viewerLoad')).toHaveCount(0);
+      await expect(page.locator('.viewer-overlay-bottom #eigenDivergence')).toHaveCount(1);
+      await expect(page.locator('.eigen-overlay #eigenDivergence')).toHaveCount(0);
+
+      const allViewerButtonIds = [...topIds, ...bottomIds];
+      const tooltipState = await page.evaluate((ids) => ids.map((id) => {
+        const node = document.getElementById(id);
+        return {
+          id,
+          title: node?.getAttribute('title') || '',
+          ariaLabel: node?.getAttribute('aria-label') || '',
+          tooltip: node?.getAttribute('data-tooltip') || '',
+        };
+      }), allViewerButtonIds);
+      expect(tooltipState.every((item) => item.title.length === 0)).toBeTruthy();
+      expect(tooltipState.every((item) => item.ariaLabel.length > 0)).toBeTruthy();
+      expect(tooltipState.every((item) => item.tooltip === item.ariaLabel)).toBeTruthy();
+
+      await page.hover('#viewerHome');
+      const instantTooltip = await page.evaluate(() => {
+        const node = document.getElementById('viewerHome');
+        const style = window.getComputedStyle(node, '::after');
+        return {
+          content: style.content,
+          opacity: style.opacity,
+          transitionDelay: style.transitionDelay,
+          transitionDuration: style.transitionDuration,
+          visibility: style.visibility,
+        };
+      });
+      expect(instantTooltip.content).toContain('Fit to model');
+      expect(instantTooltip.opacity).toBe('1');
+      expect(instantTooltip.visibility).toBe('visible');
+      expect(instantTooltip.transitionDelay).toBe('0s');
+      expect(instantTooltip.transitionDuration).toBe('0s');
+
+      await page.hover('#viewerSurface');
+      const bottomTooltip = await page.evaluate(() => {
+        const node = document.getElementById('viewerSurface');
+        const style = window.getComputedStyle(node, '::after');
+        return {
+          content: style.content,
+          left: style.left,
+          transform: style.transform,
+        };
+      });
+      expect(bottomTooltip.content).toContain('Render: wireframe only');
+      expect(bottomTooltip.left).toBe('0px');
+      expect(bottomTooltip.transform).toBe('none');
     }
   } finally {
     await new Promise((resolve) => server.close(resolve));
