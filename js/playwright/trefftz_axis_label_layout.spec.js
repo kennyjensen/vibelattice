@@ -66,6 +66,29 @@ test('trefftz axis labels are outside tick label bounds', async ({ page }) => {
   await page.waitForFunction(() => window.__trefftzTestHook?.layoutReady === true);
 
   await page.waitForSelector('.trefftz-tick.left');
+  await page.waitForSelector('.trefftz-legend-item');
+
+  const legendMetrics = await page.evaluate(() => {
+    const legend = document.querySelector('.trefftz-legend');
+    const item = document.querySelector('.trefftz-legend-item');
+    const swatch = document.querySelector('.trefftz-legend-item .swatch.line');
+    const legendStyle = legend ? getComputedStyle(legend) : null;
+    const itemStyle = item ? getComputedStyle(item) : null;
+    return {
+      itemCount: document.querySelectorAll('.trefftz-legend-item').length,
+      fontSize: legendStyle ? Number.parseFloat(legendStyle.fontSize || '0') : 0,
+      gap: itemStyle ? Number.parseFloat(itemStyle.gap || '0') : 0,
+      itemHeight: item?.getBoundingClientRect().height || 0,
+      swatchWidth: swatch?.getBoundingClientRect().width || 0,
+      swatchHeight: swatch?.getBoundingClientRect().height || 0,
+    };
+  });
+  expect(legendMetrics.itemCount).toBe(4);
+  expect(legendMetrics.fontSize).toBeGreaterThanOrEqual(20);
+  expect(legendMetrics.gap).toBeGreaterThanOrEqual(6);
+  expect(legendMetrics.itemHeight).toBeGreaterThan(14);
+  expect(legendMetrics.swatchWidth).toBeGreaterThanOrEqual(18);
+  expect(legendMetrics.swatchHeight).toBeGreaterThanOrEqual(12);
 
   const measure = async () => page.evaluate(() => {
     const leftLabel = document.querySelector('.trefftz-axis-label.y-left')?.getBoundingClientRect();
