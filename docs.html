@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VibeLattice — Documentation</title>
+  <link rel="stylesheet" href="./js/dist/styles.css" />
+  <style>
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-mono, monospace);
+      margin: 0;
+      padding: 24px 40px;
+      line-height: 1.6;
+    }
+    h1 { font-size: 1.6em; margin-top: 0; }
+    h2 { font-size: 1.2em; margin-top: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+    h3 { font-size: 1em; margin-top: 1.2em; }
+    a { color: var(--accent); }
+    code { background: var(--surface); padding: 2px 5px; border-radius: 3px; font-size: 0.95em; }
+    pre { background: var(--surface); padding: 12px 16px; border-radius: 6px; overflow-x: auto; }
+    pre code { padding: 0; background: none; }
+    .docs-container { max-width: 800px; margin: 0 auto; }
+    ul { padding-left: 1.4em; }
+    li { margin-bottom: 0.3em; }
+    table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+    th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+    th { background: var(--surface); }
+  </style>
+</head>
+<body class="vf-theme">
+  <div class="docs-container">
+    <h1>VibeLattice Documentation</h1>
+    <p>
+      VibeLattice is a browser-based aerodynamics simulation tool — a numerically faithful
+      JavaScript/WASM port of <a href="https://web.mit.edu/drela/Public/web/avl/" target="_blank" rel="noopener">AVL</a>
+      (Athena Vortex Lattice) by Mark Drela and Harold Youngren.
+    </p>
+
+    <h2>Getting Started</h2>
+    <ol>
+      <li>Click <strong>Load AVL</strong> or choose a built-in example from the dropdown.</li>
+      <li>Adjust flight conditions (velocity, CL, mass, etc.) in the <strong>Settings</strong> panel.</li>
+      <li>Click <strong>Execute</strong> to run the vortex-lattice solver.</li>
+      <li>View results in the <strong>Plots</strong> and <strong>Outputs</strong> panels.</li>
+    </ol>
+
+    <h2>Panels</h2>
+    <h3>Editor</h3>
+    <p>
+      View and edit the raw AVL geometry definition. Changes here are reflected live in the 3D preview.
+      The editor supports AVL template variable syntax (<code>${name:default}</code>) for parameterized models.
+    </p>
+    <h3>Settings</h3>
+    <p>
+      Configure aircraft reference values (Sref, Cref, Bref), symmetry planes, flight conditions,
+      control surface deflections, and constraint modes. You can also load <code>.mass</code> and
+      <code>.run</code> files here.
+    </p>
+    <h3>Plots</h3>
+    <p>
+      3D geometry visualization and result plots including spanwise lift distributions,
+      Trefftz-plane drag breakdown, stability derivatives, and eigenmode analysis.
+    </p>
+    <h3>Outputs</h3>
+    <p>
+      Tabular output of total forces/moments, stability derivatives, strip forces, and
+      element-level data. Results can be downloaded as text files.
+    </p>
+
+    <h2>File Formats</h2>
+    <table>
+      <tr><th>Extension</th><th>Description</th></tr>
+      <tr><td><code>.avl</code></td><td>Aircraft geometry definition (surfaces, sections, airfoils)</td></tr>
+      <tr><td><code>.run</code></td><td>Run-case file with flight conditions and constraints</td></tr>
+      <tr><td><code>.mass</code></td><td>Mass distribution file for inertia and CG</td></tr>
+    </table>
+
+    <h2>Flight Conditions</h2>
+    <ul>
+      <li><strong>Gravity</strong> — gravitational acceleration (default 9.81 m/s²)</li>
+      <li><strong>Air density</strong> — freestream air density (default 1.225 kg/m³)</li>
+      <li><strong>Mass</strong> — total aircraft mass (kg)</li>
+      <li><strong>Velocity</strong> — freestream velocity (m/s)</li>
+      <li><strong>C<sub>L</sub></strong> — target lift coefficient</li>
+      <li><strong>Flight mode</strong> — level/banked flight or looping</li>
+    </ul>
+
+    <h2>Constraint Modes</h2>
+    <p>
+      The solver trims the aircraft by satisfying constraints. You can constrain
+      angle of attack (alpha), sideslip (beta), roll rate, and control surface
+      deflections. Each variable can be set, or used to achieve a target value.
+    </p>
+
+    <h2>Symmetry</h2>
+    <ul>
+      <li><strong>IYSym</strong> — Y-symmetry: mirror geometry in the X-Z plane</li>
+      <li><strong>IZSym</strong> — Z-symmetry: mirror geometry in the X-Y plane</li>
+    </ul>
+    <p>Using symmetry reduces computation by modeling only half (or quarter) of the aircraft.</p>
+
+    <h2>Strip Forces Output</h2>
+    <p>
+      The strip forces file contains aerodynamic results for each spanwise strip.
+      All force and moment coefficients are referred to the strip's own area and chord,
+      making them dimensionless and comparable across strips of different sizes.
+    </p>
+    <table>
+      <tr><th>Column</th><th>Definition</th></tr>
+      <tr>
+        <td><code>strip_idx</code></td>
+        <td>Global strip index (1 to N<sub>strip</sub>), numbered sequentially across all surfaces.</td>
+      </tr>
+      <tr>
+        <td><code>surface_idx</code></td>
+        <td>Index of the surface that contains this strip.</td>
+      </tr>
+      <tr>
+        <td><code>Xle</code></td>
+        <td>X coordinate of the strip leading edge.</td>
+      </tr>
+      <tr>
+        <td><code>Yle</code></td>
+        <td>Y coordinate of the strip leading edge (spanwise position).</td>
+      </tr>
+      <tr>
+        <td><code>Zle</code></td>
+        <td>Z coordinate of the strip leading edge (vertical position).</td>
+      </tr>
+      <tr>
+        <td><code>Chord</code></td>
+        <td>Local chord length of the strip.</td>
+      </tr>
+      <tr>
+        <td><code>Area</code></td>
+        <td>Strip planform area (Chord &times; strip width).</td>
+      </tr>
+      <tr>
+        <td><code>c_cl</code></td>
+        <td>Span loading: normal force coefficient in the strip's Trefftz (far-wake) plane. Used in induced drag calculation.</td>
+      </tr>
+      <tr>
+        <td><code>ai</code></td>
+        <td>Induced angle — downwash angle at the strip in the Trefftz plane, computed from the wake influence of all other strips.</td>
+      </tr>
+      <tr>
+        <td><code>cl_norm</code></td>
+        <td>Local lift coefficient normalized by the velocity component perpendicular to the strip span direction (cl / V<sub>perp</sub>&sup2;).</td>
+      </tr>
+      <tr>
+        <td><code>cl</code></td>
+        <td>Local section lift coefficient in strip coordinates (force perpendicular to freestream and span, referred to strip area).</td>
+      </tr>
+      <tr>
+        <td><code>cd</code></td>
+        <td>Local section drag coefficient in strip coordinates (force along freestream direction, referred to strip area). Includes induced drag.</td>
+      </tr>
+      <tr>
+        <td><code>cdv</code></td>
+        <td>Viscous (profile) drag coefficient from airfoil polar data, if specified.</td>
+      </tr>
+      <tr>
+        <td><code>cm_c/4</code></td>
+        <td>Pitching moment coefficient about the strip quarter-chord point, referred to strip area and chord.</td>
+      </tr>
+      <tr>
+        <td><code>cm_LE</code></td>
+        <td>Pitching moment coefficient about the strip leading edge, referred to strip area and chord.</td>
+      </tr>
+      <tr>
+        <td><code>C.P.x/c</code></td>
+        <td>Center of pressure location as a fraction of chord from the leading edge. Computed as 0.25 &minus; cm<sub>c/4</sub> / cl.</td>
+      </tr>
+    </table>
+
+    <h2>Keyboard Shortcuts</h2>
+    <table>
+      <tr><th>Key</th><th>Action</th></tr>
+      <tr><td><code>Ctrl+Enter</code></td><td>Execute solver</td></tr>
+    </table>
+
+    <h2>Links</h2>
+    <ul>
+      <li><a href="https://github.com/kennyjensen/vibelattice" target="_blank" rel="noopener">GitHub Repository</a></li>
+      <li><a href="https://web.mit.edu/drela/Public/web/avl/" target="_blank" rel="noopener">Original AVL by Mark Drela</a></li>
+      <li><a href="https://web.mit.edu/drela/Public/web/avl/avl_doc.txt" target="_blank" rel="noopener">AVL User Guide (original)</a></li>
+    </ul>
+  </div>
+</body>
+</html>

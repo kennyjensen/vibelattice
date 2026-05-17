@@ -72,6 +72,13 @@ body {
   color: #a8ccff;
 }
 
+#docsBtn {
+  align-self: center;
+  margin-left: auto;
+  font-size: 13px;
+  padding: 4px 12px;
+}
+
 .github-star {
   display: inline-flex;
   align-items: center;
