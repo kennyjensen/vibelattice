@@ -101,15 +101,36 @@ test('Trefftz and Eigenmodes panels have matching plot height, legend aligns lef
     await expect.poll(async () => {
       const hover = await page.evaluate(() => window.__trefftzTestHook?.trefftzHover || null);
       const spanLabel = String(hover?.spanLabel || '');
+      const markers = Array.isArray(hover?.markers) ? hover.markers : [];
+      const labels = markers.map((marker) => String(marker?.label || ''));
+      const boxes = markers.map((marker) => marker?.labelBox || null);
+      const displayLabels = markers.map((marker) => String(marker?.displayLabel || ''));
+      const readableBoxes = boxes.every((box) => Number(box?.width) > 42 && Number(box?.height) >= 18);
+      const separatedBoxes = boxes.every((box, idx) => idx === 0
+        || (Number(box?.y) >= Number(boxes[idx - 1]?.y) + Number(boxes[idx - 1]?.height) + 2));
       return {
         active: Boolean(hover?.active),
         markerCount: Number(hover?.markerCount || 0),
         hasNumericSpanLabel: /^[-+]?\d+(\.\d+)?$/.test(spanLabel),
+        hasClPerpLabel: labels.some((label) => /^cl_perp\s+[-+]?\d/.test(label)),
+        hasClLabel: labels.some((label) => /^cl\s+[-+]?\d/.test(label)),
+        hasCncLabel: labels.some((label) => /^cl\*c\/cref\s+[-+]?\d/.test(label)),
+        hasAiLabel: labels.some((label) => /^ai\s+[-+]?\d/.test(label)),
+        hasReadableDisplayLabels: displayLabels.includes('Cl perp') && displayLabels.includes('Cl') && displayLabels.includes('Cl*c/Cref'),
+        readableBoxes,
+        separatedBoxes,
       };
     }, { timeout: 20000 }).toEqual({
       active: true,
       markerCount: 4,
       hasNumericSpanLabel: true,
+      hasClPerpLabel: true,
+      hasClLabel: true,
+      hasCncLabel: true,
+      hasAiLabel: true,
+      hasReadableDisplayLabels: true,
+      readableBoxes: true,
+      separatedBoxes: true,
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));
