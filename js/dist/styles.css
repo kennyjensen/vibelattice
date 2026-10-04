@@ -36,8 +36,9 @@ body {
 
 .title-bar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
+  width: 100%;
   padding: 0;
   gap: 12px;
 }
@@ -45,6 +46,7 @@ body {
 .title-text {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .title {
@@ -70,6 +72,60 @@ body {
 
 .title-sub a:hover {
   color: #a8ccff;
+}
+
+.header-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 24px;
+  margin-left: auto;
+}
+
+.related-apps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.element-link {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  gap: 3px;
+  border: 1px solid #526780;
+  border-radius: 3px;
+  background: #141e2b;
+  color: var(--accent);
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.element-link:visited {
+  color: var(--accent);
+}
+
+.element-symbol {
+  font: 600 24px/1 Consolas, "Courier New", monospace;
+}
+
+.element-name {
+  font: 8px/1.2 sans-serif;
+  color: #b9c9df;
+}
+
+.element-link:hover {
+  background: #203047;
+  border-color: var(--accent);
+}
+
+.element-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .github-star {
@@ -1668,12 +1724,29 @@ textarea.code {
   }
 
   .title-text {
-    display: flex;
-    flex-direction: row;
-    align-items: flex-end;
-    flex-wrap: nowrap;
     gap: 4px;
-    min-width: 0;
+  }
+
+  .title {
+    font-size: 24px;
+  }
+
+  .related-apps {
+    gap: 4px;
+  }
+
+  .element-link {
+    width: 44px;
+    height: 44px;
+    gap: 2px;
+  }
+
+  .element-symbol {
+    font-size: 20px;
+  }
+
+  .element-name {
+    font-size: 7px;
   }
 
   .github-star-desktop {
@@ -1692,15 +1765,10 @@ textarea.code {
 
   .title-sub {
     margin-top: 0;
-    max-width: none;
-    padding: 6px 8px;
-    border-radius: 10px;
-    background: rgba(8, 10, 12, 0.55);
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1.35;
     white-space: normal;
     overflow-wrap: anywhere;
-    flex: 1 1 auto;
     min-width: 0;
   }
 
@@ -1781,5 +1849,26 @@ textarea.code {
   #editorPanel .file-editor textarea.code {
     min-height: 100%;
     height: 100%;
+  }
+}
+
+@media (max-width: 380px) {
+  .app-header {
+    padding-inline: 12px;
+  }
+
+  .title-bar {
+    gap: 8px;
+  }
+
+  .title {
+    font-size: 20px;
+    letter-spacing: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .element-link {
+    transition: none;
   }
 }
